@@ -1179,6 +1179,30 @@ fn doctor_names_the_file_and_line_of_an_undefined_step() {
     assert!(stdout.contains("I frobnicate"), "{stdout}");
 }
 
+/// A step whose resource kind has nothing declared is a guaranteed failure in
+/// the scenario, and `run` does not refuse the config — a `--tag` may keep the
+/// scenario out. `doctor` applies no filter, so it is the one place to say so.
+#[test]
+fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
+    let cfg = write_doctor_project(
+        "doctor-unserved",
+        "",
+        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n    When I request \"/pong\"\n",
+        "",
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("only.feature:3"), "{stdout}");
+    assert!(!stdout.contains("only.feature:4"), "once per file: {stdout}");
+    assert!(stdout.contains("resources.api declares none"), "{stdout}");
+}
+
 /// The promise the command is built on: `doctor` without `--live` must reach a
 /// verdict on a train. The `base_url` here points at a closed port, and the
 /// static run must still come back clean.
@@ -1244,7 +1268,7 @@ fn doctor_live_reports_an_unreachable_base_url() {
 fn doctor_live_reports_every_dead_connection_by_name() {
     let cfg = write_doctor_project(
         "doctor-dsn",
-        "",
+        "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
         "  db:\n    primary:\n      dsn: postgres://u:p@127.0.0.1:1/x\n\
          \x20   secondary:\n      dsn: postgres://u:p@127.0.0.1:1/y\n\
@@ -1318,7 +1342,7 @@ fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
 fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
     let cfg = write_doctor_project(
         "doctor-baddsn",
-        "",
+        "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
         "  db:\n    primary:\n      dsn: \"postgres://u:p@127.0.0.1:notaport/x\"\n",
     );
@@ -1355,7 +1379,7 @@ fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
 fn doctor_reports_a_malformed_scheduling_tag() {
     let cfg = write_doctor_project(
         "doctor-tag",
-        "",
+        "http://127.0.0.1:1/",
         "Feature: only\n  @priority(soon)\n  Scenario: one\n    When I request \"/ping\"\n",
         "",
     );

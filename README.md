@@ -118,7 +118,7 @@ A bare `doctor` opens no socket: it is fast, offline and deterministic, so it wo
 
 The header states which `APP_ENV` layer was selected, which is the first thing that is wrong when a suite passes locally and fails in CI. `--json` emits the same report machine-readably, one object per check with a `probe` flag separating a resource's static row from its live one.
 
-`doctor` never fixes what it finds, and every static stage is a function `run` itself calls — if the two ever disagree about whether a config is valid, that is a bug in `doctor`.
+`doctor` never fixes what it finds, and every static stage is a function `run` itself calls — if the two ever disagree about whether a config is valid, that is a bug in `doctor`. The one finding `run` never makes is a step of a resource group with nothing declared to run on — an HTTP step over `resources.api: {}`, a DB step with no `resources.db`, a plugin step whose group was emptied to switch its implicit instance off. `run` accepts that config and fails in the scenario, because a `--tag` may keep the scenario out; `doctor` applies no tag filter, so there the failure is certain, and it is reported as one — once per file and group, at the first step that needs it.
 
 ## What steps exist
 
