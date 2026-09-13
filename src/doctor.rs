@@ -2,6 +2,7 @@
 //! without starting a run — plus, under `--live`, the one class of check a run
 //! does not have: whether the resources the config names actually answer.
 
+use crate::steps::{BUILTIN_STEPS, StepTarget};
 use crate::{config, db, feature, http, unique, validate};
 use serde::Serialize;
 use std::path::Path;
@@ -204,7 +205,7 @@ pub async fn check(config_path: &Path, env: Option<&str>, live: bool) -> Report 
         }
         (None, _) => Err("the step registry did not build — see the macros stage"),
     };
-    check_features(&mut report, &cfg, vocabulary);
+    check_features(&mut report, &cfg, vocabulary, plugins.as_deref());
     check_apis(&mut report, &cfg, live).await;
     check_databases(&mut report, &cfg, live).await;
     check_srp(&mut report, &cfg);
@@ -258,10 +259,18 @@ fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins,
 /// load. The reason comes from the caller because only the caller knows which
 /// stage to send the reader to. Only the step MATCHING is skipped then: a
 /// parse error and a scheduling tag are answers this stage still owes.
+///
+/// The one finding here that `run` never makes: a step of a resource group
+/// with nothing declared — `resources.api: {}` under an HTTP step, a DB step
+/// with no `resources.db`, a plugin group emptied to switch its implicit
+/// instance off. `run` accepts that config and fails in the scenario, because
+/// a `--tag` may keep the scenario out; `doctor` applies no filter, so here
+/// the failure is certain and is reported as one.
 fn check_features(
     report: &mut Report,
     cfg: &config::Config,
     registry: Result<&crate::steps::Registry, &'static str>,
+    plugins: Option<&crate::plugin::Plugins>,
 ) {
     let paths = match feature::discover(&cfg.paths) {
         Ok(paths) => paths,
@@ -298,8 +307,15 @@ fn check_features(
         Ok(registry) => {
             let borrowed: Vec<&feature::LoadedFeature> =
                 loaded.iter().map(std::sync::Arc::as_ref).collect();
+            let mut found = validate::check(&borrowed, registry, &filter);
+            found.extend(validate::unserved_resources(
+                &borrowed,
+                registry,
+                &filter,
+                |target| unserved_group(cfg, plugins, target),
+            ));
             problems.extend(
-                validate::check(&borrowed, registry, &filter)
+                found
                     .iter()
                     .map(|p| format!("{}:{}\n  {}", p.file.display(), p.line, p.message)),
             );
@@ -340,6 +356,38 @@ fn check_features(
         }
         Err(error) => report.push("scheduling", None, Status::Failed, &error),
     }
+}
+
+/// The message for a step whose resource group has nothing to run on, `None`
+/// when it has — or when the step reaches for no resource at all (`vars`,
+/// `debug`, `general`, and a macro, whose body is checked step by step only
+/// when it runs).
+fn unserved_group(
+    cfg: &config::Config,
+    plugins: Option<&crate::plugin::Plugins>,
+    target: &StepTarget,
+) -> Option<String> {
+    let (group, served) = match target {
+        StepTarget::Builtin { id, .. } => {
+            let group = BUILTIN_STEPS.iter().find(|def| def.id == *id)?.group;
+            let served = match group {
+                "api" => !cfg.resources.api.is_empty(),
+                "db" => !cfg.resources.db.is_empty(),
+                "srp" => !cfg.resources.srp.is_empty(),
+                _ => true,
+            };
+            (group, served)
+        }
+        StepTarget::Plugin { lib, step, .. } => {
+            let plugins = plugins?;
+            let group = plugins.group_of_step(*lib, *step);
+            (group, plugins.has_instance(group))
+        }
+        StepTarget::Macro(_) => return None,
+    };
+    (!served).then(|| {
+        format!("this step needs a resource of the \"{group}\" group, and resources.{group} declares none")
+    })
 }
 
 /// The static check of one API resource: the resource it builds, and the line

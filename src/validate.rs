@@ -27,31 +27,7 @@ impl std::fmt::Display for Problem {
 pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) -> Vec<Problem> {
     let mut problems = Vec::new();
     for lf in features {
-        let mut all_steps: Vec<(String, usize, bool, bool)> = Vec::new();
-        if let Some(bg) = &lf.feature.background {
-            for s in &bg.steps {
-                all_steps.push((
-                    s.value.clone(),
-                    s.position.line,
-                    s.docstring.is_some(),
-                    s.table.is_some(),
-                ));
-            }
-        }
-        // Background is always checked: it runs before every selected
-        // scenario. Filtered-out scenarios are not checked — a typo in
-        // something that never runs must not fail the run.
-        for sc in &lf.feature.scenarios {
-            if !filter.matches(&sc.tags) {
-                continue;
-            }
-            for ex in expand_outlines(sc) {
-                for st in ex.steps {
-                    all_steps.push((st.text, st.line, st.docstring.is_some(), st.table.is_some()));
-                }
-            }
-        }
-        for (text, line, has_docstring, has_table) in all_steps {
+        for (text, line, has_docstring, has_table) in selected_steps(lf, filter) {
             match reg.find(&text) {
                 Ok(Some((StepTarget::Macro(_), _))) if has_docstring => {
                     problems.push(Problem {
@@ -77,6 +53,75 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                     message: e,
                 }),
             }
+        }
+    }
+    problems
+}
+
+/// `(text, line, has docstring, has table)` of every step a run would execute
+/// from this file. Background is always included: it runs before every
+/// selected scenario. Filtered-out scenarios are not — a typo in something
+/// that never runs must not fail the run.
+fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<(String, usize, bool, bool)> {
+    let mut all_steps: Vec<(String, usize, bool, bool)> = Vec::new();
+    if let Some(bg) = &lf.feature.background {
+        for s in &bg.steps {
+            all_steps.push((
+                s.value.clone(),
+                s.position.line,
+                s.docstring.is_some(),
+                s.table.is_some(),
+            ));
+        }
+    }
+    for sc in &lf.feature.scenarios {
+        if !filter.matches(&sc.tags) {
+            continue;
+        }
+        for ex in expand_outlines(sc) {
+            for st in ex.steps {
+                all_steps.push((st.text, st.line, st.docstring.is_some(), st.table.is_some()));
+            }
+        }
+    }
+    all_steps
+}
+
+/// The steps `check` matched, asked a second question: does the resource each
+/// one reaches for exist. `unserved` answers `Some(message)` for a step whose
+/// group has nothing declared to run on. One finding per file and message —
+/// the first such step names the line, every later one would only repeat it.
+///
+/// Deliberately NOT part of `check`, and so never a reason for `run` to exit
+/// 2: a suite may declare an empty group and keep the scenarios using it out
+/// with `--tag`, and `run` does not know what will be selected until it is.
+/// `doctor` applies no filter, so it is the one caller with an answer.
+pub fn unserved_resources(
+    features: &[&LoadedFeature],
+    reg: &Registry,
+    filter: &TagFilter,
+    unserved: impl Fn(&StepTarget) -> Option<String>,
+) -> Vec<Problem> {
+    let mut problems: Vec<Problem> = Vec::new();
+    for lf in features {
+        for (text, line, _, _) in selected_steps(lf, filter) {
+            let Ok(Some((target, _))) = reg.find(&text) else {
+                continue;
+            };
+            let Some(message) = unserved(&target) else {
+                continue;
+            };
+            if problems
+                .iter()
+                .any(|p| p.file == lf.path && p.message == message)
+            {
+                continue;
+            }
+            problems.push(Problem {
+                file: lf.path.clone(),
+                line,
+                message,
+            });
         }
     }
     problems
@@ -211,6 +256,54 @@ Feature: f
         );
         let p = check(&[&lf], &Registry::new().unwrap(), &TagFilter::new(&[]));
         assert!(p.is_empty(), "{p:?}");
+    }
+
+    #[test]
+    fn an_unserved_group_is_reported_once_per_file_at_its_first_step() {
+        let lf = loaded(
+            "\
+Feature: f
+  Scenario: s
+    When I request \"/ping\" using HTTP GET
+    Then the response code is 200
+  Scenario: t
+    Then the response code is 200
+",
+        );
+        let unserved = |target: &StepTarget| match target {
+            StepTarget::Builtin { .. } => Some("api declares none".to_string()),
+            _ => None,
+        };
+
+        let p = unserved_resources(
+            &[&lf],
+            &Registry::new().unwrap(),
+            &TagFilter::new(&[]),
+            unserved,
+        );
+
+        assert_eq!(p.len(), 1, "one finding per file and group: {p:?}");
+        assert_eq!(p[0].line, 3);
+        assert_eq!(p[0].message, "api declares none");
+    }
+
+    #[test]
+    fn a_served_step_is_not_a_finding() {
+        let lf = loaded(
+            "Feature: f\n  Scenario: s\n    When I frobnicate\n    Then the response code is 200\n",
+        );
+
+        let p = unserved_resources(
+            &[&lf],
+            &Registry::new().unwrap(),
+            &TagFilter::new(&[]),
+            |_| None,
+        );
+
+        assert!(
+            p.is_empty(),
+            "an unknown step is `check`'s finding, not this one: {p:?}"
+        );
     }
 
     #[test]

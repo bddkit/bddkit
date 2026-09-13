@@ -1044,6 +1044,29 @@ fn an_implicit_instance_the_plugin_rejects_exits_2_before_the_first_request() {
     );
 }
 
+/// `echo: {}` switches the implicit instance off and leaves the group with
+/// nothing to run on. `run` accepts the config and fails at the first echo step;
+/// a `doctor` that stays green there certifies a suite that cannot pass.
+#[test]
+fn doctor_reports_a_plugin_step_whose_group_declares_no_instance() {
+    let dir = project(
+        "doctor-empty-group",
+        "Feature: f\n  Scenario: s\n    When I echo \"x\" as \"greeting\"\n",
+        "  echo: {}\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("plugin.feature:3") && stdout.contains("resources.echo declares none"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn doctor_lists_the_implicit_instance_as_declared() {
     let dir = project(

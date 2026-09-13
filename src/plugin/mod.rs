@@ -293,6 +293,13 @@ impl Plugins {
         &self.libs[lib].steps[step].group
     }
 
+    /// Whether the group has anything to run on — a declared instance or the
+    /// implicit one `load` synthesized. `false` for `resources.<group>: {}`,
+    /// which is how a suite switches the implicit instance off.
+    pub fn has_instance(&self, group: &str) -> bool {
+        self.declared.keys().any(|(g, _)| g == group)
+    }
+
     pub fn is_declared(&self, group: &str, instance: &str) -> bool {
         self.declared
             .contains_key(&(group.to_string(), instance.to_string()))
