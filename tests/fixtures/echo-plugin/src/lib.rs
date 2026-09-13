@@ -69,6 +69,12 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
     guard("envelope", || {
         serde_json::json!({
             "name": "echo", "version": "0.1.0", "groups": ["echo"], "concurrency": "shared",
+            // What a suite with no `resources.echo` section gets: one instance
+            // named `default`, built from this body. Every key an instance
+            // needs must be here — the host validates it at load like any
+            // declared instance, and a body this plugin's own
+            // `bddkit_validate_config` refuses fails the load.
+            "implicit_instance": {"echo": {"prefix": "implicit-"}},
             "fields": {"echo": [
                 {"name": "prefix", "required": true, "type": "string",
                  "description": "prepended to every echoed value", "example": "p-"},

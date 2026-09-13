@@ -65,6 +65,14 @@ pub struct Manifest {
     /// group is.
     #[serde(default)]
     pub fields: BTreeMap<String, Vec<ConfigField>>,
+    /// The config body an instance of a group takes when the suite declares
+    /// no `resources.<group>` section at all, keyed by group. The host then
+    /// synthesizes one instance named `default` from it — validated at load
+    /// like a declared one, and the group default by the one-instance rule.
+    /// Any declared section, even an empty map, switches this off for that
+    /// group. Same claim rule as `fields` (`library::check_implicit_groups`).
+    #[serde(default)]
+    pub implicit_instance: BTreeMap<String, serde_json::Value>,
 }
 
 /// One key of a group's instance config, as the plugin describes it.

@@ -81,7 +81,10 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
     // guarded" is an invariant a reader can check, "this one happens to be
     // safe" is a judgement each future edit has to make again.
     guard("envelope", || {
-        r#"{"name":"worker","version":"0.1.0","groups":["worker"],"concurrency":"per_worker"}"#
+        // `implicit_instance`: a suite with no `resources.worker` section gets
+        // one instance named `default` from this (empty) body — the
+        // zero-config shape a plugin whose every key has a default is for.
+        r#"{"name":"worker","version":"0.1.0","groups":["worker"],"concurrency":"per_worker","implicit_instance":{"worker":{}}}"#
             .to_string()
     })
 }
@@ -100,8 +103,17 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_validate_config(_request: *const c_char) -> *mut c_char {
     // This instance requires nothing: `drop_log` is the only key it reads and
-    // it is optional.
-    guard("envelope", || r#"{"ok":true}"#.to_string())
+    // it is optional. The one refusal is a test switch for the case no config
+    // can reach — the manifest's own `implicit_instance` body being rejected,
+    // which is a plugin bug the host must report at load. The variable is only
+    // ever READ here, and set by a host test on the child process it spawns
+    // (`Command::env`), never with `std::env::set_var` in the test process.
+    guard("envelope", || {
+        if std::env::var_os("BDDKIT_WORKER_FIXTURE_REJECT_CONFIG").is_some() {
+            return r#"{"ok":false,"error":"rejected by the fixture on request"}"#.to_string();
+        }
+        r#"{"ok":true}"#.to_string()
+    })
 }
 
 #[unsafe(no_mangle)]

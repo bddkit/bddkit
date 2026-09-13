@@ -62,7 +62,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 
 A missing required symbol fails the load with a message naming the symbol. **Returning NULL from any of the string-returning exports is an error**, reported as "plugin `<name>` returned nothing from `<call>`" — there is no reply shape that means "nothing to say"; say it with an envelope.
 
-At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `1`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below). Nothing else is called until a scenario reaches a step.
+At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `1`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim, or declares an `implicit_instance` for one; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below); call `bddkit_validate_config` once per instance — every one the config declares, plus the one synthesized from `implicit_instance` for a group the config has no section for. Nothing else is called until a scenario reaches a step.
 
 Three questions can be asked about a `resources.<group>` entry, and each has its own mechanism. Together they state the boundary this document draws: the host knows *that* a group has a config, the plugin knows *what* it means, and only the plugin can find out whether it works.
 
@@ -114,7 +114,21 @@ This is deliberately **not** JSON Schema: no nesting, no enums, no ranges, no de
 
 Describing a key you do not accept, or accepting one you do not describe, is a bug of exactly the kind the `bddkit_list_steps` index note warns about. If your `validate_config` checks the config against a list of known keys, derive one list from the other or keep them adjacent, so a key added to one cannot be missed in the other.
 
-Unknown keys are ignored, so a newer plugin can add manifest keys without breaking an older host.
+- `implicit_instance` (object, optional) — the config body an instance of a group takes when the suite declares **no** `resources.<group>` section at all, keyed by group. For a plugin whose every key has a default this is what makes the zero-config case work: without it the first step of the group fails with "no instance of the resource group is selected, and no default_<group> is set", and nothing the plugin does can change that, because the refusal comes before `bddkit_init_instance` is ever called.
+
+```json
+{
+  "name": "exec",
+  "version": "0.1.0",
+  "groups": ["exec"],
+  "concurrency": "per_worker",
+  "implicit_instance": { "exec": {} }
+}
+```
+
+For every group listed here whose section is absent from the config, the host synthesizes one instance named `default` from the declared body, with the suite's global `options` cascaded over it exactly as for a declared instance that has no `options` key of its own. It then goes where a declared instance goes: through `bddkit_validate_config` at load — a body your own validator refuses fails the load with `plugin "<name>": implicit_instance.<group>: <error>`, which is the right time to find out — into `bddkit doctor` (listed and, under `--live`, probed), and it becomes `default_<group>` by the existing rule that a group's only instance is its default. Any declared `resources.<group>` section, **even an empty map**, switches the synthesis off for that group: a suite that names its instances gets exactly the ones it named, and `bddkit resource add <group> <name>` on a group that has only the implicit instance creates the section and, by that rule, retires the implicit one. An explicit `default_<group>` naming a group with no section is still an error, as for any undeclared instance. A key naming a group this manifest does not claim fails the load, as for `fields`.
+
+Unknown keys are ignored, so a newer plugin can add manifest keys without breaking an older host — a plugin declaring `implicit_instance` loads on a host that predates the key, and simply meets the old refusal.
 
 ### `bddkit_list_steps`
 

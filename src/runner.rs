@@ -608,9 +608,10 @@ mod tests {
             &[crate::plugin::tests::instance("a", Some("p-"))],
             &["echo".to_string()],
             1,
+            &crate::options::Options::default(),
         )
         .expect("the fixture plugin loads");
-        plugins.set_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
+        plugins.add_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
         plugins
     }
 

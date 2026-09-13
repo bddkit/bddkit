@@ -939,3 +939,127 @@ fn a_plugin_that_refuses_the_probe_fails_doctor_naming_the_instance() {
         "{stdout}"
     );
 }
+
+/// The zero-config case of issue #37: the echo manifest declares an
+/// `implicit_instance` body for its group, so a config with no
+/// `resources.echo` section at all still has an instance named `default` —
+/// built from that body, validated at load, and the group default by the
+/// one-instance inference rule. The prefix proves the declared body reached
+/// `init_instance`; the explicit switch proves the name.
+#[test]
+fn a_group_with_no_config_section_runs_on_the_implicit_instance() {
+    let dir = project(
+        "implicit-instance",
+        r#"Feature: implicit instance
+  Scenario: the default is synthesized from the manifest
+    When I echo "x" as "v"
+    Then variable "v" should be equal to "implicit-x"
+    When I use "default" echo
+    And I echo "y" as "w"
+    Then variable "w" should be equal to "implicit-y"
+"#,
+        "",
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("failed: 0"), "{stdout}");
+}
+
+/// The motivating case, in its motivating shape: a `per_worker` plugin whose
+/// every key has a default, two files, two workers, and no `resources.worker`
+/// section anywhere.
+#[test]
+fn a_per_worker_plugin_runs_zero_config_on_its_implicit_instance() {
+    let dir = worker_project(
+        "implicit-per-worker",
+        &[
+            (
+                "a.feature",
+                "Feature: a\n  Scenario: s\n    When I count in the worker as \"n\"\n    Then variable \"n\" should be equal to \"1\"\n",
+            ),
+            (
+                "b.feature",
+                "Feature: b\n  Scenario: s\n    When I count in the worker as \"n\"\n    Then variable \"n\" should be equal to \"1\"\n",
+            ),
+        ],
+        "",
+        2,
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("failed: 0"), "{stdout}");
+}
+
+/// Any declared section — an empty map included — switches the synthesis off:
+/// a suite that names its instances gets exactly the ones it named.
+#[test]
+fn a_declared_section_disables_the_implicit_instance() {
+    let feature = "Feature: f\n  Scenario: s\n    When I use \"default\" echo\n";
+    for (name, tail) in [("implicit-off", ECHO_GROUP), ("implicit-off-empty", "  echo: {}\n")] {
+        let dir = project(name, feature, tail);
+        let out = run(&dir);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(1), "{tail}\n{stdout}");
+        assert!(
+            stdout.contains("instance \"default\" is not declared in resources.echo"),
+            "{tail}\n{stdout}"
+        );
+    }
+}
+
+/// A body the plugin's own `validate_config` refuses is a plugin bug, and
+/// load time is when to find it: exit 2, before the first request. The worker
+/// fixture refuses every config while this variable is set on the CHILD (it is
+/// never set in the test process — `std::env::set_var` is unsafe in edition
+/// 2024 and would race every other test).
+#[test]
+fn an_implicit_instance_the_plugin_rejects_exits_2_before_the_first_request() {
+    let dir = worker_project(
+        "implicit-rejected",
+        &[("a.feature", "Feature: a\n  Scenario: s\n    When I count in the worker as \"n\"\n")],
+        "",
+        1,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml"])
+        .env("BDDKIT_WORKER_FIXTURE_REJECT_CONFIG", "1")
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run bddkit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("implicit_instance.worker") && stderr.contains("rejected by the fixture"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn doctor_lists_the_implicit_instance_as_declared() {
+    let dir = project(
+        "doctor-implicit",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml", "--live"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.contains("plugin echo.default") && stdout.contains("probed clean"),
+        "{stdout}"
+    );
+}

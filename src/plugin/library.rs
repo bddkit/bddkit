@@ -149,6 +149,7 @@ impl Library {
         check_step_groups(name, &manifest, &steps)?;
         check_field_groups(name, &manifest)?;
         check_field_types(name, &manifest)?;
+        check_implicit_groups(name, &manifest)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -307,6 +308,19 @@ fn check_field_groups(name: &str, manifest: &Manifest) -> Result<()> {
     for group in manifest.fields.keys() {
         if !manifest.groups.contains(group) {
             bail!("plugin {name:?} describes the config of group {group:?}, which it does not claim");
+        }
+    }
+    Ok(())
+}
+
+/// The same rule for `implicit_instance`: a body for a group this plugin does
+/// not claim would be synthesized in place of whichever plugin serves it.
+fn check_implicit_groups(name: &str, manifest: &Manifest) -> Result<()> {
+    for group in manifest.implicit_instance.keys() {
+        if !manifest.groups.contains(group) {
+            bail!(
+                "plugin {name:?} declares implicit_instance.{group}, but does not claim the group {group:?}"
+            );
         }
     }
     Ok(())
@@ -634,6 +648,22 @@ mod tests {
         )
         .expect("manifest parses");
         check_field_types("widget", &manifest).expect("string is the default, boolean is known");
+    }
+
+    #[test]
+    fn an_implicit_instance_of_a_group_it_does_not_claim_is_refused() {
+        // Same shadowing hazard as `fields`: the body would stand in for one
+        // belonging to whichever plugin serves that group.
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"name":"widget","version":"1.0.0","groups":["widget"],
+                "implicit_instance":{"browser":{}}}"#,
+        )
+        .expect("manifest parses");
+        let error = check_implicit_groups("widget", &manifest).expect_err("refused");
+        let text = format!("{error:#}");
+        assert!(text.contains("widget"), "{text}");
+        assert!(text.contains("browser"), "{text}");
+        assert!(text.contains("implicit_instance"), "{text}");
     }
 
     #[test]

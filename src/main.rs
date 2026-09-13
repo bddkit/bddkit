@@ -400,6 +400,7 @@ fn load_plugins(
         &cfg.plugin_instances,
         &groups_in_config,
         cfg.concurrency,
+        &cfg.effective_options,
     )?;
     // Only meaningful once a plugin is loaded. With none there are no resource
     // groups at all, so every top-level `default_*` key is the unknown key
@@ -414,7 +415,7 @@ fn load_plugins(
             defaults.insert(group.clone(), name);
         }
     }
-    plugins.set_defaults(defaults);
+    plugins.add_defaults(defaults);
     plugins
         .set_artifacts_root(std::env::temp_dir().join(format!("bddkit-{}", generator.run_id())));
     if plugins.is_empty() {
