@@ -1,5 +1,6 @@
 mod config;
 mod db;
+mod dirs;
 mod doctor;
 mod feature;
 mod hawk;
