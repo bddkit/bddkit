@@ -210,13 +210,16 @@ struct DoctorArgs {
     /// Machine-readable output
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 /// Unlike `run`, every outcome here is a report: a config that cannot be
 /// parsed is the most ordinary thing `doctor` has to say, not a reason to
 /// answer in a different currency. Hence 0/1 and no `?`.
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
-    let report = doctor::check(&args.config, args.env.as_deref(), args.live).await;
+    let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
+    let report = doctor::check(&args.config, args.env.as_deref(), args.live, &dir_env).await;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -450,7 +453,7 @@ fn load_plugins(
 }
 
 /// `--config cfg.yaml` has the parent `""`, which `std::path::absolute` rejects.
-fn config_dir(config_path: &std::path::Path) -> &std::path::Path {
+pub(crate) fn config_dir(config_path: &std::path::Path) -> &std::path::Path {
     match config_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => std::path::Path::new("."),

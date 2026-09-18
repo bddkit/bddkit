@@ -918,6 +918,40 @@ fn doctor_probes_a_declared_instance_only_under_live() {
 }
 
 #[test]
+fn doctor_bddkit_dir_lists_every_candidate_and_names_each_entry_layer() {
+    let dir = project(
+        "doctor-dirs",
+        "Feature: f\n  Scenario: s\n    Given I am not in debug mode\n",
+        ECHO_GROUP,
+    );
+    std::fs::write(
+        dir.join(".bddkit/plugins.local.yaml"),
+        "plugin:\n  - name: ghost\n    path: /nonexistent/libghost.so\n",
+    )
+    .expect("write local lock");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml", "--bddkit-dir", ".bddkit"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The override directory itself, found.
+    assert!(
+        stdout.contains("override") && stdout.contains("plugins.yaml"),
+        "{stdout}"
+    );
+    // The local file in the same directory, found.
+    assert!(
+        stdout.contains("override.local") && stdout.contains("plugins.local.yaml"),
+        "{stdout}"
+    );
+    // The committed echo plugin entry, resolved and present.
+    assert!(stdout.contains("echo"), "{stdout}");
+    // The local-only ghost entry, present in the listing but its .so is missing.
+    assert!(stdout.contains("ghost"), "{stdout}");
+}
+
+#[test]
 fn a_plugin_that_refuses_the_probe_fails_doctor_naming_the_instance() {
     // The fixture's probe answers with whatever `probe_error` names, which is
     // how a real plugin reports an endpoint that would not have it.

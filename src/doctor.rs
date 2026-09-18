@@ -3,7 +3,7 @@
 //! does not have: whether the resources the config names actually answer.
 
 use crate::steps::{BUILTIN_STEPS, StepTarget};
-use crate::{config, db, feature, http, unique, validate};
+use crate::{config, db, dirs, feature, http, unique, validate};
 use serde::Serialize;
 use std::path::Path;
 
@@ -132,7 +132,12 @@ impl Report {
 /// is a function `run` already calls, in the order `run` calls it in. If
 /// `doctor` and `run` ever disagree about whether a config is valid, that is a
 /// bug in `doctor`.
-pub async fn check(config_path: &Path, env: Option<&str>, live: bool) -> Report {
+pub async fn check(
+    config_path: &Path,
+    env: Option<&str>,
+    live: bool,
+    dir_env: &dirs::Env,
+) -> Report {
     let mut report = Report {
         config: config_path.display().to_string(),
         // A broken `.env` costs the header its answer, never the report: the
@@ -158,9 +163,58 @@ pub async fn check(config_path: &Path, env: Option<&str>, live: bool) -> Report 
         }
     };
 
+    // This walks the layered `.bddkit` directory chain and reads
+    // `plugins.yaml` a second time — `load_plugins` below reads the same
+    // chain again for real. That duplication is deliberate: this half is
+    // pure listing (no `dlopen`, nothing loaded, nothing run), so it is safe
+    // and cheap to redo, and `doctor` is never in a hot loop. It exists to
+    // answer a different question than the plugins stage below — what does
+    // the chain look like, layer by layer, not did loading actually work —
+    // and the two answers must stay legible as two rows, not merged into
+    // one.
+    //
+    // The trade-off: a bad `--bddkit-dir` or a missing `.so` shows up TWICE —
+    // once here (`directories`/`plugin_lock`) and once in the real `plugins`
+    // summary below, both naming the same root cause. That is accepted, not
+    // a bug. Suppressing the second row would mean threading this listing's
+    // result into `load_plugins`, entangling the pure-listing path with the
+    // real dlopen path for a cosmetic win only.
+    match dirs::layers(dirs::Os::current(), dir_env, crate::config_dir(config_path)) {
+        Ok(layers) => {
+            let candidates = dirs::candidates(&layers, "plugins");
+            for c in &candidates {
+                let status = if c.path.is_file() {
+                    Status::Ok
+                } else {
+                    Status::Skipped
+                };
+                report.push(
+                    "directories",
+                    Some(&c.layer),
+                    status,
+                    &c.path.display().to_string(),
+                );
+            }
+            if let Ok(entries) = crate::plugin::lock::load(&candidates) {
+                for entry in &entries {
+                    let status = if entry.path.is_file() {
+                        Status::Ok
+                    } else {
+                        Status::Failed
+                    };
+                    let detail = format!("{} — {}", entry.layer, entry.path.display());
+                    report.push("plugin_lock", Some(&entry.name), status, &detail);
+                }
+            }
+        }
+        Err(error) => {
+            report.push("directories", None, Status::Failed, &format!("{error:#}"));
+        }
+    }
+
     let generator = unique::Generator::new();
     let mut plugins_failed = false;
-    let plugins = match crate::load_plugins(config_path, &cfg, &generator, &crate::dirs::Env::from_process(None)) {
+    let plugins = match crate::load_plugins(config_path, &cfg, &generator, dir_env) {
         Ok(Some(plugins)) => {
             let detail = format!(
                 "{} step(s) over {} group(s)",
