@@ -391,16 +391,23 @@ plugin:
 - **`~` is not expanded.** A `~/plugins/libs3.so` reaches `dlopen` verbatim and fails with a confusing "no such file".
 - Extra keys are ignored, so a file written by a future `plugin install` (`version`, `source`, `sha256`, `target`) still loads here.
 
-Two files are read, and the project one overrides the user one **entry by entry, keyed by `name`**:
+The lock file is not a single fixed path — it comes from a chain of `.bddkit/` directories, one per layer, read lowest-precedence-first:
 
-| Scope | Location |
-|---|---|
-| project | `<directory of the --config file>/.bddkit/plugins.yaml` |
-| user | `$HOME/.config/bddkit/plugins.yaml` |
+| Layer | Linux | macOS | Windows |
+|---|---|---|---|
+| shared | `/etc/bddkit/` | `/Library/Application Support/bddkit/` | `%ProgramData%\bddkit\` |
+| user | `$XDG_CONFIG_HOME/bddkit/`, else `~/.config/bddkit/` | same as Linux | `%LOCALAPPDATA%\bddkit\` |
+| project | nearest `.bddkit/` walking up from `<directory of the --config file>` | same | same |
 
-The project lock is anchored to the config file's directory, not the working directory, so `bddkit run --config suites/cfg.yaml` finds the same plugins from anywhere. A missing lock file means no plugins, which is the normal case. An unset `HOME` means no user lock.
+Each layer is read as `plugins.yaml` then `plugins.local.yaml`, so up to six candidate files are checked per run. A later candidate overrides an earlier one **entry by entry, keyed by `name`** — a project lock can pin the version CI uses without losing what a developer has installed globally, and a `plugins.local.yaml` beside a committed `plugins.yaml` can point one entry at a local debug build without editing the committed file. Commit `plugins.yaml`; gitignore `plugins.local.yaml`.
 
-This file is **machine state and does not belong in the committed test config**: the config describes the system under test, a `.so` path describes one machine.
+The project layer is anchored to the config file's directory, not the working directory, so `bddkit run --config suites/cfg.yaml` finds the same plugins from anywhere. A missing candidate file means no plugins from that layer, which is the normal case — the shared and user layers are absent on most machines. An unset `$XDG_CONFIG_HOME`/`$HOME` (or their OS equivalents) means no user layer at all.
+
+`--bddkit-dir <dir>` (or `$BDDKIT_DIR`; the flag wins when both are given) replaces the whole chain with exactly that one directory — no shared, user or project layers are read. A directory that does not exist is a startup error naming the path.
+
+This chain is **machine state and does not belong in the committed test config**: the config describes the system under test, a `.so` path describes one machine.
+
+`bddkit doctor [--config cfg.yaml] [--bddkit-dir dir]` folds this into its existing pre-run report rather than printing it separately: a `directories` row per candidate file (which layer, whether it was found) and a `plugin_lock` row per resolved plugin entry (which layer it came from, whether the `.so`/`.dll` it names exists).
 
 Then declare instances in the ordinary config, under the group name:
 
