@@ -226,6 +226,14 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
 }
 
 #[derive(Args)]
+struct DirArgs {
+    /// Read `.bddkit/` files from this directory only, skipping the shared,
+    /// user and project layers (overrides $BDDKIT_DIR)
+    #[arg(long = "bddkit-dir")]
+    bddkit_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct RunArgs {
     /// Path to the YAML config
     #[arg(long)]
@@ -241,6 +249,8 @@ struct RunArgs {
     /// Stop dispatching new files after the first failure
     #[arg(long = "fail-fast")]
     fail_fast: bool,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 #[derive(Args)]
@@ -280,6 +290,8 @@ struct ListArgs {
     /// Description language (default: $BDDKIT_LANG, else en)
     #[arg(long)]
     lang: Option<String>,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 /// Bare `bddkit steps` is a signpost, not an error: it prints what the family
@@ -311,7 +323,8 @@ fn list_steps(args: ListArgs) -> Result<i32> {
     if let Some(path) = &args.config {
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
-        if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))? {
+        let env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
+        if let Some(plugins) = load_plugins(path, &cfg, &generator, &env)? {
             rows.extend(steps::help::plugin_rows(
                 plugins.described_steps(),
                 &plugins.group_names(),
@@ -470,7 +483,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let cfg = config::load(&cli.config, cli.env.as_deref())?;
     // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());
-    let plugins = load_plugins(&cli.config, &cfg, &generator, &dirs::Env::from_process(None))?;
+    let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
+    let plugins = load_plugins(&cli.config, &cfg, &generator, &env)?;
 
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
