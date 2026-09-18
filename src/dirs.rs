@@ -114,6 +114,33 @@ pub fn project(config_dir: &Path) -> Result<Option<PathBuf>> {
         .find(|dir| dir.is_dir()))
 }
 
+/// One file the chain reads, and the layer label `doctor` prints for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub layer: String,
+    pub path: PathBuf,
+}
+
+/// `<stem>.yaml` then `<stem>.local.yaml` in every layer, lowest precedence
+/// first — the same base/local pair as `.env` / `.env.local`.
+pub fn candidates(layers: &[Layer], stem: &str) -> Vec<Candidate> {
+    layers
+        .iter()
+        .flat_map(|layer| {
+            [
+                Candidate {
+                    layer: layer.name.to_string(),
+                    path: layer.dir.join(format!("{stem}.yaml")),
+                },
+                Candidate {
+                    layer: format!("{}.local", layer.name),
+                    path: layer.dir.join(format!("{stem}.local.yaml")),
+                },
+            ]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +252,26 @@ mod tests {
             .map(|dir| dir.join(".bddkit"))
             .find(|dir| dir.is_dir());
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn every_layer_yields_base_then_local() {
+        let layers = vec![
+            Layer { name: "user", dir: PathBuf::from("/u") },
+            Layer { name: "project", dir: PathBuf::from("/p/.bddkit") },
+        ];
+        let got: Vec<(String, PathBuf)> = candidates(&layers, "plugins")
+            .into_iter()
+            .map(|c| (c.layer, c.path))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("user".to_string(), PathBuf::from("/u/plugins.yaml")),
+                ("user.local".to_string(), PathBuf::from("/u/plugins.local.yaml")),
+                ("project".to_string(), PathBuf::from("/p/.bddkit/plugins.yaml")),
+                ("project.local".to_string(), PathBuf::from("/p/.bddkit/plugins.local.yaml")),
+            ]
+        );
     }
 }
