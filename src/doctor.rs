@@ -160,7 +160,7 @@ pub async fn check(config_path: &Path, env: Option<&str>, live: bool) -> Report 
 
     let generator = unique::Generator::new();
     let mut plugins_failed = false;
-    let plugins = match crate::load_plugins(config_path, &cfg, &generator) {
+    let plugins = match crate::load_plugins(config_path, &cfg, &generator, &crate::dirs::Env::from_process(None)) {
         Ok(Some(plugins)) => {
             let detail = format!(
                 "{} step(s) over {} group(s)",
