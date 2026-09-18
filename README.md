@@ -268,7 +268,15 @@ When I upload file "report.pdf"
 
 The selection resets to `default_<group>` at every scenario boundary, exactly like the current API and the current connection. With one instance in a group its `default_<group>` is inferred; with several it must be spelled out.
 
-Which plugins are installed is **machine state, not test config**. It lives in `.bddkit/plugins.yaml` next to your config file — a list of `{name, path}` — and it does not belong in the repository with the suite: the config describes the system under test, a path to a `.so` describes one laptop or one CI runner.
+Which plugins are installed is **machine state, not test config**, and does not belong in the repository with the suite: the config describes the system under test, a path to a `.so` describes one laptop or one CI runner. It comes from a chain of `.bddkit/` directories, read layer by layer:
+
+| Layer | Linux | macOS | Windows |
+|---|---|---|---|
+| shared | `/etc/bddkit/` | `/Library/Application Support/bddkit/` | `%ProgramData%\bddkit\` |
+| user | `$XDG_CONFIG_HOME/bddkit/` or `~/.config/bddkit/` | same | `%LOCALAPPDATA%\bddkit\` |
+| project | nearest `.bddkit/` walking up from the config file's directory | same | same |
+
+Each directory is read as `plugins.yaml` then `plugins.local.yaml`; a later file overrides an earlier one **entry by entry, keyed by plugin `name`** — a project lock can pin the plugin CI uses without losing what's installed globally, and `plugins.local.yaml` points a committed entry at a local build. Commit `plugins.yaml`, gitignore `plugins.local.yaml`.
 
 ```yaml
 # .bddkit/plugins.yaml
@@ -276,6 +284,8 @@ plugin:
   - name: s3
     path: /opt/bddkit/libbddkit_s3.so
 ```
+
+`--bddkit-dir <dir>` (or `$BDDKIT_DIR`, the flag wins) reads exactly that one directory instead of the chain; a directory that does not exist is an error. `bddkit doctor` prints the resolved chain, every candidate file and whether it was found, and which layer each configured plugin came from.
 
 A plugin runs inside the bddkit process with full privileges and there is no sandbox — installing one is the same trust decision as installing any other binary.
 
@@ -323,7 +333,7 @@ reaching a second database. The seams that made that possible were there from
 the start: options cascade per instance, `I use "<name>" <kind>` is one step
 shape, and dispatch returns `passed | not yet | fatal` so eventual assertions
 work without knowing what they retry. What is still missing is the
-`bddkit plugin install` side of it — today `.bddkit/plugins.yaml` is written
+`bddkit plugin install` side of it — today `plugins.yaml` is written
 by hand.
 
 ## Development

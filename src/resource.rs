@@ -646,7 +646,7 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
             let plugins = match config::load_str(&raw, config_dir, input.env) {
                 Ok(cfg) => {
                     let generator = crate::unique::Generator::new();
-                    match crate::load_plugins(input.config, &cfg, &generator) {
+                    match crate::load_plugins(input.config, &cfg, &generator, &crate::dirs::Env::from_process(None)) {
                         Ok(plugins) => plugins,
                         Err(error) => return refuse(&format!("{error:#}"), None),
                     }
@@ -770,7 +770,7 @@ async fn check_new_resource(
             // `validate_config` for every declared instance, so loading the
             // prospective config is the static check.
             let generator = crate::unique::Generator::new();
-            let plugins = crate::load_plugins(config_path, cfg, &generator)
+            let plugins = crate::load_plugins(config_path, cfg, &generator, &crate::dirs::Env::from_process(None))
                 .map_err(|error| format!("{error:#}"))?;
             let Some(plugins) = plugins else {
                 return Err(format!("no installed plugin serves the group {group:?}"));

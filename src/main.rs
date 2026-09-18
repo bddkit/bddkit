@@ -1,5 +1,6 @@
 mod config;
 mod db;
+mod dirs;
 mod doctor;
 mod feature;
 mod hawk;
@@ -169,7 +170,7 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
     if let Some(path) = &args.config {
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
-        if let Some(plugins) = load_plugins(path, &cfg, &generator)? {
+        if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))? {
             kinds.extend(resource::plugin_kinds(&plugins));
         }
     }
@@ -209,19 +210,30 @@ struct DoctorArgs {
     /// Machine-readable output
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 /// Unlike `run`, every outcome here is a report: a config that cannot be
 /// parsed is the most ordinary thing `doctor` has to say, not a reason to
 /// answer in a different currency. Hence 0/1 and no `?`.
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
-    let report = doctor::check(&args.config, args.env.as_deref(), args.live).await;
+    let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
+    let report = doctor::check(&args.config, args.env.as_deref(), args.live, &dir_env).await;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", report.render());
     }
     Ok(report.exit_code())
+}
+
+#[derive(Args)]
+struct DirArgs {
+    /// Read `.bddkit/` files from this directory only, skipping the shared,
+    /// user and project layers (overrides $BDDKIT_DIR)
+    #[arg(long = "bddkit-dir")]
+    bddkit_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -240,6 +252,8 @@ struct RunArgs {
     /// Stop dispatching new files after the first failure
     #[arg(long = "fail-fast")]
     fail_fast: bool,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 #[derive(Args)]
@@ -279,6 +293,8 @@ struct ListArgs {
     /// Description language (default: $BDDKIT_LANG, else en)
     #[arg(long)]
     lang: Option<String>,
+    #[command(flatten)]
+    dir: DirArgs,
 }
 
 /// Bare `bddkit steps` is a signpost, not an error: it prints what the family
@@ -310,7 +326,8 @@ fn list_steps(args: ListArgs) -> Result<i32> {
     if let Some(path) = &args.config {
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
-        if let Some(plugins) = load_plugins(path, &cfg, &generator)? {
+        let env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
+        if let Some(plugins) = load_plugins(path, &cfg, &generator, &env)? {
             rows.extend(steps::help::plugin_rows(
                 plugins.described_steps(),
                 &plugins.group_names(),
@@ -387,16 +404,14 @@ fn load_plugins(
     config_path: &std::path::Path,
     cfg: &config::Config,
     generator: &unique::Generator,
+    env: &dirs::Env,
 ) -> Result<Option<Arc<plugin::Plugins>>> {
     let groups_in_config: Vec<String> = cfg.group_names().cloned().collect();
+    // The same anchor `config::load` uses for the `.env` layers: the lock
+    // belongs to the suite, not to whatever directory the run started in.
+    let layers = dirs::layers(dirs::Os::current(), env, config_dir(config_path))?;
     let mut plugins = plugin::Plugins::load(
-        // The same anchor `config::load` uses for the `.env` layers: the lock
-        // belongs to the suite, not to whatever directory the run started in.
-        plugin::lock::load_default(
-            config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
-        )?,
+        plugin::lock::load(&dirs::candidates(&layers, "plugins"))?,
         &cfg.plugin_instances,
         &groups_in_config,
         cfg.concurrency,
@@ -437,6 +452,14 @@ fn load_plugins(
     Ok(Some(plugins))
 }
 
+/// `--config cfg.yaml` has the parent `""`, which `std::path::absolute` rejects.
+pub(crate) fn config_dir(config_path: &std::path::Path) -> &std::path::Path {
+    match config_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => std::path::Path::new("."),
+    }
+}
+
 /// The one piece of startup `run` and `doctor` genuinely share.
 ///
 /// `with_macros_and_plugins`, not `with_macros` plus a registration loop:
@@ -463,7 +486,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let cfg = config::load(&cli.config, cli.env.as_deref())?;
     // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());
-    let plugins = load_plugins(&cli.config, &cfg, &generator)?;
+    let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
+    let plugins = load_plugins(&cli.config, &cfg, &generator, &env)?;
 
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
