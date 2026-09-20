@@ -3,7 +3,7 @@ use crate::options::Options;
 use crate::polling::{AttemptError, Polling};
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
 use crate::report::render_file;
-use crate::report::{FileResult, ScenarioResult};
+use crate::report::{FileResult, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepKind, StepTarget, dispatch};
 use crate::unique::Generator;
 use crate::vars::{VarStack, interpolate};
@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 fn prepare(
     step: &ExpandedStep,
@@ -116,6 +117,7 @@ fn execute_step<'a>(
 
                 for body_step in &definition.body {
                     let expanded = ExpandedStep {
+                        keyword: String::new(),
                         text: body_step.text.clone(),
                         line: step.line,
                         docstring: body_step.docstring.clone(),
@@ -332,17 +334,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         .feature
         .background
         .as_ref()
-        .map(|bg| {
-            bg.steps
-                .iter()
-                .map(|s| ExpandedStep {
-                    text: s.value.clone(),
-                    line: s.position.line,
-                    docstring: s.docstring.clone(),
-                    table: s.table.as_ref().map(|t| t.rows.clone()),
-                })
-                .collect()
-        })
+        .map(|bg| bg.steps.iter().map(crate::feature::to_step).collect())
         .unwrap_or_default();
 
     // The generator handle is cloned once: inside the loop `&world.generator`
@@ -387,23 +379,39 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 }
             };
 
+            let started = Instant::now();
+            let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
             for step in background.iter().chain(ex.steps.iter()) {
-                if failure.is_some() {
-                    break;
-                }
-                if let Err(e) = execute_step(&mut world, &ctx.reg, step, &generator, 0).await {
+                let step_started = Instant::now();
+                // Everything after a failure is skipped, not run: the report
+                // lists every step of the scenario either way.
+                let status = if failure.is_some() {
+                    StepStatus::Skipped
+                } else if let Err(e) = execute_step(&mut world, &ctx.reg, step, &generator, 0).await
+                {
                     let mut msg = format!("  {}\n{e}", step.text);
                     if let Some(ex) = world.http.last() {
                         msg.push_str(&format!("\n\n{ex}"));
                     }
                     failure = Some(msg);
-                    break;
-                }
+                    StepStatus::Failed
+                } else {
+                    StepStatus::Passed
+                };
+                steps.push(StepResult {
+                    keyword: step.keyword.clone(),
+                    text: step.text.clone(),
+                    line: step.line,
+                    status,
+                    duration: step_started.elapsed(),
+                });
             }
             scenarios.push(ScenarioResult {
                 name: ex.name,
                 line: ex.line,
                 failure,
+                steps,
+                duration: started.elapsed(),
             });
         }
     }
@@ -419,6 +427,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
 
     FileResult {
         path: lf.path.clone(),
+        name: lf.feature.name.clone(),
         scenarios,
     }
 }
@@ -432,13 +441,16 @@ fn worker_count(concurrency: usize, units: usize) -> usize {
 /// A panic inside a file does not kill the run: the file runs as a separate
 /// task, and its failure turns into that file's failure (spec §10). The
 /// panic text itself is printed to stderr by the standard panic hook.
-fn panicked_file(path: std::path::PathBuf, error: &tokio::task::JoinError) -> FileResult {
+fn panicked_file(lf: &LoadedFeature, error: &tokio::task::JoinError) -> FileResult {
     FileResult {
-        path,
+        path: lf.path.clone(),
+        name: lf.feature.name.clone(),
         scenarios: vec![ScenarioResult {
             name: "file run aborted".to_string(),
             line: 0,
             failure: Some(format!("panic while running the file: {error}")),
+            steps: Vec::new(),
+            duration: std::time::Duration::ZERO,
         }],
     }
 }
@@ -535,11 +547,10 @@ pub async fn run_all(
                     if ctx.stopped() {
                         break;
                     }
-                    let path = lf.path.clone();
                     let task = tokio::spawn(run_file(lf.clone(), ctx.clone()));
                     let result = match task.await {
                         Ok(r) => r,
-                        Err(error) => panicked_file(path, &error),
+                        Err(error) => panicked_file(lf, &error),
                     };
                     if result.failed() > 0 {
                         ctx.request_stop();
@@ -653,6 +664,7 @@ mod tests {
 
     async fn run_step(world: &mut World, reg: &Registry, text: &str) -> Result<(), String> {
         let step = ExpandedStep {
+            keyword: String::new(),
             text: text.to_string(),
             line: 1,
             docstring: None,
@@ -1290,7 +1302,7 @@ Feature: eventual assertion
         use std::path::PathBuf;
         use std::sync::Arc;
 
-        fn file(path: &str, tags: &str) -> Arc<LoadedFeature> {
+        pub(super) fn file(path: &str, tags: &str) -> Arc<LoadedFeature> {
             let src =
                 format!("{tags}Feature: f\n  Scenario: s\n    Then the response code is 200\n");
             Arc::new(LoadedFeature {
@@ -1416,7 +1428,7 @@ Feature: eventual assertion
         let error = tokio::spawn(async { panic!("deliberate") })
             .await
             .expect_err("the task must panic");
-        let result = panicked_file(PathBuf::from("bad.feature"), &error);
+        let result = panicked_file(&chains::file("bad.feature", ""), &error);
         assert_eq!(result.failed(), 1);
         assert!(
             result.scenarios[0]

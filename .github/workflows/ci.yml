@@ -18,6 +18,11 @@ jobs:
   test:
     name: test & clippy
     runs-on: ubuntu-latest
+    # `checks: write` is for the example report below, which is published as a
+    # Check Run; the rest is the default read-only token.
+    permissions:
+      contents: read
+      checks: write
 
     services:
       postgres:
@@ -123,12 +128,31 @@ jobs:
       - name: Load the example database schema
         run: psql -v ON_ERROR_STOP=1 "$BDDKIT_TEST_DSN" -f examples/db/init.sql
 
+      # Every suite runs whatever the previous one did, so a red run still
+      # produces all four reports — `set -e` would stop at the first exit 1 and
+      # the report below would be missing the suites that never ran. The exit
+      # code is the worst one seen; a report the run could not write is 2 and
+      # fails the job like anything else. The reports live outside the
+      # checkout: `cargo publish --dry-run` below refuses a dirty working tree.
       - name: Example suites
         run: |
-          cargo run --locked --quiet -- run --config examples/api.yaml
-          cargo run --locked --quiet -- run --config examples/db.yaml
-          cargo run --locked --quiet -- run --config examples/db-mysql.yaml
-          cargo run --locked --quiet -- run --config examples/db-mariadb.yaml
+          code=0
+          for suite in api db db-mysql db-mariadb; do
+            cargo run --locked --quiet -- run --config examples/$suite.yaml --junit "$RUNNER_TEMP/reports/$suite.xml" || code=$(( $? > code ? $? : code ))
+          done
+          exit $code
+
+      # The JUnit files above, rendered on the job's summary page and, for a
+      # PR, as annotations at the failing scenario — which is also the live
+      # check that the XML `run --junit` writes is what GitHub reads.
+      # `always()`: a red run is exactly when the report is wanted.
+      - name: Example report
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: Example suites
+          path: ${{ runner.temp }}/reports/*.xml
+          reporter: java-junit
 
       - name: Package check
         run: cargo publish --dry-run --locked

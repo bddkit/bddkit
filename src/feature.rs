@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ExpandedStep {
+    /// `Given `, `When `, `And ` — as written, trailing space included, which
+    /// is how the Cucumber JSON report expects it.
+    pub keyword: String,
     pub text: String,
     pub line: usize,
     pub docstring: Option<String>,
@@ -137,8 +140,9 @@ impl LoadedFeature {
     }
 }
 
-fn to_step(s: &gherkin::Step) -> ExpandedStep {
+pub fn to_step(s: &gherkin::Step) -> ExpandedStep {
     ExpandedStep {
+        keyword: s.keyword.clone(),
         text: s.value.clone(),
         line: s.position.line,
         docstring: s.docstring.clone(),
@@ -198,6 +202,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
             let steps = base
                 .iter()
                 .map(|s| ExpandedStep {
+                    keyword: s.keyword.clone(),
                     text: substitute(&s.text, keys, row),
                     line: s.line,
                     docstring: s.docstring.as_ref().map(|d| substitute(d, keys, row)),

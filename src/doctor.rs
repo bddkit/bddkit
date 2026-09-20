@@ -137,6 +137,7 @@ pub async fn check(
     env: Option<&str>,
     live: bool,
     dir_env: &dirs::Env,
+    report_paths: &[&Path],
 ) -> Report {
     let mut report = Report {
         config: config_path.display().to_string(),
@@ -146,6 +147,22 @@ pub async fn check(
         live,
         checks: Vec::new(),
     };
+
+    // First, as in `run`: the same `--junit`/`--cucumber-json` a run takes,
+    // and the same create-or-truncate it does before reading the config.
+    // Without them nothing is touched.
+    for path in report_paths {
+        let target = path.display().to_string();
+        match crate::report::prepare(path) {
+            Ok(()) => report.push("reports", Some(&target), Status::Ok, "created, empty"),
+            Err(error) => report.push(
+                "reports",
+                Some(&target),
+                Status::Failed,
+                &format!("{error:#}"),
+            ),
+        }
+    }
 
     let cfg = match config::load(config_path, env) {
         Ok(cfg) => {
