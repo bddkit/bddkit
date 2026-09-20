@@ -85,7 +85,15 @@ docker compose up -d db
 `examples/README.md` covers both suites, what each feature file demonstrates,
 and how to narrow a run to one file or one tag.
 
-`bddkit run` flags: `--config` (required), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast`. Exit codes: `0` passed, `1` a scenario failed, `2` the run never started.
+`bddkit run` flags: `--config` (required), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports. Exit codes: `0` passed, `1` a scenario failed, `2` the run never started.
+
+### Reports for CI
+
+`--junit reports/junit.xml` writes JUnit XML — one `<testsuite>` per feature file, one `<testcase>` per scenario, the steps with their status and timing in `<system-out>`, which is what Jenkins, GitLab and GitHub test summaries read. `--cucumber-json reports/cucumber.json` writes Cucumber JSON in the shape cucumber-html-reporter and Allure accept: features with `elements`, elements with `steps`, each step with `keyword`, `name`, `line` and a `result` of `status`, `duration` (nanoseconds) and `error_message`. Both flags are optional and independent, and both are properties of the run, not of the suite — the config never learns them. Console output is unchanged.
+
+Step text is the raw feature text, never interpolated, so two runs' reports differ only in results and timings. A failure carries the same text the console prints — the step error plus the HTTP exchange — and the XML stays well-formed whatever that text contains (a `]]>`, a control character, the NUL bytes of the `<<null>>` sentinel become U+FFFD). Scenarios a `--tag` filtered out and files never started under `--fail-fast` are absent, not skipped; the totals count what ran. A macro call is one step. A file that panicked appears as its one synthetic failed scenario.
+
+**Every report path is created — truncated — before the config is read**, its directory made if missing; a path that cannot be prepared is exit 2 before any request. A run that dies on its config therefore leaves an empty file, which a parser rejects loudly, rather than yesterday's green one. A report that cannot be written after the run is also exit 2 — the one exception to "2 = the run never started", because a report silently lost behind a green code is the worse outcome. `bddkit doctor` accepts the same flags and makes the same check (a `reports` row per path); without them it touches nothing.
 
 ## Checking a suite before running it
 
@@ -114,7 +122,7 @@ static checks only — pass --live to also probe the resources
 
 A bare `doctor` opens no socket: it is fast, offline and deterministic, so it works on a train and a `base_url` pointing at a closed port is not a finding. `--live` adds the one class of check a run does not have — whether the resources the config names actually answer: a `GET` at each `base_url` (any status means reachable), a real connection to each database, and each declared plugin instance asked to probe its own resource, every one named individually so one dead DSN says which. A plugin that exports no probe is reported as skipped, never as a failure — a check that never ran has proved nothing.
 
-`bddkit doctor` flags: `--config` (required), `--env` to pick a `.env.<name>` layer, `--live`, `--json`. Exit codes: `0` clean, `1` anything was reported — never `2`, so a script's rule is simply "0 or fix something".
+`bddkit doctor` flags: `--config` (required), `--env` to pick a `.env.<name>` layer, `--live`, `--json`, and `run`'s `--junit`/`--cucumber-json` to check that a report path can be written. Exit codes: `0` clean, `1` anything was reported — never `2`, so a script's rule is simply "0 or fix something".
 
 The header states which `APP_ENV` layer was selected, which is the first thing that is wrong when a suite passes locally and fails in CI. `--json` emits the same report machine-readably, one object per check with a `probe` flag separating a resource's static row from its live one.
 

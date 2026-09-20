@@ -196,7 +196,9 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
 #[command(after_help = "Examples:
   bddkit doctor --config suite.yaml          every static check, no socket opened
   bddkit doctor --config suite.yaml --live   also probe every API and database
-  bddkit doctor --config suite.yaml --json   the same report, machine-readable")]
+  bddkit doctor --config suite.yaml --json   the same report, machine-readable
+  bddkit doctor --config suite.yaml --junit reports/junit.xml
+                                             also check that run's report path can be written")]
 struct DoctorArgs {
     /// Path to the YAML config
     #[arg(long)]
@@ -212,6 +214,8 @@ struct DoctorArgs {
     json: bool,
     #[command(flatten)]
     dir: DirArgs,
+    #[command(flatten)]
+    reports: ReportArgs,
 }
 
 /// Unlike `run`, every outcome here is a report: a config that cannot be
@@ -219,7 +223,14 @@ struct DoctorArgs {
 /// answer in a different currency. Hence 0/1 and no `?`.
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
     let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
-    let report = doctor::check(&args.config, args.env.as_deref(), args.live, &dir_env).await;
+    let report = doctor::check(
+        &args.config,
+        args.env.as_deref(),
+        args.live,
+        &dir_env,
+        &args.reports.paths(),
+    )
+    .await;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -254,6 +265,40 @@ struct RunArgs {
     fail_fast: bool,
     #[command(flatten)]
     dir: DirArgs,
+    #[command(flatten)]
+    reports: ReportArgs,
+}
+
+/// A report is a property of the run, not of the suite, so these live on the
+/// command line and the config never learns them.
+#[derive(Args)]
+struct ReportArgs {
+    /// Write a JUnit XML report here (one testsuite per feature file)
+    #[arg(long)]
+    junit: Option<PathBuf>,
+    /// Write a Cucumber JSON report here
+    #[arg(long = "cucumber-json")]
+    cucumber_json: Option<PathBuf>,
+}
+
+impl ReportArgs {
+    fn paths(&self) -> Vec<&std::path::Path> {
+        [&self.junit, &self.cucumber_json]
+            .into_iter()
+            .flatten()
+            .map(PathBuf::as_path)
+            .collect()
+    }
+
+    fn write(&self, results: &[report::FileResult]) -> Result<()> {
+        if let Some(path) = &self.junit {
+            report::write_junit(results, path)?;
+        }
+        if let Some(path) = &self.cucumber_json {
+            report::write_cucumber_json(results, path)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Args)]
@@ -483,6 +528,7 @@ fn build_registry(
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
+    cli.reports.paths().into_iter().try_for_each(report::prepare)?;
     let cfg = config::load(&cli.config, cli.env.as_deref())?;
     // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());
@@ -600,5 +646,12 @@ async fn run(cli: RunArgs) -> Result<i32> {
         plugins.shutdown();
     }
 
-    Ok(report::print_summary(&results, generator.run_id()))
+    let code = report::print_summary(&results, generator.run_id());
+    // The one deliberate exception to "2 = before the first request": a
+    // report silently lost behind a green code is the worse outcome.
+    if let Err(error) = cli.reports.write(&results) {
+        eprintln!("error: {error:#}");
+        return Ok(2);
+    }
+    Ok(code)
 }
