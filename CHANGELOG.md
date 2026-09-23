@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/bddkit/bddkit/compare/v0.2.0...v0.2.1) - 2026-09-20
+
+### Added
+
+- run --junit / --cucumber-json write machine-readable reports
+- bddkit doctor honors --bddkit-dir and reports the lock chain
+- --bddkit-dir / BDDKIT_DIR override for the lock chain
+- read plugins.yaml through the layered directory chain
+- base/local candidate files per bddkit layer
+- layered .bddkit directory resolver
+- *(doctor)* report a step whose resource group declares nothing (issue #42)
+- implicit_instance in the plugin manifest (issue #37)
+- assertions on a raw (non-JSON) response body (issue #4)
+- JSON absence assertions (issue #22)
+
+### Other
+
+- the .bddkit layer chain, --bddkit-dir, plugins.local.yaml, and doctor's chain report
+
 ## [0.2.0](https://github.com/sergeym/bddkit/compare/v0.1.1...v0.2.0) - 2026-09-06
 
 ### Added
