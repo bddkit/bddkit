@@ -110,7 +110,8 @@ impl Db {
         let mut connections = HashMap::new();
         for (name, c) in conns {
             let opts = AnyPoolOptions::new().max_connections(max.max(1));
-            let family = family_for_scheme(&c.dsn).map_err(|e| format!("connection {name}: {e}"))?;
+            let family =
+                family_for_scheme(&c.dsn).map_err(|e| format!("connection {name}: {e}"))?;
             let stmts = family
                 .session_setup(&c.search_path)
                 .map_err(|e| format!("connection {name}: {e}"))?;

@@ -192,7 +192,10 @@ fn plugin_diagnostics_appear_in_the_failure_dump() {
     let out = run(&dir);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(stdout.contains("the echo step was asked to fail"), "{stdout}");
+    assert!(
+        stdout.contains("the echo step was asked to fail"),
+        "{stdout}"
+    );
     assert!(stdout.contains("echo state"), "{stdout}");
     assert!(stdout.contains("prefix=p-"), "{stdout}");
 }
@@ -297,7 +300,10 @@ fn a_failed_reset_scenario_fails_the_scenario() {
     let out = run(&dir);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(stdout.contains("the echo instance refuses to reset"), "{stdout}");
+    assert!(
+        stdout.contains("the echo instance refuses to reset"),
+        "{stdout}"
+    );
     // Exactly the second scenario failed — not both, which Some(1) alone
     // would equally allow.
     assert!(stdout.contains("failed: 1"), "{stdout}");
@@ -375,7 +381,6 @@ fn a_null_sentinel_argument_crosses_the_boundary_intact() {
     );
 }
 
-
 /// The Critical of the final branch review. A `shared` instance is one per run,
 /// so `Plugins::reset_scenario` at one worker's scenario boundary reaches every
 /// instance — including one another worker is mid-scenario with. Reproduced
@@ -411,7 +416,10 @@ fn a_plugin_with_a_per_scenario_reset_is_refused_under_parallelism() {
     assert!(stderr.contains("concurrency: 1"), "{stderr}");
     // The other half of the message, and the half this milestone made true:
     // the mode that fixes this is named, not merely hinted at.
-    assert!(stderr.contains("per_worker"), "the remedy is named: {stderr}");
+    assert!(
+        stderr.contains("per_worker"),
+        "the remedy is named: {stderr}"
+    );
     assert!(stderr.contains("run not started"), "{stderr}");
 }
 
@@ -538,12 +546,12 @@ fn a_per_worker_instance_is_dropped_when_its_file_ends() {
             // Its plugin step runs first, so this file owns an instance too —
             // one it holds for the whole sleep, which is what keeps the run
             // alive long enough for the other file's drop to be visible.
-            (
-                "b.feature",
-                holder.as_str(),
-            ),
+            ("b.feature", holder.as_str()),
         ],
-        &format!("  worker:\n    main:\n      drop_log: \"{}\"\n", log.display()),
+        &format!(
+            "  worker:\n    main:\n      drop_log: \"{}\"\n",
+            log.display()
+        ),
         2,
     );
 
@@ -585,7 +593,10 @@ fn a_per_worker_instance_is_dropped_when_its_file_ends() {
     // (`Plugins::call_step`), so without this the test could go green for the
     // opposite reason: nothing worked, and the cleanup path wrote the record.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("FAIL"), "the run must be healthy\n{stderr}");
+    assert!(
+        !stderr.contains("FAIL"),
+        "the run must be healthy\n{stderr}"
+    );
     assert_eq!(
         recorded, 1,
         "the finished file's instance must be dropped while the other file still holds its own\n--- stderr ---\n{stderr}"
@@ -871,7 +882,15 @@ fn a_declared_boolean_field_is_written_as_a_boolean() {
     // the value takes, never that any text will do.
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args([
-            "resource", "add", "echo", "third", "--config", "cfg.yaml", "--prefix", "q-", "--loud",
+            "resource",
+            "add",
+            "echo",
+            "third",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--loud",
             "sometimes",
         ])
         .current_dir(&dir)
@@ -1039,7 +1058,10 @@ fn a_per_worker_plugin_runs_zero_config_on_its_implicit_instance() {
 #[test]
 fn a_declared_section_disables_the_implicit_instance() {
     let feature = "Feature: f\n  Scenario: s\n    When I use \"default\" echo\n";
-    for (name, tail) in [("implicit-off", ECHO_GROUP), ("implicit-off-empty", "  echo: {}\n")] {
+    for (name, tail) in [
+        ("implicit-off", ECHO_GROUP),
+        ("implicit-off-empty", "  echo: {}\n"),
+    ] {
         let dir = project(name, feature, tail);
         let out = run(&dir);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1060,7 +1082,10 @@ fn a_declared_section_disables_the_implicit_instance() {
 fn an_implicit_instance_the_plugin_rejects_exits_2_before_the_first_request() {
     let dir = worker_project(
         "implicit-rejected",
-        &[("a.feature", "Feature: a\n  Scenario: s\n    When I count in the worker as \"n\"\n")],
+        &[(
+            "a.feature",
+            "Feature: a\n  Scenario: s\n    When I count in the worker as \"n\"\n",
+        )],
         "",
         1,
     );
@@ -1141,7 +1166,12 @@ fn the_bddkit_dir_override_reads_only_that_directory() {
         .current_dir(&dir)
         .output()
         .expect("run bddkit");
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(String::from_utf8_lossy(&out.stderr).contains("echo"));
 
     // Variable: same effect.
@@ -1151,7 +1181,12 @@ fn the_bddkit_dir_override_reads_only_that_directory() {
         .current_dir(&dir)
         .output()
         .expect("run bddkit");
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // Flag over variable: the variable names the empty directory, the flag the
     // real one, and the run passes.
@@ -1161,7 +1196,11 @@ fn the_bddkit_dir_override_reads_only_that_directory() {
         .current_dir(&dir)
         .output()
         .expect("run bddkit");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -1172,13 +1211,22 @@ fn a_missing_bddkit_dir_is_an_error_not_an_empty_plugin_list() {
         "",
     );
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", "cfg.yaml", "--bddkit-dir", "does-not-exist"])
+        .args([
+            "run",
+            "--config",
+            "cfg.yaml",
+            "--bddkit-dir",
+            "does-not-exist",
+        ])
         .current_dir(&dir)
         .output()
         .expect("run bddkit");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("does-not-exist") && stderr.contains("does not exist"), "{stderr}");
+    assert!(
+        stderr.contains("does-not-exist") && stderr.contains("does not exist"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -1190,15 +1238,22 @@ fn plugins_local_yaml_overrides_the_committed_entry() {
     );
     // The committed file points at a vendored path that does not exist here;
     // the developer's local file points at the real build.
-    std::fs::rename(dir.join(".bddkit/plugins.yaml"), dir.join(".bddkit/plugins.local.yaml"))
-        .expect("rename to local");
+    std::fs::rename(
+        dir.join(".bddkit/plugins.yaml"),
+        dir.join(".bddkit/plugins.local.yaml"),
+    )
+    .expect("rename to local");
     std::fs::write(
         dir.join(".bddkit/plugins.yaml"),
         "plugin:\n  - name: echo\n    path: vendor/libecho_plugin.so\n",
     )
     .expect("write committed lock");
     let out = run(&dir);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -1218,5 +1273,9 @@ fn the_project_layer_is_found_walking_up_from_the_config() {
         .current_dir(&suite)
         .output()
         .expect("run bddkit");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

@@ -133,7 +133,11 @@ mod tests {
     #[test]
     fn two_generators_do_not_collide() {
         let (g1, g2) = (Generator::new(), Generator::new());
-        assert_ne!(g1.run_id(), g2.run_id(), "different runs must have different prefixes");
+        assert_ne!(
+            g1.run_id(),
+            g2.run_id(),
+            "different runs must have different prefixes"
+        );
     }
 
     #[test]

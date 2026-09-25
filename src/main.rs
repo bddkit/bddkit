@@ -170,7 +170,8 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
     if let Some(path) = &args.config {
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
-        if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))? {
+        if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))?
+        {
             kinds.extend(resource::plugin_kinds(&plugins));
         }
     }
@@ -476,8 +477,7 @@ fn load_plugins(
         }
     }
     plugins.add_defaults(defaults);
-    plugins
-        .set_artifacts_root(std::env::temp_dir().join(format!("bddkit-{}", generator.run_id())));
+    plugins.set_artifacts_root(std::env::temp_dir().join(format!("bddkit-{}", generator.run_id())));
     if plugins.is_empty() {
         return Ok(None);
     }
@@ -528,7 +528,10 @@ fn build_registry(
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
-    cli.reports.paths().into_iter().try_for_each(report::prepare)?;
+    cli.reports
+        .paths()
+        .into_iter()
+        .try_for_each(report::prepare)?;
     let cfg = config::load(&cli.config, cli.env.as_deref())?;
     // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());

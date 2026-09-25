@@ -343,8 +343,8 @@ pub fn splice(
 ) -> Result<String, String> {
     // A multi-document file fails here — `from_str` refuses more than one
     // document — which is one of the cases that must write nothing.
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(raw).map_err(|error| format!("the config does not parse: {error}"))?;
+    let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw)
+        .map_err(|error| format!("the config does not parse: {error}"))?;
     let resources = doc.get("resources").ok_or_else(|| {
         format!(
             "the config has no `resources:` key: add one as a block — a `resources:` line with `{group}:` under it — and the resource can be added there"
@@ -369,7 +369,11 @@ pub fn splice(
         find_anchor(raw, None)?
     };
     let step = indent_step(raw, &anchor);
-    let eol = if anchor.line.ends_with("\r\n") { "\r\n" } else { "\n" };
+    let eol = if anchor.line.ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let block = if group_exists {
         render_block(None, name, body, anchor.indent + step, step, eol)
     } else {
@@ -646,7 +650,12 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
             let plugins = match config::load_str(&raw, config_dir, input.env) {
                 Ok(cfg) => {
                     let generator = crate::unique::Generator::new();
-                    match crate::load_plugins(input.config, &cfg, &generator, &crate::dirs::Env::from_process(None)) {
+                    match crate::load_plugins(
+                        input.config,
+                        &cfg,
+                        &generator,
+                        &crate::dirs::Env::from_process(None),
+                    ) {
                         Ok(plugins) => plugins,
                         Err(error) => return refuse(&format!("{error:#}"), None),
                     }
@@ -684,7 +693,11 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
     // block is the whole value of the failure path.
     let has_group = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&raw)
         .ok()
-        .and_then(|doc| doc.get("resources").and_then(|r| r.get(input.group)).cloned())
+        .and_then(|doc| {
+            doc.get("resources")
+                .and_then(|r| r.get(input.group))
+                .cloned()
+        })
         .is_some();
     let group_key = (!has_group).then_some(input.group);
     let block = render_block(group_key, input.name, &body, 0, 2, "\n");
@@ -752,7 +765,10 @@ async fn check_new_resource(
             if input.no_check {
                 return Ok(());
             }
-            println!("{}", crate::doctor::probe_api(&resource, &api.base_url).await?);
+            println!(
+                "{}",
+                crate::doctor::probe_api(&resource, &api.base_url).await?
+            );
         }
         "db" => {
             let connection = under_the_name(&cfg.resources.db, input)?;
@@ -770,8 +786,13 @@ async fn check_new_resource(
             // `validate_config` for every declared instance, so loading the
             // prospective config is the static check.
             let generator = crate::unique::Generator::new();
-            let plugins = crate::load_plugins(config_path, cfg, &generator, &crate::dirs::Env::from_process(None))
-                .map_err(|error| format!("{error:#}"))?;
+            let plugins = crate::load_plugins(
+                config_path,
+                cfg,
+                &generator,
+                &crate::dirs::Env::from_process(None),
+            )
+            .map_err(|error| format!("{error:#}"))?;
             let Some(plugins) = plugins else {
                 return Err(format!("no installed plugin serves the group {group:?}"));
             };
@@ -781,7 +802,9 @@ async fn check_new_resource(
             match plugins.probe_config(group, input.name) {
                 Some(Ok(())) => println!("probed clean"),
                 Some(Err(error)) => return Err(error),
-                None => println!("the plugin exports no bddkit_probe_config, so nothing was probed"),
+                None => {
+                    println!("the plugin exports no bddkit_probe_config, so nothing was probed")
+                }
             }
         }
     }
@@ -819,7 +842,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{key} is listed:\n{out}"))
                 .to_string()
         };
-        assert!(line("timeout_secs").contains("number"), "{}", line("timeout_secs"));
+        assert!(
+            line("timeout_secs").contains("number"),
+            "{}",
+            line("timeout_secs")
+        );
         assert!(line("base_url").contains("string"), "{}", line("base_url"));
         assert!(
             line("default_headers").contains("nonscalar"),
@@ -933,7 +960,10 @@ mod tests {
             &api_fields(),
         )
         .expect("both fields are known");
-        assert_eq!(body["base_url"], serde_yaml_ng::Value::from("http://a.local"));
+        assert_eq!(
+            body["base_url"],
+            serde_yaml_ng::Value::from("http://a.local")
+        );
         assert_eq!(body["timeout_secs"], serde_yaml_ng::Value::from(5));
 
         let error = assemble_body(
@@ -950,7 +980,10 @@ mod tests {
         let error = assemble_body(None, &[("bukcet".into(), "photos".into())], &api_fields())
             .expect_err("api has no bukcet");
         assert!(error.contains("bukcet"), "{error}");
-        assert!(error.contains("base_url"), "the known names are listed: {error}");
+        assert!(
+            error.contains("base_url"),
+            "the known names are listed: {error}"
+        );
 
         let error = assemble_body(
             None,
@@ -970,12 +1003,8 @@ mod tests {
     #[test]
     fn a_trailing_command_flag_names_itself_rather_than_a_typo() {
         for flag in ["config", "env", "json"] {
-            let error = assemble_body(
-                None,
-                &[(flag.to_string(), "x".into())],
-                &api_fields(),
-            )
-            .expect_err("a reserved flag is never a resource field");
+            let error = assemble_body(None, &[(flag.to_string(), "x".into())], &api_fields())
+                .expect_err("a reserved flag is never a resource field");
             assert!(error.contains(&format!("--{flag}")), "{error}");
             assert!(
                 error.contains("this command's own flag"),
@@ -993,7 +1022,10 @@ mod tests {
             &api_fields(),
         )
         .expect("json plus one override");
-        assert_eq!(body["base_url"], serde_yaml_ng::Value::from("http://new.local"));
+        assert_eq!(
+            body["base_url"],
+            serde_yaml_ng::Value::from("http://new.local")
+        );
         assert_eq!(
             body["default_headers"]["Accept"],
             serde_yaml_ng::Value::from("application/json")
@@ -1026,7 +1058,10 @@ mod tests {
         let error = assemble_body(None, &[("path_style".into(), "sometimes".into())], &fields)
             .expect_err("a boolean field takes a boolean");
         assert!(error.contains("path_style"), "{error}");
-        assert!(error.contains("true"), "the two it takes are named: {error}");
+        assert!(
+            error.contains("true"),
+            "the two it takes are named: {error}"
+        );
     }
 
     /// A plugin's `timeout_secs` must reach YAML the way the host's own does.
@@ -1159,9 +1194,9 @@ resources:
     /// works on byte offsets. These two cases are what that is for.
     #[test]
     fn a_file_without_a_final_newline_keeps_its_shape() {
-        let raw = "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://stub.local";
-        let after = splice(raw, "s3", "main", &body(&[("bucket", "photos")]))
-            .expect("splices");
+        let raw =
+            "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://stub.local";
+        let after = splice(raw, "s3", "main", &body(&[("bucket", "photos")])).expect("splices");
         assert_eq!(
             after,
             raw.replace(
@@ -1174,8 +1209,7 @@ resources:
     #[test]
     fn a_crlf_file_stays_crlf() {
         let raw = COMMENTED.replace('\n', "\r\n");
-        let after = splice(&raw, "s3", "main", &body(&[("bucket", "photos")]))
-            .expect("splices");
+        let after = splice(&raw, "s3", "main", &body(&[("bucket", "photos")])).expect("splices");
         assert_eq!(
             after,
             raw.replace(
@@ -1183,7 +1217,10 @@ resources:
                 "resources:\r\n  s3:\r\n    main:\r\n      bucket: photos\r\n"
             )
         );
-        assert!(!after.contains("\n\n"), "no bare LF was introduced: {after:?}");
+        assert!(
+            !after.contains("\n\n"),
+            "no bare LF was introduced: {after:?}"
+        );
     }
 
     /// Insert only. Replacing a block means rewriting lines, and rewriting
@@ -1328,11 +1365,7 @@ resources:
         std::fs::write(&path, "resources:\n").expect("write");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         write_atomically(&path, "resources:\n  api:\n").expect("write atomically");
-        let mode = std::fs::metadata(&path)
-            .expect("stat")
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the rename must not widen the config");
     }
 

@@ -292,9 +292,8 @@ mod tests {
     fn concurrency_defaults_to_shared() {
         // The field enters the ABI now so adding it later cannot break every
         // published plugin; a plugin that omits it means "shared".
-        let m: Manifest =
-            serde_json::from_str(r#"{"name":"x","version":"0.1.0","groups":["x"]}"#)
-                .expect("manifest parses");
+        let m: Manifest = serde_json::from_str(r#"{"name":"x","version":"0.1.0","groups":["x"]}"#)
+            .expect("manifest parses");
         assert_eq!(m.concurrency, Concurrency::Shared);
     }
 
@@ -329,8 +328,8 @@ mod tests {
 
     #[test]
     fn a_dispatch_result_parses_with_defaults() {
-        let r: DispatchResult = serde_json::from_str(r#"{"status":"passed"}"#)
-            .expect("result parses");
+        let r: DispatchResult =
+            serde_json::from_str(r#"{"status":"passed"}"#).expect("result parses");
         assert_eq!(r.status, Status::Passed);
         assert!(r.vars.is_empty());
         assert!(r.diagnostics.is_empty());
@@ -346,10 +345,18 @@ mod tests {
             status: Status::Fatal,
             vars: Default::default(),
             diagnostics: vec![
-                Diagnostic { title: "PUT /b/o".into(), kind: "http".into(),
-                             content: Some("403 Forbidden".into()), path: None },
-                Diagnostic { title: "Screenshot".into(), kind: "image".into(),
-                             content: None, path: Some("/run/artifacts/7/fail.png".into()) },
+                Diagnostic {
+                    title: "PUT /b/o".into(),
+                    kind: "http".into(),
+                    content: Some("403 Forbidden".into()),
+                    path: None,
+                },
+                Diagnostic {
+                    title: "Screenshot".into(),
+                    kind: "image".into(),
+                    content: None,
+                    path: Some("/run/artifacts/7/fail.png".into()),
+                },
             ],
             error: Some("access denied".into()),
         };
@@ -377,8 +384,8 @@ mod tests {
 
     #[test]
     fn an_init_response_yields_a_handle() {
-        let r: InitResponse = serde_json::from_str(r#"{"ok":true,"handle":7}"#)
-            .expect("init response parses");
+        let r: InitResponse =
+            serde_json::from_str(r#"{"ok":true,"handle":7}"#).expect("init response parses");
         assert_eq!(r.into_result().expect("ok"), 7);
     }
 
@@ -386,8 +393,7 @@ mod tests {
     fn an_init_response_ok_with_no_handle_is_an_error() {
         // A plugin that forgets `handle` must fail loudly at init, not hand
         // back handle 0 and let a later step fail confusingly instead.
-        let r: InitResponse =
-            serde_json::from_str(r#"{"ok":true}"#).expect("init response parses");
+        let r: InitResponse = serde_json::from_str(r#"{"ok":true}"#).expect("init response parses");
         let err = r.into_result().unwrap_err();
         assert!(err.contains("handle"), "{err}");
     }
@@ -472,7 +478,10 @@ mod tests {
         let s3 = &m.fields["s3"];
         assert_eq!(s3[0].name, "bucket");
         assert!(s3[0].required);
-        assert_eq!(s3[0].description.as_deref(), Some("bucket the steps read and write"));
+        assert_eq!(
+            s3[0].description.as_deref(),
+            Some("bucket the steps read and write")
+        );
         assert_eq!(s3[0].example.as_deref(), Some("acceptance"));
         assert_eq!(s3[1].name, "endpoint");
         assert!(!s3[1].required, "required defaults to false");
@@ -483,9 +492,8 @@ mod tests {
     fn a_manifest_without_fields_parses_to_an_empty_map() {
         // Additive, so `ABI_VERSION` does not move: a plugin published before
         // the key existed keeps loading and simply describes nothing.
-        let m: Manifest =
-            serde_json::from_str(r#"{"name":"x","version":"0.1.0","groups":["x"]}"#)
-                .expect("manifest parses");
+        let m: Manifest = serde_json::from_str(r#"{"name":"x","version":"0.1.0","groups":["x"]}"#)
+            .expect("manifest parses");
         assert!(m.fields.is_empty());
     }
 }

@@ -1,7 +1,7 @@
 use crate::feature::{ExpandedStep, LoadedFeature, expand_outlines};
 use crate::options::Options;
-use crate::polling::{AttemptError, Polling};
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
+use crate::polling::{AttemptError, Polling};
 use crate::report::render_file;
 use crate::report::{FileResult, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepKind, StepTarget, dispatch};
@@ -69,9 +69,9 @@ fn execute_step<'a>(
             StepTarget::Builtin { id, kind } => {
                 let args = prepare(step, caps, &world.vars, generator)?;
                 match kind {
-                    StepKind::Action => {
-                        dispatch(world, id, &args, 0).await.map_err(AttemptError::into_message)
-                    }
+                    StepKind::Action => dispatch(world, id, &args, 0)
+                        .await
+                        .map_err(AttemptError::into_message),
                     StepKind::Assertion(source) => {
                         let Some(layer) = world.take_options() else {
                             return dispatch(world, id, &args, 0)
@@ -152,7 +152,11 @@ fn execute_step<'a>(
 
                 // Only an assertion consumes an armed eventual-assertion
                 // modifier; an action leaves it for the assertion that follows.
-                let layer = if assertion { world.take_options() } else { None };
+                let layer = if assertion {
+                    world.take_options()
+                } else {
+                    None
+                };
                 let effective = match &layer {
                     Some(layer) => base.apply(layer)?,
                     None => base,
@@ -237,7 +241,9 @@ fn execute_step<'a>(
                             // Without an armed modifier there is no second
                             // attempt, so not_yet is simply a failure.
                             None => return Err(result.render_failure()),
-                            Some(polling) => polling.after_not_yet(&result.render_failure()).await?,
+                            Some(polling) => {
+                                polling.after_not_yet(&result.render_failure()).await?
+                            }
                         },
                     }
                 }
@@ -364,9 +370,9 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         match tokio::task::spawn_blocking(move || plugins.reset_instances(&handles))
                             .await
                         {
-                            Ok(result) => {
-                                result.err().map(|error| format!("  scenario reset\n{error}"))
-                            }
+                            Ok(result) => result
+                                .err()
+                                .map(|error| format!("  scenario reset\n{error}")),
                             Err(error) => Some(format!(
                                 "  scenario reset\nthe plugin reset task failed: {error}"
                             )),
@@ -626,7 +632,11 @@ mod tests {
             &crate::options::Options::default(),
         )
         .expect("the fixture plugin loads");
-        plugins.add_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
+        plugins.add_defaults(
+            [("echo".to_string(), "a".to_string())]
+                .into_iter()
+                .collect(),
+        );
         plugins
     }
 
@@ -638,7 +648,12 @@ mod tests {
             .steps()
             .into_iter()
             .map(|(lib, index, pattern, assertion)| {
-                (lib, index, pattern, assertion && force_action != Some(index))
+                (
+                    lib,
+                    index,
+                    pattern,
+                    assertion && force_action != Some(index),
+                )
             })
             .collect();
         Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &["echo".to_string()])

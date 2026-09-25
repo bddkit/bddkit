@@ -373,7 +373,11 @@ pub fn build_fixture_plugin() -> std::path::PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ));
-    assert!(path.exists(), "fixture plugin artifact missing at {}", path.display());
+    assert!(
+        path.exists(),
+        "fixture plugin artifact missing at {}",
+        path.display()
+    );
     path
 }
 
@@ -400,6 +404,10 @@ pub fn build_worker_plugin() -> std::path::PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ));
-    assert!(path.exists(), "worker plugin artifact missing at {}", path.display());
+    assert!(
+        path.exists(),
+        "worker plugin artifact missing at {}",
+        path.display()
+    );
     path
 }

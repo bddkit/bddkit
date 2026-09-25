@@ -125,7 +125,10 @@ pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
             eprintln!("{}", highlight(&pretty, "json"));
         }
         BodyKind::Xml | BodyKind::Html => {
-            eprintln!("{}", markup::select(kind, &ex.body, path, false).map_err(|e| e.to_string())?);
+            eprintln!(
+                "{}",
+                markup::select(kind, &ex.body, path, false).map_err(|e| e.to_string())?
+            );
         }
         BodyKind::Plain => {
             return Err(

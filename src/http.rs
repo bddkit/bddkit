@@ -413,7 +413,12 @@ impl HttpState {
         let resp_headers = resp
             .headers()
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<non-UTF8>").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.to_string(),
+                    v.to_str().unwrap_or("<non-UTF8>").to_string(),
+                )
+            })
             .collect();
         let body = resp
             .text()
@@ -513,8 +518,7 @@ pub(crate) mod tests {
         let mut by_name = HashMap::new();
         by_name.insert(
             name.to_string(),
-            ApiResource::new(base, 5, default_headers, Options::default())
-                .expect("valid base_url"),
+            ApiResource::new(base, 5, default_headers, Options::default()).expect("valid base_url"),
         );
         Arc::new(Apis::new(by_name, Some(name.to_string())).expect("default declared"))
     }

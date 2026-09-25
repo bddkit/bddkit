@@ -24,7 +24,15 @@ pub fn log_sql(w: &World, sql: &str, binds: &[Option<String>], logs: &[String]) 
 pub async fn resolve<'a>(
     w: &'a World,
     raw_table: &str,
-) -> Result<(&'a AnyPool, &'static dyn Platform, Arc<plan::TableSchema>, TableRef), String> {
+) -> Result<
+    (
+        &'a AnyPool,
+        &'static dyn Platform,
+        Arc<plan::TableSchema>,
+        TableRef,
+    ),
+    String,
+> {
     let tref = TableRef::parse(raw_table)?;
     let conn = tref
         .conn
@@ -50,7 +58,14 @@ pub async fn insert(
         logs,
         has_returning,
         pk_vars,
-    } = plan::build_insert(platform, &schema, &tref.sql_name(), &tref.table, values, index)?;
+    } = plan::build_insert(
+        platform,
+        &schema,
+        &tref.sql_name(),
+        &tref.table,
+        values,
+        index,
+    )?;
     log_sql(w, &sql, &binds, &logs);
 
     if pk_vars.is_empty() {
@@ -123,8 +138,13 @@ pub async fn update(w: &mut World, raw_table: &str, set: &str, where_: &str) -> 
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
     let set_pairs = value::parse_oneliner(set)?;
     let where_pairs = value::parse_oneliner(where_)?;
-    let (sql, binds) =
-        plan::build_update(platform, &schema, &tref.sql_name(), &set_pairs, &where_pairs)?;
+    let (sql, binds) = plan::build_update(
+        platform,
+        &schema,
+        &tref.sql_name(),
+        &set_pairs,
+        &where_pairs,
+    )?;
     log_sql(w, &sql, &binds, &[]);
     let done = bind_all(sqlx::query(&sql), &binds)
         .execute(pool)
@@ -186,9 +206,9 @@ pub async fn extract(
     // The read column is a plain name — the one position where a name is
     // neither a condition nor a written value, and so takes no operator.
     plan::plain_column(column)?;
-    let col = schema.col(column).ok_or_else(|| {
-        format!("column {column:?} is missing from {}", tref.sql_name())
-    })?;
+    let col = schema
+        .col(column)
+        .ok_or_else(|| format!("column {column:?} is missing from {}", tref.sql_name()))?;
     platform.check_bindable(col)?;
     let where_pairs = value::parse_oneliner(where_str)?;
     let (where_sql, binds) = plan::build_where(platform, &schema, &where_pairs, 1)?;

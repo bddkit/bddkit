@@ -209,8 +209,9 @@ pub fn build_insert(
     // and a PK column with no source would otherwise commit the row and only
     // then report failure (invariant 1 — check everything checkable first).
     if !has_returning
-        && let Some((_, PkSource::Unknown(col))) =
-            pk_vars.iter().find(|(_, s)| matches!(s, PkSource::Unknown(_)))
+        && let Some((_, PkSource::Unknown(col))) = pk_vars
+            .iter()
+            .find(|(_, s)| matches!(s, PkSource::Unknown(_)))
     {
         return Err(format!(
             "primary key {col} is server-generated (a DEFAULT that is not auto-increment) \
@@ -398,7 +399,10 @@ pub fn build_delete(
     where_: &[(String, Option<String>)],
 ) -> Result<(String, Vec<Option<String>>), String> {
     if where_.is_empty() {
-        return Err("DELETE without WHERE is forbidden; use the \"I delete all\" step for a full wipe".into());
+        return Err(
+            "DELETE without WHERE is forbidden; use the \"I delete all\" step for a full wipe"
+                .into(),
+        );
     }
     let (where_sql, binds) = build_where(platform, schema, where_, 1)?;
     Ok((format!("DELETE FROM {sql_name} WHERE {where_sql}"), binds))
@@ -675,11 +679,14 @@ mod tests {
             &[("slug ~".into(), Some("a%".into()))],
         )
         .unwrap();
-        assert!(sql.contains("LIKE"), "a space before the operator is allowed: {sql}");
+        assert!(
+            sql.contains("LIKE"),
+            "a space before the operator is allowed: {sql}"
+        );
 
         for raw in ["!", "~", "slug!!", "slug~!", "slug>="] {
-            let err = build_where(&PG, &companies(), &[(raw.into(), Some("x".into()))], 1)
-                .unwrap_err();
+            let err =
+                build_where(&PG, &companies(), &[(raw.into(), Some("x".into()))], 1).unwrap_err();
             assert!(
                 err.contains("unknown operator") && err.contains(raw),
                 "{raw:?} must be refused by name, got: {err}"
@@ -712,7 +719,10 @@ mod tests {
             &[("slug~".into(), Some("demo_run_uabc123%".into()))],
         )
         .unwrap();
-        assert_eq!(sql, "DELETE FROM companies WHERE (slug)::text LIKE $1::text");
+        assert_eq!(
+            sql,
+            "DELETE FROM companies WHERE (slug)::text LIKE $1::text"
+        );
         assert_eq!(
             binds,
             vec![Some("demo_run_uabc123%".to_string())],
@@ -762,8 +772,8 @@ mod tests {
     fn an_unknown_operator_is_an_error_naming_it() {
         // Not "column \"price>=\" is missing from the table": that answer sends
         // the author to their DDL for what is a typo in the step.
-        let err = build_where(&PG, &companies(), &[("slug>=".into(), Some("1".into()))], 1)
-            .unwrap_err();
+        let err =
+            build_where(&PG, &companies(), &[("slug>=".into(), Some("1".into()))], 1).unwrap_err();
         assert!(err.contains("slug>="), "{err}");
         assert!(err.contains("unknown operator"), "{err}");
     }
@@ -888,7 +898,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             p.pk_vars,
-            vec![("last_insert_id_companies".into(), PkSource::Known("5".into()))]
+            vec![(
+                "last_insert_id_companies".into(),
+                PkSource::Known("5".into())
+            )]
         );
     }
 
@@ -950,8 +963,15 @@ mod tests {
                 col("tag", "text", true, false, false, false),
             ],
         };
-        let err = build_insert(&MYSQL, &s, "defaulted", "defaulted", &[("tag".into(), Some("x".into()))], None)
-            .unwrap_err();
+        let err = build_insert(
+            &MYSQL,
+            &s,
+            "defaulted",
+            "defaulted",
+            &[("tag".into(), Some("x".into()))],
+            None,
+        )
+        .unwrap_err();
         assert!(err.contains("id"), "{err}");
         assert!(err.contains("server-generated"), "{err}");
     }

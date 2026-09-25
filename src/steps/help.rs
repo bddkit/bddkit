@@ -301,7 +301,10 @@ mod tests {
         assert_ne!(describe("SetVariable", english, &ru), english);
         assert_eq!(describe("NoSuchStep", english, &ru), english);
         // English is not a file: asking for it means asking for the table.
-        assert_eq!(describe("SetVariable", english, &translations("en")), english);
+        assert_eq!(
+            describe("SetVariable", english, &translations("en")),
+            english
+        );
     }
 
     #[test]

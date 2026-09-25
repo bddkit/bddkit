@@ -105,7 +105,11 @@ async fn eventual_post_response_replays_the_saved_method_and_body() {
     let config = write_eventual_post_project(&base, "eventual-post-success");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", config.to_str().expect("UTF-8 config path")])
+        .args([
+            "run",
+            "--config",
+            config.to_str().expect("UTF-8 config path"),
+        ])
         .output()
         .expect("run bddkit");
 
@@ -137,7 +141,9 @@ async fn spawn_eventual_absence_stub(ready_on: usize) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind eventual-absence stub");
-    let address = listener.local_addr().expect("eventual-absence stub address");
+    let address = listener
+        .local_addr()
+        .expect("eventual-absence stub address");
     tokio::spawn(async move {
         axum::serve(listener, app)
             .await
@@ -182,7 +188,11 @@ async fn eventual_absence_polls_until_the_node_disappears() {
     let config = write_eventual_absence_project(&base, "eventual-absence-success");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", config.to_str().expect("UTF-8 config path")])
+        .args([
+            "run",
+            "--config",
+            config.to_str().expect("UTF-8 config path"),
+        ])
         .output()
         .expect("run bddkit");
 
@@ -200,7 +210,11 @@ async fn eventual_post_timeout_reports_last_mismatch_and_final_exchange() {
     let config = write_eventual_post_project(&base, "eventual-post-timeout");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", config.to_str().expect("UTF-8 config path")])
+        .args([
+            "run",
+            "--config",
+            config.to_str().expect("UTF-8 config path"),
+        ])
         .output()
         .expect("run bddkit");
 
@@ -340,10 +354,7 @@ async fn a_config_without_any_api_resource_fails_at_first_http_step() {
         .expect("failed to run bddkit");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !out.status.success(),
-        "scenario must fail\n{stdout}"
-    );
+    assert!(!out.status.success(), "scenario must fail\n{stdout}");
     assert!(stdout.contains("resources.api"), "{stdout}");
 }
 
@@ -1199,7 +1210,10 @@ fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("only.feature:3"), "{stdout}");
-    assert!(!stdout.contains("only.feature:4"), "once per file: {stdout}");
+    assert!(
+        !stdout.contains("only.feature:4"),
+        "once per file: {stdout}"
+    );
     assert!(stdout.contains("resources.api declares none"), "{stdout}");
 }
 
@@ -1882,8 +1896,16 @@ async fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
     };
     assert_eq!(value("count(//testsuite)"), "1", "{xml}");
     assert_eq!(value("count(//testcase)"), "2", "{xml}");
-    assert_eq!(value("count(//testcase[@name='fails']/failure)"), "1", "{xml}");
-    assert_eq!(value("count(//testcase[@name='passes']/failure)"), "0", "{xml}");
+    assert_eq!(
+        value("count(//testcase[@name='fails']/failure)"),
+        "1",
+        "{xml}"
+    );
+    assert_eq!(
+        value("count(//testcase[@name='passes']/failure)"),
+        "0",
+        "{xml}"
+    );
     let failure = value("//testcase[@name='fails']/failure");
     assert!(failure.contains("expected: ]]>"), "{failure}");
     assert!(
@@ -2016,7 +2038,10 @@ async fn an_unwritable_report_path_is_a_startup_failure_and_doctor_reports_it() 
         .expect("run bddkit");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
-    assert!(stderr.contains("cucumber.json"), "the path is named: {stderr}");
+    assert!(
+        stderr.contains("cucumber.json"),
+        "the path is named: {stderr}"
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,

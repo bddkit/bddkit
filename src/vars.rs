@@ -228,10 +228,7 @@ mod tests {
         let mut s = VarStack::new();
         s.set("a", "1".into());
         let err = s.pop_frame(&[]).unwrap_err();
-        assert!(
-            err.contains("root"),
-            "the error must explain why: {err}"
-        );
+        assert!(err.contains("root"), "the error must explain why: {err}");
         // the stack must stay untouched: data is in place, set() does not panic
         assert_eq!(
             s.get("a"),

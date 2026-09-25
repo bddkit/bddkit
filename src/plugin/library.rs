@@ -67,11 +67,10 @@ impl Library {
         // against an unmapped page — the same reason `load_plugins` leaks the
         // libraries at exit. A rejected plugin is a "nothing ran" exit anyway,
         // so one leaked mapping costs nothing.
-        let library = ManuallyDrop::new(
-            unsafe { libloading::Library::new(path) }.with_context(|| {
+        let library =
+            ManuallyDrop::new(unsafe { libloading::Library::new(path) }.with_context(|| {
                 format!("failed to load plugin {name:?} from {}", path.display())
-            })?,
-        );
+            })?);
 
         // The version check comes before any other symbol is resolved: a
         // binary from another ABI generation may not even have the rest.
@@ -198,14 +197,21 @@ impl Library {
 
     pub fn dispatch(&self, handle: u64, step: u32, request: &str) -> Result<DispatchResult> {
         let argument = CString::new(request).with_context(|| {
-            format!("plugin {:?} dispatch payload contains a NUL byte", self.name)
+            format!(
+                "plugin {:?} dispatch payload contains a NUL byte",
+                self.name
+            )
         })?;
         // SAFETY: `argument` outlives the call, and the plugin only reads from
         // it. The returned pointer goes straight back to this plugin's own
         // `free_string` inside `take`.
-        let reply =
-            unsafe { take(self.free_string, (self.dispatch)(handle, step, argument.as_ptr())) }
-                .with_context(|| format!("plugin {:?} returned nothing from dispatch", self.name))?;
+        let reply = unsafe {
+            take(
+                self.free_string,
+                (self.dispatch)(handle, step, argument.as_ptr()),
+            )
+        }
+        .with_context(|| format!("plugin {:?} returned nothing from dispatch", self.name))?;
         serde_json::from_str(&reply).with_context(|| self.malformed("dispatch", &reply))
     }
 
@@ -307,7 +313,9 @@ fn check_step_groups(name: &str, manifest: &Manifest, steps: &[StepSpec]) -> Res
 fn check_field_groups(name: &str, manifest: &Manifest) -> Result<()> {
     for group in manifest.fields.keys() {
         if !manifest.groups.contains(group) {
-            bail!("plugin {name:?} describes the config of group {group:?}, which it does not claim");
+            bail!(
+                "plugin {name:?} describes the config of group {group:?}, which it does not claim"
+            );
         }
     }
     Ok(())
@@ -461,7 +469,10 @@ mod tests {
     fn a_missing_file_names_the_path() {
         let error = Library::load("ghost", std::path::Path::new("/nope/libghost.so"))
             .expect_err("no such file");
-        assert!(format!("{error:#}").contains("/nope/libghost.so"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("/nope/libghost.so"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -521,10 +532,9 @@ mod tests {
     fn a_step_in_an_unclaimed_group_is_refused() {
         // Answering for a group it never claimed would shadow the steps of the
         // plugin that legitimately owns it.
-        let manifest: Manifest = serde_json::from_str(
-            r#"{"name":"widget","version":"1.0.0","groups":["widget"]}"#,
-        )
-        .expect("manifest parses");
+        let manifest: Manifest =
+            serde_json::from_str(r#"{"name":"widget","version":"1.0.0","groups":["widget"]}"#)
+                .expect("manifest parses");
         let steps: Vec<StepSpec> = serde_json::from_str(
             r#"[{"pattern":"^I upload$","group":"widget","kind":"action"},
                 {"pattern":"^I click$","group":"browser","kind":"action"}]"#,
@@ -539,8 +549,8 @@ mod tests {
 
     #[test]
     fn a_shared_plugin_with_a_reset_is_still_refused_in_parallel() {
-        let error = check_reset_scenario("echo", Concurrency::Shared, true, 8)
-            .expect_err("refused");
+        let error =
+            check_reset_scenario("echo", Concurrency::Shared, true, 8).expect_err("refused");
         let text = format!("{error:#}");
         assert!(text.contains("echo"), "{text}");
         assert!(text.contains("bddkit_reset_scenario"), "{text}");

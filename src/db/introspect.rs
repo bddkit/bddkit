@@ -25,7 +25,10 @@ pub async fn introspect(
         .await
         .map_err(|e| format!("introspection of {}: {e}", tref.sql_name()))?;
     if rows.is_empty() {
-        return Err(format!("table {} not found or inaccessible", tref.sql_name()));
+        return Err(format!(
+            "table {} not found or inaccessible",
+            tref.sql_name()
+        ));
     }
     let mut columns = Vec::with_capacity(rows.len());
     for r in &rows {

@@ -59,11 +59,16 @@ pub enum Engine {
 }
 
 pub fn engine() -> Engine {
-    match std::env::var("BDDKIT_TEST_ENGINE").unwrap_or_default().as_str() {
+    match std::env::var("BDDKIT_TEST_ENGINE")
+        .unwrap_or_default()
+        .as_str()
+    {
         "" | "postgres" => Engine::Postgres,
         "mysql" => Engine::MySql,
         "mariadb" => Engine::MariaDb,
-        other => panic!("unknown BDDKIT_TEST_ENGINE {other:?} (expected postgres, mysql or mariadb)"),
+        other => {
+            panic!("unknown BDDKIT_TEST_ENGINE {other:?} (expected postgres, mysql or mariadb)")
+        }
     }
 }
 

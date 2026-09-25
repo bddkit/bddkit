@@ -693,7 +693,10 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepTarget {
-    Builtin { id: StepId, kind: StepKind },
+    Builtin {
+        id: StepId,
+        kind: StepKind,
+    },
     Macro(usize),
     /// A step served over FFI. It never becomes a `StepId`, which is what
     /// keeps `dispatch`'s exhaustive match (invariant 4) meaningful.
@@ -811,8 +814,14 @@ impl Registry {
     ) -> Result<(), String> {
         let re = Regex::new(pattern)
             .map_err(|e| format!("invalid plugin step pattern {pattern:?}: {e}"))?;
-        self.entries
-            .push((StepTarget::Plugin { lib, step, assertion }, re));
+        self.entries.push((
+            StepTarget::Plugin {
+                lib,
+                step,
+                assertion,
+            },
+            re,
+        ));
         Ok(())
     }
 
@@ -1383,7 +1392,11 @@ mod tests {
             .expect("matched");
         assert_eq!(
             target,
-            StepTarget::Plugin { lib: 0, step: 1, assertion: false }
+            StepTarget::Plugin {
+                lib: 0,
+                step: 1,
+                assertion: false
+            }
         );
         assert_eq!(caps, vec!["report.pdf".to_string(), "backups".to_string()]);
     }
@@ -1424,7 +1437,13 @@ mod tests {
             .find(r#"I use "main" api"#)
             .expect("no ambiguity")
             .expect("matched");
-        assert_eq!(api_target, StepTarget::Builtin { id: StepId::UseApi, kind: StepKind::Action });
+        assert_eq!(
+            api_target,
+            StepTarget::Builtin {
+                id: StepId::UseApi,
+                kind: StepKind::Action
+            }
+        );
 
         let (conn_target, _) = reg
             .find(r#"I use "pg" connection"#)
@@ -1432,7 +1451,10 @@ mod tests {
             .expect("matched");
         assert_eq!(
             conn_target,
-            StepTarget::Builtin { id: StepId::UseConnection, kind: StepKind::Action }
+            StepTarget::Builtin {
+                id: StepId::UseConnection,
+                kind: StepKind::Action
+            }
         );
 
         let (group_target, caps) = reg
@@ -1441,9 +1463,16 @@ mod tests {
             .expect("matched");
         assert_eq!(
             group_target,
-            StepTarget::Builtin { id: StepId::UsePluginInstance, kind: StepKind::Action }
+            StepTarget::Builtin {
+                id: StepId::UsePluginInstance,
+                kind: StepKind::Action
+            }
         );
-        assert_eq!(caps, vec!["bucket-a".to_string(), "widget".to_string()], "name before group");
+        assert_eq!(
+            caps,
+            vec!["bucket-a".to_string(), "widget".to_string()],
+            "name before group"
+        );
     }
 
     #[test]
@@ -1458,11 +1487,15 @@ mod tests {
         // If the dot were left as a regex metachar it would match any single
         // character here too, not just a literal dot.
         assert!(
-            reg.find(r#"I use "x" widgetXbeta"#).expect("no ambiguity").is_none(),
+            reg.find(r#"I use "x" widgetXbeta"#)
+                .expect("no ambiguity")
+                .is_none(),
             "an unescaped '.' would wrongly match any character"
         );
         assert!(
-            reg.find(r#"I use "x" widget.beta"#).expect("no ambiguity").is_some(),
+            reg.find(r#"I use "x" widget.beta"#)
+                .expect("no ambiguity")
+                .is_some(),
             "the literal group name must still match"
         );
     }
@@ -1533,7 +1566,12 @@ mod tests {
 
         let reg = Registry::with_macros_and_plugins(
             catalog,
-            &[(0, 1, r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(), false)],
+            &[(
+                0,
+                1,
+                r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
+                false,
+            )],
             &[],
         )
         .expect("a plugin step in a macro body is not a typo");

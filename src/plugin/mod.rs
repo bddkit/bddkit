@@ -235,7 +235,10 @@ impl Plugins {
         if !lib.has_probe_config() {
             return None;
         }
-        let spec = match self.declared.get(&(group.to_string(), instance.to_string())) {
+        let spec = match self
+            .declared
+            .get(&(group.to_string(), instance.to_string()))
+        {
             Some(spec) => spec,
             None => return Some(Err(undeclared(group, instance))),
         };
@@ -382,7 +385,9 @@ impl Plugins {
             .declared
             .get(&key)
             .ok_or_else(|| undeclared(group, instance))?;
-        let request = self.init_request(spec).map_err(|error| format!("{error:#}"))?;
+        let request = self
+            .init_request(spec)
+            .map_err(|error| format!("{error:#}"))?;
         let created = self.libs[lib]
             .init_instance(&request)
             .map_err(|error| format!("{error:#}"))?
@@ -708,9 +713,17 @@ pub(crate) mod tests {
 
     #[test]
     fn a_group_serves_the_fields_its_manifest_declares() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
-        let fields = plugins.fields_for("echo").expect("the fixture describes echo");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
+        let fields = plugins
+            .fields_for("echo")
+            .expect("the fixture describes echo");
         assert_eq!(fields[0].name, "prefix");
         assert!(fields[0].required, "the fixture declares prefix required");
         assert_eq!(fields[0].example.as_deref(), Some("p-"));
@@ -721,8 +734,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_declared_instance_can_be_probed_live() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert_eq!(
             plugins.declared_instances(),
             vec![("echo".to_string(), "a".to_string())]
@@ -733,7 +752,14 @@ pub(crate) mod tests {
         // is how a real plugin reports an endpoint that refused it.
         let mut spec = instance("b", Some("p-"));
         spec.config = serde_json::json!({"prefix": "p-", "probe_error": "bucket not found"});
-        let plugins = Plugins::load(vec![entry()], &[spec], &["echo".into()], 1, &Options::default()).expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[spec],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert_eq!(
             plugins.probe_config("echo", "b"),
             Some(Err("bucket not found".to_string()))
@@ -752,12 +778,16 @@ pub(crate) mod tests {
         // the group default by the one-instance rule — before `set_defaults`
         // has run, because the host's own default resolution never sees the
         // group.
-        let plugins = Plugins::load(vec![entry()], &[], &[], 1, &Options::default()).expect("loads");
+        let plugins =
+            Plugins::load(vec![entry()], &[], &[], 1, &Options::default()).expect("loads");
         assert_eq!(
             plugins.declared_instances(),
             vec![("echo".to_string(), "default".to_string())]
         );
-        assert_eq!(plugins.defaults().get("echo").map(String::as_str), Some("default"));
+        assert_eq!(
+            plugins.defaults().get("echo").map(String::as_str),
+            Some("default")
+        );
         assert!(plugins.is_declared("echo", "default"));
         assert_eq!(plugins.probe_config("echo", "default"), Some(Ok(())));
 
@@ -774,21 +804,36 @@ pub(crate) mod tests {
             plugins.declared_instances(),
             vec![("echo".to_string(), "a".to_string())]
         );
-        assert!(plugins.defaults().is_empty(), "a declared group's default is the config's to resolve");
+        assert!(
+            plugins.defaults().is_empty(),
+            "a declared group's default is the config's to resolve"
+        );
     }
 
     #[test]
     fn loads_a_plugin_and_maps_its_group() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert_eq!(plugins.step_count(), 3);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
     #[test]
     fn a_config_group_with_no_plugin_is_a_startup_error() {
-        let error = Plugins::load(Vec::new(), &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect_err("nothing claims the group");
+        let error = Plugins::load(
+            Vec::new(),
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect_err("nothing claims the group");
         assert!(format!("{error:#}").contains("echo"), "{error:#}");
     }
 
@@ -797,8 +842,14 @@ pub(crate) mod tests {
         // groups_in_config is the caller's list of config keys; the eager
         // validation loop must not index its way into a panic when an instance
         // names a group that list left out.
-        let error = Plugins::load(Vec::new(), &[instance("a", Some("p-"))], &[], 1, &Options::default())
-            .expect_err("nothing serves the group");
+        let error = Plugins::load(
+            Vec::new(),
+            &[instance("a", Some("p-"))],
+            &[],
+            1,
+            &Options::default(),
+        )
+        .expect_err("nothing serves the group");
         assert!(format!("{error:#}").contains("echo"), "{error:#}");
     }
 
@@ -806,8 +857,14 @@ pub(crate) mod tests {
     fn a_declared_instance_is_validated_eagerly() {
         // A typo must exit before the first request, without opening anything:
         // that is what validate_config buys over lazy init alone.
-        let error = Plugins::load(vec![entry()], &[instance("a", None)], &["echo".into()], 1, &Options::default())
-            .expect_err("prefix missing");
+        let error = Plugins::load(
+            vec![entry()],
+            &[instance("a", None)],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect_err("prefix missing");
         let text = format!("{error:#}");
         assert!(text.contains("prefix"), "{text}");
         assert!(text.contains("resources.echo.a"), "{text}");
@@ -815,15 +872,28 @@ pub(crate) mod tests {
 
     #[test]
     fn an_instance_is_created_only_on_first_use() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert_eq!(
             plugins.registered_count(),
             0,
             "loading must not create instances"
         );
         let (_, result) = plugins
-            .call_step("echo", "a", 0, 0, r#"{"args":["x","name"],"debug":false}"#, None)
+            .call_step(
+                "echo",
+                "a",
+                0,
+                0,
+                r#"{"args":["x","name"],"debug":false}"#,
+                None,
+            )
             .expect("dispatch");
         assert_eq!(result.status, abi::Status::Passed);
         assert_eq!(plugins.registered_count(), 1);
@@ -831,8 +901,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_second_call_reuses_the_same_instance() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let request = r#"{"args":["3"],"debug":false}"#;
         let (_, first) = plugins
             .call_step("echo", "a", 0, 1, request, None)
@@ -851,8 +927,14 @@ pub(crate) mod tests {
 
     #[test]
     fn an_undeclared_instance_is_an_error_naming_the_group() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let error = plugins
             .call_step("echo", "ghost", 0, 0, r#"{"args":[],"debug":false}"#, None)
             .expect_err("not declared");
@@ -864,10 +946,23 @@ pub(crate) mod tests {
         // A panicking file loses its World and with it the handles it owned.
         // The registry is what keeps the invariant "no instance outlives the
         // run" resting on one mechanism instead of on discipline.
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         plugins
-            .call_step("echo", "a", 0, 0, r#"{"args":["x","n"],"debug":false}"#, None)
+            .call_step(
+                "echo",
+                "a",
+                0,
+                0,
+                r#"{"args":["x","n"],"debug":false}"#,
+                None,
+            )
             .expect("dispatch");
         assert_eq!(plugins.registered_count(), 1);
         plugins.shutdown();
@@ -879,8 +974,14 @@ pub(crate) mod tests {
         // The other half of "only a handle this call created is undone": a NUL
         // byte in the payload fails the dispatch before the FFI call, and the
         // shared instance behind it must still be there for the next step.
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         // No handle passed in, so this call is the one that creates the
         // instance — the case where the undo applies at all.
         let error = plugins
@@ -908,10 +1009,18 @@ pub(crate) mod tests {
 
     #[test]
     fn a_reset_reaches_a_live_instance_and_an_unknown_handle_is_ignored() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         // Nothing initialised yet: this must be a no-op, not a failure.
-        plugins.reset_instances(&[(0, 1)]).expect("nothing to reset");
+        plugins
+            .reset_instances(&[(0, 1)])
+            .expect("nothing to reset");
         let request = r#"{"args":["2"],"debug":false}"#;
         let (handle, _) = plugins
             .call_step("echo", "a", 0, 1, request, None)
@@ -946,8 +1055,14 @@ pub(crate) mod tests {
         // boundaries must not reach an instance ANOTHER file is using. The live
         // instance below is what makes this fail if the reset ever goes back to
         // broadcasting over everything and ignoring its argument.
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let request = r#"{"args":["2"],"debug":false}"#;
         let (handle, _) = plugins
             .call_step("echo", "a", 0, 1, request, None)
@@ -1014,20 +1129,42 @@ pub(crate) mod tests {
         )
         .expect("loads");
         let (handle, _) = plugins
-            .call_step("echo", "bad", 0, 0, r#"{"args":["x","n"],"debug":false}"#, None)
+            .call_step(
+                "echo",
+                "bad",
+                0,
+                0,
+                r#"{"args":["x","n"],"debug":false}"#,
+                None,
+            )
             .expect("dispatch");
-        let error = plugins.reset_instances(&[(0, handle)]).expect_err("refused");
+        let error = plugins
+            .reset_instances(&[(0, handle)])
+            .expect_err("refused");
         assert!(error.contains("echo.bad"), "{error}");
         assert!(error.contains("refuses to reset"), "{error}");
     }
 
     #[test]
     fn every_created_handle_is_registered_for_sweeping() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert_eq!(plugins.registered_count(), 0, "loading creates nothing");
         let (handle, _) = plugins
-            .call_step("echo", "a", 0, 0, r#"{"args":["x","name"],"debug":false}"#, None)
+            .call_step(
+                "echo",
+                "a",
+                0,
+                0,
+                r#"{"args":["x","name"],"debug":false}"#,
+                None,
+            )
             .expect("dispatch");
         assert_eq!(plugins.registered_count(), 1);
         plugins.drop_instances(&[(0, handle)]);
@@ -1038,16 +1175,28 @@ pub(crate) mod tests {
     fn dropping_an_unregistered_handle_is_a_no_op() {
         // `run_file` drops its owned handles on every exit path, including
         // after `shutdown` has already run in a torn-down test.
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         plugins.drop_instances(&[(0, 999)]);
         assert_eq!(plugins.registered_count(), 0);
     }
 
     #[test]
     fn a_shared_instance_is_reused_across_calls() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let request = r#"{"args":["3"],"debug":false}"#;
         let (first, _) = plugins
             .call_step("echo", "a", 0, 1, request, None)
@@ -1069,8 +1218,14 @@ pub(crate) mod tests {
         // `existing` entirely would still find the one shared handle and pass
         // this. What closes it is the `per_worker` fixture, out of process, in
         // `tests/plugin.rs::two_files_get_different_per_worker_instances`.
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let request = r#"{"args":["3"],"debug":false}"#;
         let (handle, _) = plugins
             .call_step("echo", "a", 0, 1, request, None)
@@ -1085,8 +1240,14 @@ pub(crate) mod tests {
 
     #[test]
     fn the_fixture_is_not_per_worker() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         assert!(!plugins.is_per_worker(0));
     }
 
@@ -1136,7 +1297,11 @@ pub(crate) mod tests {
         // itself lives for the file: recreating a browser at every scenario
         // boundary is exactly what per-file ownership exists to avoid.
         let mut state = PluginState::new(None);
-        state.set_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
+        state.set_defaults(
+            [("echo".to_string(), "a".to_string())]
+                .into_iter()
+                .collect(),
+        );
         state.use_instance_unchecked("echo", "b");
         state.record("echo", "b", 0, 1, true);
         state.reset();
@@ -1166,9 +1331,14 @@ pub(crate) mod tests {
     fn the_fixture_plugin_is_refused_under_parallelism() {
         // It exports bddkit_reset_scenario, and a `shared` instance cannot hold
         // per-scenario state while every worker shares it.
-        let error =
-            Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 2, &Options::default())
-                .expect_err("refused");
+        let error = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            2,
+            &Options::default(),
+        )
+        .expect_err("refused");
         let text = format!("{error:#}");
         assert!(text.contains("echo"), "{text}");
         assert!(text.contains("concurrency: 1"), "{text}");
@@ -1176,17 +1346,32 @@ pub(crate) mod tests {
 
     #[test]
     fn each_dispatch_gets_its_own_artifacts_dir() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let first = plugins.next_artifacts_dir();
         let second = plugins.next_artifacts_dir();
-        assert_ne!(first, second, "two workers must never share an artifact path");
+        assert_ne!(
+            first, second,
+            "two workers must never share an artifact path"
+        );
     }
 
     #[test]
     fn switching_to_a_declared_instance_selects_it_and_an_undeclared_one_is_an_error() {
-        let plugins = Plugins::load(vec![entry()], &[instance("a", Some("p-"))], &["echo".into()], 1, &Options::default())
-            .expect("loads");
+        let plugins = Plugins::load(
+            vec![entry()],
+            &[instance("a", Some("p-"))],
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("loads");
         let mut state = PluginState::new(Some(Arc::new(plugins)));
         state.use_instance("echo", "a").expect("declared instance");
         assert_eq!(state.current("echo").expect("selected"), "a");

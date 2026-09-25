@@ -245,7 +245,11 @@ Feature: f
 ",
         );
         let p = check(&[&lf], &Registry::new().unwrap(), &TagFilter::new(&[]));
-        assert_eq!(p.len(), 1, "a typo in the method must surface before the run");
+        assert_eq!(
+            p.len(),
+            1,
+            "a typo in the method must surface before the run"
+        );
     }
 
     #[test]
