@@ -487,7 +487,7 @@ fn apply_signer(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::extract::OriginalUri;
     use axum::http::{HeaderMap, Method};
@@ -566,7 +566,7 @@ mod tests {
         Arc::new(Apis::new(by_name, Some("first".to_string())).expect("default is declared"))
     }
 
-    async fn spawn_app(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+    pub(crate) async fn spawn_app(app: Router) -> (String, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");

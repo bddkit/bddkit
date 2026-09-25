@@ -53,28 +53,43 @@ pub fn response_header(w: &World, name: &str, value: &str) -> AttemptResult {
     }
 }
 
-pub fn body_contains_json(w: &World, docstring: Option<&String>) -> AttemptResult {
-    let expected_src =
-        docstring.ok_or_else(|| AttemptError::Fatal("step requires a doc string with JSON".to_string()))?;
-    let expected: serde_json::Value = serde_json::from_str(expected_src)
-        .map_err(|e| AttemptError::Fatal(format!("expected JSON is invalid: {e}")))?;
-    let actual = last(w)
+/// The doc string of a JSON step, parsed. Shared by the body and the variable steps.
+pub(super) fn expected_json(docstring: Option<&String>) -> Result<serde_json::Value, AttemptError> {
+    let expected_src = docstring
+        .ok_or_else(|| AttemptError::Fatal("step requires a doc string with JSON".to_string()))?;
+    serde_json::from_str(expected_src)
+        .map_err(|e| AttemptError::Fatal(format!("expected JSON is invalid: {e}")))
+}
+
+fn body_json(w: &World) -> Result<serde_json::Value, AttemptError> {
+    last(w)
         .map_err(AttemptError::Fatal)?
         .json()
-        .map_err(AttemptError::NotYet)?;
-    matcher::contains(&actual, &expected).map_err(|m| AttemptError::NotYet(m.to_string()))
+        .map_err(AttemptError::NotYet)
+}
+
+pub fn body_contains_json(w: &World, docstring: Option<&String>) -> AttemptResult {
+    let expected = expected_json(docstring)?;
+    check_contains_json(&body_json(w)?, &expected)
 }
 
 pub fn body_equals_json(w: &World, docstring: Option<&String>) -> AttemptResult {
-    let expected_src =
-        docstring.ok_or_else(|| AttemptError::Fatal("step requires a doc string with JSON".to_string()))?;
-    let expected: serde_json::Value = serde_json::from_str(expected_src)
-        .map_err(|e| AttemptError::Fatal(format!("expected JSON is invalid: {e}")))?;
-    let actual = last(w)
-        .map_err(AttemptError::Fatal)?
-        .json()
-        .map_err(AttemptError::NotYet)?;
-    matcher::equals(&actual, &expected).map_err(|m| AttemptError::NotYet(m.to_string()))
+    let expected = expected_json(docstring)?;
+    check_equals_json(&body_json(w)?, &expected)
+}
+
+pub(super) fn check_contains_json(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
+    matcher::contains(actual, expected).map_err(|m| AttemptError::NotYet(m.to_string()))
+}
+
+pub(super) fn check_equals_json(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
+    matcher::equals(actual, expected).map_err(|m| AttemptError::NotYet(m.to_string()))
 }
 
 pub fn array_length(w: &World, expected: &str) -> AttemptResult {
@@ -174,21 +189,18 @@ fn check_not_null(v: &serde_json::Value, p: &str) -> AttemptResult {
 }
 
 pub fn body_not_contains_json(w: &World, docstring: Option<&String>) -> AttemptResult {
-    let expected_src =
-        docstring.ok_or_else(|| AttemptError::Fatal("step requires a doc string with JSON".to_string()))?;
-    let expected: serde_json::Value = serde_json::from_str(expected_src)
-        .map_err(|e| AttemptError::Fatal(format!("expected JSON is invalid: {e}")))?;
-    let actual = last(w)
-        .map_err(AttemptError::Fatal)?
-        .json()
-        .map_err(AttemptError::NotYet)?;
-    check_not_contains_json(&actual, &expected)
+    let expected = expected_json(docstring)?;
+    check_not_contains_json("body", &body_json(w)?, &expected)
 }
 
-fn check_not_contains_json(actual: &serde_json::Value, expected: &serde_json::Value) -> AttemptResult {
+pub(super) fn check_not_contains_json(
+    subject: &str,
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
     match matcher::contains(actual, expected) {
         Ok(()) => Err(AttemptError::NotYet(format!(
-            "    expected: body to NOT contain JSON matching:\n{}\n    actual:   it does",
+            "    expected: {subject} to NOT contain JSON matching:\n{}\n    actual:   it does",
             serde_json::to_string_pretty(expected).unwrap_or_default()
         ))),
         Err(_) => Ok(()),
@@ -220,67 +232,87 @@ fn check_not_contains_substring(v: &serde_json::Value, p: &str, needle: &str) ->
 }
 
 pub fn body_empty(w: &World) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
-    if ex.body.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(AttemptError::NotYet(format!(
-            "    expected: empty body\n    actual:   {:?}",
-            ex.body
-        )))
-    }
+    check_empty("body", &last(w).map_err(AttemptError::Fatal)?.body)
 }
 
 pub fn body_contains_text(w: &World, needle: &str) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
-    if ex.body.contains(needle) {
-        Ok(())
-    } else {
-        Err(AttemptError::NotYet(format!(
-            "    expected body to contain: {needle:?}\n    actual body:\n{}",
-            ex.body
-        )))
-    }
+    check_contains(
+        "body",
+        &last(w).map_err(AttemptError::Fatal)?.body,
+        needle,
+        false,
+    )
 }
 
 pub fn body_not_contains_text(w: &World, needle: &str) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
-    if ex.body.contains(needle) {
-        Err(AttemptError::NotYet(format!(
-            "    expected body to NOT contain: {needle:?}\n    actual body:\n{}",
-            ex.body
-        )))
-    } else {
-        Ok(())
-    }
+    check_contains(
+        "body",
+        &last(w).map_err(AttemptError::Fatal)?.body,
+        needle,
+        true,
+    )
 }
 
 pub fn body_matches(w: &World, pattern: &str) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
-    let re = Regex::new(pattern)
-        .map_err(|e| AttemptError::Fatal(format!("invalid regex {pattern:?}: {e}")))?;
-    if re.is_match(&ex.body) {
+    check_matches(
+        "body",
+        &last(w).map_err(AttemptError::Fatal)?.body,
+        pattern,
+        false,
+    )
+}
+
+pub fn body_not_matches(w: &World, pattern: &str) -> AttemptResult {
+    check_matches(
+        "body",
+        &last(w).map_err(AttemptError::Fatal)?.body,
+        pattern,
+        true,
+    )
+}
+
+/// The raw-text checks, over whichever text `subject` names: the response
+/// body or a variable (issue #39).
+pub(super) fn check_empty(subject: &str, text: &str) -> AttemptResult {
+    if text.trim().is_empty() {
         Ok(())
     } else {
         Err(AttemptError::NotYet(format!(
-            "    expected body to match: {pattern}\n    actual body:\n{}",
-            ex.body
+            "    expected: empty {subject}\n    actual:   {text:?}"
         )))
     }
 }
 
-pub fn body_not_matches(w: &World, pattern: &str) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
+pub(super) fn check_contains(
+    subject: &str,
+    text: &str,
+    needle: &str,
+    negate: bool,
+) -> AttemptResult {
+    if text.contains(needle) != negate {
+        return Ok(());
+    }
+    let not = if negate { "NOT " } else { "" };
+    Err(AttemptError::NotYet(format!(
+        "    expected {subject} to {not}contain: {needle:?}\n    actual {subject}:\n{text}"
+    )))
+}
+
+pub(super) fn check_matches(
+    subject: &str,
+    text: &str,
+    pattern: &str,
+    negate: bool,
+) -> AttemptResult {
     let re = Regex::new(pattern)
         .map_err(|e| AttemptError::Fatal(format!("invalid regex {pattern:?}: {e}")))?;
-    if re.is_match(&ex.body) {
-        Err(AttemptError::NotYet(format!(
-            "    expected body to NOT match: {pattern}\n    actual body:\n{}",
-            ex.body
-        )))
-    } else {
-        Ok(())
+    if re.is_match(text) != negate {
+        return Ok(());
     }
+    let not = if negate { "NOT " } else { "" };
+    Err(AttemptError::NotYet(format!(
+        "    expected {subject} to {not}match: {pattern}\n    actual {subject}:\n{text}"
+    )))
 }
 
 fn selected_element(w: &World, selector: &str) -> Result<String, AttemptError> {
@@ -486,7 +518,7 @@ mod tests {
     #[test]
     fn not_contains_json_passes_when_the_shape_is_absent() {
         assert_eq!(
-            check_not_contains_json(&json!({"a": 1}), &json!({"b": 2})),
+            check_not_contains_json("body", &json!({"a": 1}), &json!({"b": 2})),
             Ok(())
         );
     }
@@ -494,7 +526,7 @@ mod tests {
     #[test]
     fn not_contains_json_fails_when_the_shape_matches() {
         assert!(matches!(
-            check_not_contains_json(&json!({"a": 1, "b": 2}), &json!({"a": 1})),
+            check_not_contains_json("body", &json!({"a": 1, "b": 2}), &json!({"a": 1})),
             Err(AttemptError::NotYet(_))
         ));
     }

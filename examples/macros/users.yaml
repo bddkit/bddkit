@@ -1,0 +1,6 @@
+# No `exports`: a variable set in here is gone when the macro returns, unless
+# the step that set it says `global`.
+- step: 'I read the city and latitude of "{source}"'
+  do:
+    - extract "city" from variable "<<source>>" as JSON as "city" global
+    - extract "(-?\d+)\.\d+" from variable "<<source>>" as "latDegrees" global

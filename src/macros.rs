@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MacroCatalog {
     pub definitions: Vec<MacroDef>,
 }

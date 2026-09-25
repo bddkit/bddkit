@@ -63,6 +63,18 @@ pub enum StepId {
     ExtractFromMarkup,
     VariableEquals,
     VariableNotEquals,
+    VariableContains,
+    VariableNotContains,
+    VariableMatches,
+    VariableNotMatches,
+    VariableEmpty,
+    VariableContainsJson,
+    VariableEqualsJson,
+    VariableNotContainsJson,
+    ExtractJsonFromVariable,
+    ExtractJsonFromVariableGlobal,
+    ExtractRegexFromVariable,
+    ExtractRegexFromVariableGlobal,
     EncryptWithAes,
     // database
     UseConnection,
@@ -419,6 +431,86 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "asserts a variable holds exactly this value",
         OptionsSource::Global,
     ),
+    assertion(
+        StepId::VariableContains,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should contain "(?P<text>[^"]*)"$"#,
+        "asserts a variable's text contains this substring",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableNotContains,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should not contain "(?P<text>[^"]*)"$"#,
+        "asserts a variable's text does not contain this substring",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableMatches,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should match "(?P<pattern>[^"]*)"$"#,
+        "asserts a variable's text matches this regular expression, unanchored",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableNotMatches,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should not match "(?P<pattern>[^"]*)"$"#,
+        "asserts a variable's text does not match this regular expression",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableEmpty,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should be empty$"#,
+        "asserts a variable's text is empty or whitespace only",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableContainsJson,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should contain JSON:$"#,
+        "asserts a variable's text is JSON containing this JSON — same matching as `the response body contains JSON`",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableEqualsJson,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should equal JSON:$"#,
+        "asserts a variable's text is JSON exactly equal to this JSON",
+        OptionsSource::Global,
+    ),
+    assertion(
+        StepId::VariableNotContainsJson,
+        "vars",
+        r#"^variable "(?P<name>[^"]*)" should not contain JSON:$"#,
+        "asserts a variable's text is JSON that does not contain this JSON",
+        OptionsSource::Global,
+    ),
+    action(
+        StepId::ExtractJsonFromVariableGlobal,
+        "vars",
+        r#"^extract "(?P<path>[^"]*)" from variable "(?P<variable>[^"]*)" as JSON as "(?P<name>[^"]*)" global$"#,
+        "reads a JSON path of a variable's text into a variable the whole file can see",
+    ),
+    action(
+        StepId::ExtractJsonFromVariable,
+        "vars",
+        r#"^extract "(?P<path>[^"]*)" from variable "(?P<variable>[^"]*)" as JSON as "(?P<name>[^"]*)"$"#,
+        "reads a JSON path of a variable's text into a variable",
+    ),
+    action(
+        StepId::ExtractRegexFromVariableGlobal,
+        "vars",
+        r#"^extract "(?P<pattern>[^"]*)" from variable "(?P<variable>[^"]*)" as "(?P<name>[^"]*)" global$"#,
+        "reads the first capture group of a regex over a variable's text into a variable the whole file can see",
+    ),
+    action(
+        StepId::ExtractRegexFromVariable,
+        "vars",
+        r#"^extract "(?P<pattern>[^"]*)" from variable "(?P<variable>[^"]*)" as "(?P<name>[^"]*)"$"#,
+        "reads the first capture group of a regex over a variable's text into a variable",
+    ),
     action(
         StepId::EncryptWithAes,
         "vars",
@@ -627,9 +719,7 @@ pub struct Registry {
 impl Registry {
     #[cfg(test)]
     pub fn new() -> Result<Self, String> {
-        Self::with_macros(MacroCatalog {
-            definitions: Vec::new(),
-        })
+        Self::with_macros(MacroCatalog::default())
     }
 
     /// Only tests build a registry without plugins now: `main` always goes
@@ -1162,6 +1252,32 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::VariableNotEquals => {
             return vars::variable_equals(w, a.cap(0), a.cap(1), true);
         }
+        StepId::VariableContains => return vars::variable_contains(w, a.cap(0), a.cap(1), false),
+        StepId::VariableNotContains => return vars::variable_contains(w, a.cap(0), a.cap(1), true),
+        StepId::VariableMatches => return vars::variable_matches(w, a.cap(0), a.cap(1), false),
+        StepId::VariableNotMatches => return vars::variable_matches(w, a.cap(0), a.cap(1), true),
+        StepId::VariableEmpty => return vars::variable_empty(w, a.cap(0)),
+        StepId::VariableContainsJson => {
+            return vars::variable_contains_json(w, a.cap(0), a.docstring.as_ref());
+        }
+        StepId::VariableEqualsJson => {
+            return vars::variable_equals_json(w, a.cap(0), a.docstring.as_ref());
+        }
+        StepId::VariableNotContainsJson => {
+            return vars::variable_not_contains_json(w, a.cap(0), a.docstring.as_ref());
+        }
+        StepId::ExtractJsonFromVariable => {
+            vars::extract_json_from_variable(w, a.cap(0), a.cap(1), a.cap(2), false)
+        }
+        StepId::ExtractJsonFromVariableGlobal => {
+            vars::extract_json_from_variable(w, a.cap(0), a.cap(1), a.cap(2), true)
+        }
+        StepId::ExtractRegexFromVariable => {
+            vars::extract_regex_from_variable(w, a.cap(0), a.cap(1), a.cap(2), false)
+        }
+        StepId::ExtractRegexFromVariableGlobal => {
+            vars::extract_regex_from_variable(w, a.cap(0), a.cap(1), a.cap(2), true)
+        }
         StepId::EncryptWithAes => vars::encrypt_with_aes(w, a.cap(0), a.cap(1), a.cap(2)),
         StepId::UseApi => api::use_api(w, a.cap(0)),
         StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)),
@@ -1298,7 +1414,7 @@ mod tests {
     #[test]
     fn the_group_switch_step_does_not_shadow_api_or_connection() {
         let reg = Registry::with_macros_and_plugins(
-            MacroCatalog { definitions: Vec::new() },
+            MacroCatalog::default(),
             &[],
             &["widget".to_string(), "browser".to_string()],
         )
@@ -1333,7 +1449,7 @@ mod tests {
     #[test]
     fn a_group_name_with_regex_metacharacters_is_escaped_not_interpreted() {
         let reg = Registry::with_macros_and_plugins(
-            MacroCatalog { definitions: Vec::new() },
+            MacroCatalog::default(),
             &[],
             &["widget.beta".to_string()],
         )
@@ -1536,6 +1652,18 @@ mod tests {
             r#"extract "h1#title" from response body as "pageTitle""#,
             r#"variable "a" should be equal to "1""#,
             r#"variable "a" should not be equal to "1""#,
+            r#"variable "a" should contain "1""#,
+            r#"variable "a" should not contain "1""#,
+            r#"variable "a" should match "^\d+$""#,
+            r#"variable "a" should not match "^\d+$""#,
+            r#"variable "a" should be empty"#,
+            "variable \"a\" should contain JSON:",
+            "variable \"a\" should equal JSON:",
+            "variable \"a\" should not contain JSON:",
+            r#"extract "id" from variable "a" as JSON as "b""#,
+            r#"extract "id" from variable "a" as JSON as "b" global"#,
+            r#"extract "(\d+)" from variable "a" as "b""#,
+            r#"extract "(\d+)" from variable "a" as "b" global"#,
             r#"I encrypt "555555" with AES using key "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" as "otp""#,
             r#"I use "main" connection"#,
             r#"I use "billing" api"#,

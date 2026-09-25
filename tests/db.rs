@@ -197,6 +197,35 @@ Feature: extract
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+/// Issue #39: text that reaches a variable from a column — here a multi-line
+/// JSON document — gets the response body's JSON matcher, not only equality.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_multi_line_extract_is_checked_as_json() {
+    let _g = setup().await;
+    let pool = AnyPool::connect(&test_dsn()).await.expect("connect");
+    // A plain quoted literal may hold a raw newline on all three engines.
+    sqlx::query(
+        "INSERT INTO apibdd_it.companies (slug, name) \
+         VALUES ('json-doc', '{\n  \"id\": 7,\n  \"tags\": [\"a\", \"b\"]\n}\n')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert the multi-line document");
+    pool.close().await;
+    let src = "\
+Feature: extract
+  Scenario: a multi-line column as JSON
+    When I extract \"name\" from \"companies\" with \"slug: json-doc\" as \"doc\"
+    Then variable \"doc\" should match \"\\n\"
+    And variable \"doc\" should contain JSON:
+      \"\"\"
+      {\"id\": \"@variableType(int)\", \"tags\": [\"b\"]}
+      \"\"\"
+";
+    let out = run_feature(src, &_g);
+    assert!(out.status.success(), "{}", combined(&out));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sequence_and_builtin_function() {
     let _g = setup().await;
