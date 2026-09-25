@@ -33,6 +33,11 @@ pub struct Check {
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub config: String,
+    /// `None` only when nothing was resolved at all (the `config: "(none)"`
+    /// case) — a `--json` consumer that wants how the path was chosen reads
+    /// this rather than parsing the `(--config)`/`(BDDKIT_CONFIG)`/`(found in
+    /// working directory)` suffix `config` carries for humans.
+    pub config_source: Option<config::ConfigSource>,
     pub app_env: String,
     pub live: bool,
     pub checks: Vec<Check>,
@@ -133,24 +138,33 @@ impl Report {
 /// `doctor` and `run` ever disagree about whether a config is valid, that is a
 /// bug in `doctor`.
 pub async fn check(
-    config_path: &Path,
+    explicit_config: Option<&Path>,
     env: Option<&str>,
     live: bool,
     dir_env: &dirs::Env,
     report_paths: &[&Path],
 ) -> Report {
+    let resolved = config::resolve_config_path(explicit_config);
     let mut report = Report {
-        config: config_path.display().to_string(),
-        // A broken `.env` costs the header its answer, never the report: the
-        // config stage below names the same failure properly.
-        app_env: config::app_env_for(config_path, env).unwrap_or_else(|_| "unknown".to_string()),
+        config: "(none)".to_string(),
+        config_source: None,
+        app_env: "unknown".to_string(),
         live,
         checks: Vec::new(),
     };
+    if let Ok(Some(resolved)) = &resolved {
+        report.config = format!("{} ({})", resolved.path.display(), resolved.source.label());
+        report.config_source = Some(resolved.source);
+        // A broken `.env` costs the header its answer, never the report: the
+        // config stage below names the same failure properly.
+        report.app_env =
+            config::app_env_for(&resolved.path, env).unwrap_or_else(|_| "unknown".to_string());
+    }
 
     // First, as in `run`: the same `--junit`/`--cucumber-json` a run takes,
-    // and the same create-or-truncate it does before reading the config.
-    // Without them nothing is touched.
+    // and the same create-or-truncate it does before resolving or reading the
+    // config — so even a config that cannot be found leaves the same empty
+    // report files behind in both commands. Without them nothing is touched.
     for path in report_paths {
         let target = path.display().to_string();
         match crate::report::prepare(path) {
@@ -163,6 +177,19 @@ pub async fn check(
             ),
         }
     }
+
+    let config_path = match resolved {
+        Ok(Some(resolved)) => resolved.path,
+        Ok(None) => {
+            report.push("config", None, Status::Failed, config::NO_CONFIG_FOUND);
+            return report;
+        }
+        Err(error) => {
+            report.push("config", None, Status::Failed, &format!("{error:#}"));
+            return report;
+        }
+    };
+    let config_path = config_path.as_path();
 
     let cfg = match config::load(config_path, env) {
         Ok(cfg) => {
@@ -591,6 +618,7 @@ mod tests {
     fn report(checks: Vec<Check>) -> Report {
         Report {
             config: "suite.yaml".into(),
+            config_source: Some(config::ConfigSource::Flag),
             app_env: "dev".into(),
             live: false,
             checks,

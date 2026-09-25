@@ -1,6 +1,6 @@
 use crate::options::{Options, OptionsLayer};
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -619,6 +619,89 @@ fn app_env_in(config_dir: &Path, cli_env: Option<&str>) -> Result<String> {
     let mut base_map = BTreeMap::new();
     load_env_file(&config_dir.join(".env"), &mut base_map)?;
     Ok(resolve_app_env(cli_env, &base_map))
+}
+
+/// Where a resolved config path came from — `doctor` states it next to the
+/// path, the same way it states the `.env` layer, and as its own field in
+/// `--json` rather than folded into the path string a consumer would have to
+/// parse back apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSource {
+    Flag,
+    Env,
+    Discovered,
+}
+
+impl ConfigSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ConfigSource::Flag => "--config",
+            ConfigSource::Env => "BDDKIT_CONFIG",
+            ConfigSource::Discovered => "found in working directory",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedConfig {
+    pub path: PathBuf,
+    pub source: ConfigSource,
+}
+
+/// Resolution order shared by every command that takes `--config`: the flag
+/// itself, then `$BDDKIT_CONFIG`, then `bddkit.yaml`/`bddkit.yml` in the
+/// working directory. `None` means nothing was found anywhere — the caller
+/// decides what that means for its own exit code. An explicit flag or
+/// environment variable is never checked for existence here: a missing file
+/// is `load`'s own "failed to read config" error, not a silent fallback to
+/// the default.
+pub fn resolve_config_path(explicit: Option<&Path>) -> Result<Option<ResolvedConfig>> {
+    let env_path = std::env::var_os("BDDKIT_CONFIG").map(PathBuf::from);
+    resolve_config_path_in(explicit, env_path.as_deref(), Path::new("."))
+}
+
+/// `resolve_config_path` step 4: nothing was named and nothing was found.
+/// Shared verbatim by every caller (`run`, `doctor`, `resource add`) so they
+/// can never name the candidate files differently from one another.
+pub(crate) const NO_CONFIG_FOUND: &str = "no config found: looked for ./bddkit.yaml and \
+./bddkit.yml in the working directory; pass --config or set BDDKIT_CONFIG";
+
+fn resolve_config_path_in(
+    explicit: Option<&Path>,
+    env_path: Option<&Path>,
+    cwd: &Path,
+) -> Result<Option<ResolvedConfig>> {
+    if let Some(path) = explicit {
+        return Ok(Some(ResolvedConfig {
+            path: path.to_path_buf(),
+            source: ConfigSource::Flag,
+        }));
+    }
+    if let Some(path) = env_path {
+        return Ok(Some(ResolvedConfig {
+            path: path.to_path_buf(),
+            source: ConfigSource::Env,
+        }));
+    }
+    let yaml = cwd.join("bddkit.yaml");
+    let yml = cwd.join("bddkit.yml");
+    match (yaml.is_file(), yml.is_file()) {
+        (true, true) => bail!(
+            "both {} and {} exist; keep one, or pass --config to pick",
+            yaml.display(),
+            yml.display()
+        ),
+        (true, false) => Ok(Some(ResolvedConfig {
+            path: yaml,
+            source: ConfigSource::Discovered,
+        })),
+        (false, true) => Ok(Some(ResolvedConfig {
+            path: yml,
+            source: ConfigSource::Discovered,
+        })),
+        (false, false) => Ok(None),
+    }
 }
 
 pub fn load(path: &Path, cli_env: Option<&str>) -> Result<Config> {
@@ -1246,6 +1329,91 @@ resources:
             let resolved =
                 resolve_app_env_with_process_env(None, Some("from_real_env".into()), &base);
             assert_eq!(resolved, "from_real_env");
+        }
+    }
+
+    mod resolve_config_path {
+        use super::*;
+
+        fn scratch_dir(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!("bddkit_resolve_config_path_{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            dir
+        }
+
+        #[test]
+        fn flag_wins_over_everything() {
+            let dir = scratch_dir("flag_wins");
+            std::fs::write(dir.join("bddkit.yaml"), "").expect("write");
+            let flag = PathBuf::from("explicit.yaml");
+            let resolved =
+                resolve_config_path_in(Some(&flag), Some(Path::new("from_env.yaml")), &dir)
+                    .expect("resolves")
+                    .expect("some");
+            assert_eq!(resolved.path, flag);
+            assert_eq!(resolved.source, ConfigSource::Flag);
+        }
+
+        #[test]
+        fn env_wins_over_the_default_file() {
+            let dir = scratch_dir("env_wins");
+            std::fs::write(dir.join("bddkit.yaml"), "").expect("write");
+            let env_path = PathBuf::from("from_env.yaml");
+            let resolved = resolve_config_path_in(None, Some(&env_path), &dir)
+                .expect("resolves")
+                .expect("some");
+            assert_eq!(resolved.path, env_path);
+            assert_eq!(resolved.source, ConfigSource::Env);
+        }
+
+        #[test]
+        fn discovers_bddkit_yaml_in_the_working_directory() {
+            let dir = scratch_dir("discovers_yaml");
+            std::fs::write(dir.join("bddkit.yaml"), "").expect("write");
+            let resolved = resolve_config_path_in(None, None, &dir)
+                .expect("resolves")
+                .expect("some");
+            assert_eq!(resolved.path, dir.join("bddkit.yaml"));
+            assert_eq!(resolved.source, ConfigSource::Discovered);
+        }
+
+        #[test]
+        fn discovers_the_yml_spelling_too() {
+            let dir = scratch_dir("discovers_yml");
+            std::fs::write(dir.join("bddkit.yml"), "").expect("write");
+            let resolved = resolve_config_path_in(None, None, &dir)
+                .expect("resolves")
+                .expect("some");
+            assert_eq!(resolved.path, dir.join("bddkit.yml"));
+            assert_eq!(resolved.source, ConfigSource::Discovered);
+        }
+
+        #[test]
+        fn refuses_when_both_spellings_exist() {
+            let dir = scratch_dir("both_spellings");
+            std::fs::write(dir.join("bddkit.yaml"), "").expect("write");
+            std::fs::write(dir.join("bddkit.yml"), "").expect("write");
+            let err = resolve_config_path_in(None, None, &dir).expect_err("ambiguous");
+            assert!(format!("{err:#}").contains("bddkit.yaml"), "{err:#}");
+            assert!(format!("{err:#}").contains("bddkit.yml"), "{err:#}");
+        }
+
+        #[test]
+        fn nothing_found_is_none() {
+            let dir = scratch_dir("nothing_found");
+            let resolved = resolve_config_path_in(None, None, &dir).expect("resolves");
+            assert!(resolved.is_none());
+        }
+
+        #[test]
+        fn a_bddkit_yaml_in_a_parent_directory_is_not_picked_up() {
+            let dir = scratch_dir("parent_not_walked");
+            std::fs::write(dir.join("bddkit.yaml"), "").expect("write");
+            let child = dir.join("child");
+            std::fs::create_dir_all(&child).expect("create child dir");
+            let resolved = resolve_config_path_in(None, None, &child).expect("resolves");
+            assert!(resolved.is_none());
         }
     }
 
