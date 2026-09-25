@@ -465,8 +465,7 @@ fn load_env_file(path: &Path, map: &mut BTreeMap<String, String>) -> Result<()> 
     match dotenvy::from_path_iter(path) {
         Ok(iter) => {
             for item in iter {
-                let (k, v) =
-                    item.with_context(|| format!("failed to parse {}", path.display()))?;
+                let (k, v) = item.with_context(|| format!("failed to parse {}", path.display()))?;
                 map.insert(k, v);
             }
             Ok(())
@@ -556,7 +555,9 @@ fn expand_env(src: &str, env_map: &BTreeMap<String, String>) -> Result<String> {
         let resolved = match op {
             None => match value {
                 Some(v) => v,
-                None => bail!("environment variable {name} is not set but is referenced in the config"),
+                None => {
+                    bail!("environment variable {name} is not set but is referenced in the config")
+                }
             },
             Some(":-") => match value {
                 Some(v) if !v.is_empty() => v,
@@ -650,8 +651,7 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     let app_env = app_env_in(config_dir, cli_env)?;
     let env_map = load_env_layers(config_dir, &app_env)?;
     let expanded = expand_env(raw, &env_map)?;
-    let mut cfg: Config =
-        serde_yaml_ng::from_str(&expanded).context("failed to parse config")?;
+    let mut cfg: Config = serde_yaml_ng::from_str(&expanded).context("failed to parse config")?;
     // Resolve the defaults right away: an ambiguous config should fail at
     // startup, not at the first step that reaches for them.
     cfg.resolve_default_api()?;
@@ -778,7 +778,8 @@ resources:
             "paths: [features]\nresources:\n  api: {}\n  widget:\n    main:\n      bucket: b\ndefault_widget: main\n",
         )
         .expect("config parses");
-        c.check_group_defaults().expect("default_widget names its group");
+        c.check_group_defaults()
+            .expect("default_widget names its group");
     }
 
     #[test]
@@ -869,10 +870,9 @@ resources:
 
     #[test]
     fn missing_environment_variable_is_an_error() {
-        let err = parse(
-            "paths: [f]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n",
-        )
-        .expect_err("variable is missing");
+        let err =
+            parse("paths: [f]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n")
+                .expect_err("variable is missing");
         assert!(err.to_string().contains("BDDKIT_ABSENT_VAR"), "{err}");
     }
 
@@ -909,10 +909,7 @@ resources:
 
         #[test]
         fn colon_dash_uses_default_when_unset() {
-            assert_eq!(
-                expand("${FOO:-fallback}", &[]).expect("parses"),
-                "fallback"
-            );
+            assert_eq!(expand("${FOO:-fallback}", &[]).expect("parses"), "fallback");
         }
 
         #[test]
@@ -933,10 +930,7 @@ resources:
 
         #[test]
         fn dash_uses_default_only_when_unset() {
-            assert_eq!(
-                expand("${FOO-fallback}", &[]).expect("parses"),
-                "fallback"
-            );
+            assert_eq!(expand("${FOO-fallback}", &[]).expect("parses"), "fallback");
         }
 
         #[test]
@@ -1010,10 +1004,7 @@ resources:
 
         #[test]
         fn plus_uses_alt_when_set_even_if_empty() {
-            assert_eq!(
-                expand("${FOO+alt}", &[("FOO", "")]).expect("parses"),
-                "alt"
-            );
+            assert_eq!(expand("${FOO+alt}", &[("FOO", "")]).expect("parses"), "alt");
         }
 
         #[test]
@@ -1069,7 +1060,9 @@ resources:
         fn a_default_naming_an_undeclared_resource_is_an_error() {
             let src = "paths: [f]\ndefault_api: missing\nresources:\n  api:\n    a:\n      base_url: http://a.local\n";
             let c = parse(src).expect("config parses");
-            let err = c.resolve_default_api().expect_err("resource is not declared");
+            let err = c
+                .resolve_default_api()
+                .expect_err("resource is not declared");
             assert!(err.to_string().contains("missing"), "{err}");
         }
 
@@ -1304,12 +1297,20 @@ resources:
     #[test]
     fn host_fields_names_the_type_each_key_takes() {
         let api = host_fields("api").expect("api is a host kind");
-        let by_name = |key: &str| api.iter().find(|(name, ..)| *name == key).expect("declared").3;
+        let by_name = |key: &str| {
+            api.iter()
+                .find(|(name, ..)| *name == key)
+                .expect("declared")
+                .3
+        };
         assert_eq!(by_name("base_url"), Scalar::Str);
         assert_eq!(by_name("timeout_secs"), Scalar::Num);
         assert_eq!(by_name("default_headers"), Scalar::NonScalar);
         assert_eq!(by_name("options"), Scalar::NonScalar);
-        assert!(host_fields("s3").is_none(), "a plugin group is not a host kind");
+        assert!(
+            host_fields("s3").is_none(),
+            "a plugin group is not a host kind"
+        );
     }
 
     #[test]
@@ -1474,7 +1475,10 @@ default_widget: backups
             .find(|i| i.name == "backups")
             .expect("backups declared");
         assert_eq!(instance.config["bucket"], serde_json::json!("backups"));
-        assert_eq!(instance.config["endpoint"], serde_json::json!("http://storage.internal:9000"));
+        assert_eq!(
+            instance.config["endpoint"],
+            serde_json::json!("http://storage.internal:9000")
+        );
         // A flattened catch-all is one typo away from cannibalising the typed
         // fields beside it, and the failure would be silent: the field keeps
         // its default and the value lands in `extra` instead.
@@ -1505,9 +1509,20 @@ default_widget: backups
     #[test]
     fn instance_options_inherit_from_the_global_layer() {
         let cfg = parse(WITH_GROUP).expect("parses");
-        let backups = cfg.plugin_instances.iter().find(|i| i.name == "backups").unwrap();
-        let archive = cfg.plugin_instances.iter().find(|i| i.name == "archive").unwrap();
-        assert_eq!(backups.options.polling.timeout, std::time::Duration::from_secs(30));
+        let backups = cfg
+            .plugin_instances
+            .iter()
+            .find(|i| i.name == "backups")
+            .unwrap();
+        let archive = cfg
+            .plugin_instances
+            .iter()
+            .find(|i| i.name == "archive")
+            .unwrap();
+        assert_eq!(
+            backups.options.polling.timeout,
+            std::time::Duration::from_secs(30)
+        );
         assert_eq!(
             archive.options.polling.timeout,
             std::time::Duration::from_secs(10),
@@ -1528,7 +1543,10 @@ resources:
           timeout_secs: 0
 ";
         let error = parse(src).expect_err("zero timeout is invalid");
-        assert!(format!("{error:#}").contains("resources.widget.backups"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("resources.widget.backups"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1544,13 +1562,19 @@ resources:
           timeout_secs: 3
 ";
         let error = parse(src).expect_err("typo in a host option");
-        assert!(format!("{error:#}").contains("resources.widget.backups"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("resources.widget.backups"),
+            "{error:#}"
+        );
     }
 
     #[test]
     fn a_group_default_resolves_like_every_other_default() {
         let cfg = parse(WITH_GROUP).expect("parses");
-        assert_eq!(cfg.resolve_default_group("widget").unwrap().as_deref(), Some("backups"));
+        assert_eq!(
+            cfg.resolve_default_group("widget").unwrap().as_deref(),
+            Some("backups")
+        );
     }
 
     #[test]
@@ -1564,7 +1588,10 @@ resources:
       bucket: b
 ";
         let cfg = parse(src).expect("parses");
-        assert_eq!(cfg.resolve_default_group("widget").unwrap().as_deref(), Some("only"));
+        assert_eq!(
+            cfg.resolve_default_group("widget").unwrap().as_deref(),
+            Some("only")
+        );
     }
 
     #[test]

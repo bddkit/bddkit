@@ -73,10 +73,7 @@ fn json_is_machine_readable_and_carries_the_raw_pattern() {
     assert_eq!(first["group"], "api");
     assert!(first["template"].is_string());
     assert!(
-        first["pattern"]
-            .as_str()
-            .expect("pattern")
-            .starts_with('^'),
+        first["pattern"].as_str().expect("pattern").starts_with('^'),
         "the raw pattern belongs in the machine form: {first}"
     );
     assert!(first["description"].is_string());
@@ -97,7 +94,13 @@ fn the_family_help_names_the_list_subcommand() {
 #[test]
 fn a_locale_replaces_the_description_but_never_the_template() {
     let (out, code) = steps(&[
-        "steps", "list", "--filter", "response code", "-v", "--lang", "ru",
+        "steps",
+        "list",
+        "--filter",
+        "response code",
+        "-v",
+        "--lang",
+        "ru",
     ]);
     assert_eq!(code, Some(0), "{out}");
     assert!(

@@ -82,7 +82,10 @@ mod tests {
         std::fs::create_dir_all(dir).expect("mkdir");
         let path = dir.join(file);
         std::fs::write(&path, body).expect("write lock");
-        Candidate { layer: "test".to_string(), path }
+        Candidate {
+            layer: "test".to_string(),
+            path,
+        }
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -95,7 +98,11 @@ mod tests {
     #[test]
     fn parses_the_minimal_entry() {
         let dir = temp("minimal");
-        let c = write(&dir, "plugins.yaml", "plugin:\n  - name: widget\n    path: /opt/libwidget.so\n");
+        let c = write(
+            &dir,
+            "plugins.yaml",
+            "plugin:\n  - name: widget\n    path: /opt/libwidget.so\n",
+        );
         let entries = load(&[c]).expect("loads");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "widget");
@@ -124,27 +131,55 @@ mod tests {
     fn a_later_candidate_overrides_an_earlier_entry_of_the_same_name() {
         let user = temp("user");
         let project = temp("project");
-        let mut u = write(&user, "plugins.yaml", "plugin:\n  - name: widget\n    path: /user/libwidget.so\n  - name: mail\n    path: /user/libmail.so\n");
+        let mut u = write(
+            &user,
+            "plugins.yaml",
+            "plugin:\n  - name: widget\n    path: /user/libwidget.so\n  - name: mail\n    path: /user/libmail.so\n",
+        );
         u.layer = "user".to_string();
-        let mut p = write(&project, "plugins.yaml", "plugin:\n  - name: widget\n    path: /project/libwidget.so\n");
+        let mut p = write(
+            &project,
+            "plugins.yaml",
+            "plugin:\n  - name: widget\n    path: /project/libwidget.so\n",
+        );
         p.layer = "project".to_string();
         let entries = load(&[u, p]).expect("loads");
-        let widget = entries.iter().find(|e| e.name == "widget").expect("widget present");
+        let widget = entries
+            .iter()
+            .find(|e| e.name == "widget")
+            .expect("widget present");
         assert_eq!(widget.path, PathBuf::from("/project/libwidget.so"));
-        assert_eq!(widget.layer, "project", "the entry remembers the layer that won");
-        let mail = entries.iter().find(|e| e.name == "mail").expect("a user entry the project does not override survives");
+        assert_eq!(
+            widget.layer, "project",
+            "the entry remembers the layer that won"
+        );
+        let mail = entries
+            .iter()
+            .find(|e| e.name == "mail")
+            .expect("a user entry the project does not override survives");
         assert_eq!(mail.layer, "user");
     }
 
     #[test]
     fn local_overrides_base_in_the_same_directory() {
         let dir = temp("local");
-        let base = write(&dir, "plugins.yaml", "plugin:\n  - name: widget\n    path: vendor/libwidget.so\n");
-        let mut local = write(&dir, "plugins.local.yaml", "plugin:\n  - name: widget\n    path: /home/dev/target/debug/libwidget.so\n");
+        let base = write(
+            &dir,
+            "plugins.yaml",
+            "plugin:\n  - name: widget\n    path: vendor/libwidget.so\n",
+        );
+        let mut local = write(
+            &dir,
+            "plugins.local.yaml",
+            "plugin:\n  - name: widget\n    path: /home/dev/target/debug/libwidget.so\n",
+        );
         local.layer = "test.local".to_string();
         let entries = load(&[base, local]).expect("loads");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, PathBuf::from("/home/dev/target/debug/libwidget.so"));
+        assert_eq!(
+            entries[0].path,
+            PathBuf::from("/home/dev/target/debug/libwidget.so")
+        );
         assert_eq!(entries[0].layer, "test.local");
     }
 
@@ -152,7 +187,10 @@ mod tests {
     fn a_missing_lock_file_is_not_an_error() {
         // Most runs have no plugins at all; a missing file means "none".
         let dir = temp("absent");
-        let c = Candidate { layer: "test".to_string(), path: dir.join("plugins.yaml") };
+        let c = Candidate {
+            layer: "test".to_string(),
+            path: dir.join("plugins.yaml"),
+        };
         assert!(load(&[c]).expect("loads").is_empty());
     }
 
@@ -176,7 +214,11 @@ mod tests {
         // A committed project lock referring to ./vendor/libwidget.so must work
         // regardless of the working directory the run was started from.
         let dir = temp("relative");
-        let c = write(&dir, "plugins.yaml", "plugin:\n  - name: widget\n    path: vendor/libwidget.so\n");
+        let c = write(
+            &dir,
+            "plugins.yaml",
+            "plugin:\n  - name: widget\n    path: vendor/libwidget.so\n",
+        );
         let entries = load(&[c]).expect("loads");
         assert_eq!(entries[0].path, dir.join("vendor/libwidget.so"));
     }

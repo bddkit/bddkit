@@ -221,9 +221,9 @@ pub fn json_node_not_contains(w: &World, p: &str, needle: &str) -> AttemptResult
 fn check_not_contains_substring(v: &serde_json::Value, p: &str, needle: &str) -> AttemptResult {
     match path::read(v, p) {
         Err(_) => Ok(()),
-        Ok(serde_json::Value::String(s)) if s.contains(needle) => Err(AttemptError::NotYet(format!(
-            "    node {p:?} should not contain {needle:?}\n    actual:   {s:?}"
-        ))),
+        Ok(serde_json::Value::String(s)) if s.contains(needle) => Err(AttemptError::NotYet(
+            format!("    node {p:?} should not contain {needle:?}\n    actual:   {s:?}"),
+        )),
         Ok(serde_json::Value::String(_)) => Ok(()),
         Ok(other) => Err(AttemptError::Fatal(format!(
             "node {p:?} is not a string, got: {other}"
@@ -399,7 +399,10 @@ mod tests {
     #[test]
     fn contains_text_fails_when_absent() {
         let w = world_with_response("<h1>Hello</h1>", Vec::new());
-        assert!(matches!(body_contains_text(&w, "<h2>"), Err(AttemptError::NotYet(_))));
+        assert!(matches!(
+            body_contains_text(&w, "<h2>"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     #[test]
@@ -411,7 +414,10 @@ mod tests {
     #[test]
     fn not_contains_text_fails_when_present() {
         let w = world_with_response("<h1>Hello</h1>", Vec::new());
-        assert!(matches!(body_not_contains_text(&w, "<h1>"), Err(AttemptError::NotYet(_))));
+        assert!(matches!(
+            body_not_contains_text(&w, "<h1>"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     #[test]
@@ -423,7 +429,10 @@ mod tests {
     #[test]
     fn matches_fails_on_a_regex_miss() {
         let w = world_with_response("<h1>Hello</h1>", Vec::new());
-        assert!(matches!(body_matches(&w, "<h9>"), Err(AttemptError::NotYet(_))));
+        assert!(matches!(
+            body_matches(&w, "<h9>"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     #[test]
@@ -441,13 +450,19 @@ mod tests {
     #[test]
     fn not_matches_fails_on_a_regex_hit() {
         let w = world_with_response("<h1>Hello</h1>", Vec::new());
-        assert!(matches!(body_not_matches(&w, "<h[0-9]>"), Err(AttemptError::NotYet(_))));
+        assert!(matches!(
+            body_not_matches(&w, "<h[0-9]>"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     #[test]
     fn not_matches_is_fatal_on_an_invalid_pattern_not_swallowed_as_a_pass() {
         let w = world_with_response("<h1>Hello</h1>", Vec::new());
-        assert!(matches!(body_not_matches(&w, "["), Err(AttemptError::Fatal(_))));
+        assert!(matches!(
+            body_not_matches(&w, "["),
+            Err(AttemptError::Fatal(_))
+        ));
     }
 
     #[test]
@@ -569,7 +584,10 @@ mod tests {
     #[test]
     fn array_length_on_an_array_of_the_wrong_length_reports_the_mismatch() {
         let err = check_array_length(&json!([1, 2]), 3).unwrap_err();
-        assert_ne!(err, AttemptError::NotYet("response body is not an array".to_string()));
+        assert_ne!(
+            err,
+            AttemptError::NotYet("response body is not an array".to_string())
+        );
     }
 
     #[test]
@@ -583,7 +601,10 @@ mod tests {
     #[test]
     fn has_element_passes_on_html() {
         let headers = vec![("content-type".to_string(), "text/html".to_string())];
-        let w = world_with_response(r#"<html><body><h1 id="title">Hi</h1></body></html>"#, headers);
+        let w = world_with_response(
+            r#"<html><body><h1 id="title">Hi</h1></body></html>"#,
+            headers,
+        );
         assert_eq!(body_has_element(&w, "h1#title"), Ok(()));
     }
 
@@ -598,27 +619,39 @@ mod tests {
     fn has_element_fails_when_no_match() {
         let headers = vec![("content-type".to_string(), "text/html".to_string())];
         let w = world_with_response(r#"<html><body></body></html>"#, headers);
-        assert!(matches!(body_has_element(&w, ".missing"), Err(AttemptError::NotYet(_))));
+        assert!(matches!(
+            body_has_element(&w, ".missing"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     #[test]
     fn has_element_is_fatal_on_json_content_type() {
         let headers = vec![("content-type".to_string(), "application/json".to_string())];
         let w = world_with_response(r#"{"a": 1}"#, headers);
-        assert!(matches!(body_has_element(&w, "a"), Err(AttemptError::Fatal(_))));
+        assert!(matches!(
+            body_has_element(&w, "a"),
+            Err(AttemptError::Fatal(_))
+        ));
     }
 
     #[test]
     fn has_element_with_text_passes_on_exact_match() {
         let headers = vec![("content-type".to_string(), "text/html".to_string())];
-        let w = world_with_response(r#"<html><body><h1 id="title">Hi</h1></body></html>"#, headers);
+        let w = world_with_response(
+            r#"<html><body><h1 id="title">Hi</h1></body></html>"#,
+            headers,
+        );
         assert_eq!(body_has_element_with_text(&w, "h1#title", "Hi"), Ok(()));
     }
 
     #[test]
     fn has_element_with_text_fails_on_mismatch() {
         let headers = vec![("content-type".to_string(), "text/html".to_string())];
-        let w = world_with_response(r#"<html><body><h1 id="title">Hi</h1></body></html>"#, headers);
+        let w = world_with_response(
+            r#"<html><body><h1 id="title">Hi</h1></body></html>"#,
+            headers,
+        );
         assert!(matches!(
             body_has_element_with_text(&w, "h1#title", "Bye"),
             Err(AttemptError::NotYet(_))
@@ -635,8 +668,14 @@ mod tests {
     #[test]
     fn not_has_element_fails_when_present() {
         let headers = vec![("content-type".to_string(), "text/html".to_string())];
-        let w = world_with_response(r#"<html><body><h1 id="title">Hi</h1></body></html>"#, headers);
-        assert!(matches!(body_not_has_element(&w, "h1#title"), Err(AttemptError::NotYet(_))));
+        let w = world_with_response(
+            r#"<html><body><h1 id="title">Hi</h1></body></html>"#,
+            headers,
+        );
+        assert!(matches!(
+            body_not_has_element(&w, "h1#title"),
+            Err(AttemptError::NotYet(_))
+        ));
     }
 
     /// Negation must not swallow a config-level error: "wrong content-type"
@@ -645,14 +684,20 @@ mod tests {
     fn not_has_element_stays_fatal_on_json_content_type() {
         let headers = vec![("content-type".to_string(), "application/json".to_string())];
         let w = world_with_response(r#"{"a": 1}"#, headers);
-        assert!(matches!(body_not_has_element(&w, "a"), Err(AttemptError::Fatal(_))));
+        assert!(matches!(
+            body_not_has_element(&w, "a"),
+            Err(AttemptError::Fatal(_))
+        ));
     }
 
     #[test]
     fn has_element_does_not_silently_pass_on_a_false_boolean_xpath() {
         let headers = vec![("content-type".to_string(), "application/xml".to_string())];
         let w = world_with_response(r#"<root><name>Acme</name></root>"#, headers);
-        assert!(matches!(body_has_element(&w, "//missing = 'x'"), Err(AttemptError::Fatal(_))));
+        assert!(matches!(
+            body_has_element(&w, "//missing = 'x'"),
+            Err(AttemptError::Fatal(_))
+        ));
     }
 
     #[test]
@@ -661,8 +706,13 @@ mod tests {
         let indented = "<html><body>\n  <div class=\"box\">\n    Loose\n  </div>\n</body></html>";
         let w = world_with_response(indented, headers);
         let err = body_has_element_with_text(&w, "div.box", "Loose").unwrap_err();
-        let AttemptError::NotYet(msg) = err else { panic!("expected NotYet") };
+        let AttemptError::NotYet(msg) = err else {
+            panic!("expected NotYet")
+        };
         // Debug-quoted so the whitespace difference is visible, not silently swallowed.
-        assert!(msg.contains("\\n"), "message should show escaped whitespace: {msg}");
+        assert!(
+            msg.contains("\\n"),
+            "message should show escaped whitespace: {msg}"
+        );
     }
 }

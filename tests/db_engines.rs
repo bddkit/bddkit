@@ -74,7 +74,9 @@ async fn each_engine_selects_its_own_platform() {
             "SQL: SELECT CAST(NEXTVAL(s) AS CHAR)",
         ),
     ] {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let out = run_against(&dsn);
         assert!(
             out.contains(expected_signal),

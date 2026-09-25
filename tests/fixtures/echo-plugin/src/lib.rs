@@ -29,7 +29,9 @@ struct Instance {
 /// literal has no interior NUL. Anything you add here must keep that property.
 fn out(s: String) -> *mut c_char {
     CString::new(s)
-        .unwrap_or_else(|_| CString::new("{\"ok\":false,\"error\":\"NUL in reply\"}").expect("literal"))
+        .unwrap_or_else(|_| {
+            CString::new("{\"ok\":false,\"error\":\"NUL in reply\"}").expect("literal")
+        })
         .into_raw()
 }
 
@@ -155,7 +157,8 @@ pub extern "C" fn bddkit_init_instance(request: *const c_char) -> *mut c_char {
             Err(e) => return serde_json::json!({"ok": false, "error": e.to_string()}).to_string(),
         };
         let Some(prefix) = value["config"]["prefix"].as_str() else {
-            return r#"{"ok":false,"error":"echo instance requires a string \"prefix\""}"#.to_string();
+            return r#"{"ok":false,"error":"echo instance requires a string \"prefix\""}"#
+                .to_string();
         };
         let fail_reset = value["config"]["fail_reset"].as_bool().unwrap_or(false);
         let drop_log = value["config"]["drop_log"].as_str().map(str::to_string);
@@ -163,7 +166,12 @@ pub extern "C" fn bddkit_init_instance(request: *const c_char) -> *mut c_char {
         let mut guard = INSTANCES.lock().expect("instances");
         guard.get_or_insert_with(HashMap::new).insert(
             handle,
-            Instance { prefix: prefix.to_string(), attempts: 0, fail_reset, drop_log },
+            Instance {
+                prefix: prefix.to_string(),
+                attempts: 0,
+                fail_reset,
+                drop_log,
+            },
         );
         serde_json::json!({"ok": true, "handle": handle}).to_string()
     })
@@ -185,7 +193,11 @@ pub extern "C" fn bddkit_dispatch(
         };
         let args: Vec<String> = value["args"]
             .as_array()
-            .map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect())
+            .map(|a| {
+                a.iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut guard = INSTANCES.lock().expect("instances");

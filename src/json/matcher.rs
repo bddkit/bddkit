@@ -74,7 +74,9 @@ fn apply_matcher(expected: &str, actual: &Value, path: &str) -> Option<Result<()
                     "@arrayLength({want}), actual length is {}",
                     a.len()
                 )),
-                None => fail(format!("@arrayLength({want}), but the value is not an array")),
+                None => fail(format!(
+                    "@arrayLength({want}), but the value is not an array"
+                )),
             }
         }
         "regExp" => {

@@ -43,7 +43,10 @@ impl Workspace {
     pub fn dir(&mut self) -> Result<&Path, String> {
         if !self.created {
             std::fs::create_dir_all(&self.path).map_err(|e| {
-                format!("failed to create the workspace {}: {e}", self.path.display())
+                format!(
+                    "failed to create the workspace {}: {e}",
+                    self.path.display()
+                )
             })?;
             self.created = true;
         }
@@ -156,7 +159,11 @@ mod tests {
         // Invariant 2: a scenario never inherits the instance another one switched
         // to, exactly as the current API resource resets.
         let mut state = crate::plugin::PluginState::new(None);
-        state.set_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
+        state.set_defaults(
+            [("echo".to_string(), "a".to_string())]
+                .into_iter()
+                .collect(),
+        );
         state.use_instance_unchecked("echo", "b");
         assert_eq!(state.current("echo").expect("selected"), "b");
         state.reset();
@@ -173,8 +180,11 @@ mod tests {
             None,
             Options::default(),
         );
-        w.plugins
-            .set_defaults([("echo".to_string(), "a".to_string())].into_iter().collect());
+        w.plugins.set_defaults(
+            [("echo".to_string(), "a".to_string())]
+                .into_iter()
+                .collect(),
+        );
         w.plugins.use_instance_unchecked("echo", "b");
         w.reset_scenario();
         assert_eq!(w.plugins.current("echo").expect("selected"), "a");
@@ -216,9 +226,15 @@ mod tests {
     fn asking_for_the_workspace_creates_it_and_the_path_never_moves() {
         let mut ws = Workspace::new("test-run-create");
         let first = ws.dir().expect("create").to_path_buf();
-        assert!(first.exists(), "the host creates the workspace, not the plugin");
+        assert!(
+            first.exists(),
+            "the host creates the workspace, not the plugin"
+        );
         let second = ws.dir().expect("create again").to_path_buf();
-        assert_eq!(first, second, "a second call must not allocate a new directory");
+        assert_eq!(
+            first, second,
+            "a second call must not allocate a new directory"
+        );
         let _ = std::fs::remove_dir_all(&first);
     }
 

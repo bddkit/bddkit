@@ -127,9 +127,13 @@ pub extern "C" fn bddkit_init_instance(request: *const c_char) -> *mut c_char {
         let drop_log = value["config"]["drop_log"].as_str().map(str::to_string);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
         let mut guard = INSTANCES.lock().expect("instances");
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(handle, Instance { counter: 0, drop_log });
+        guard.get_or_insert_with(HashMap::new).insert(
+            handle,
+            Instance {
+                counter: 0,
+                drop_log,
+            },
+        );
         serde_json::json!({"ok": true, "handle": handle}).to_string()
     })
 }

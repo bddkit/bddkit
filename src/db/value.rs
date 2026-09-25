@@ -99,11 +99,7 @@ pub fn pairs_from_wide(rows: &[Vec<String>]) -> Result<Vec<Vec<Pair>>, String> {
 pub fn pairs_from_tall(rows: &[Vec<String>]) -> Result<Vec<Pair>, String> {
     let mut out = Vec::new();
     for row in rows.iter().skip(1) {
-        let col = row
-            .first()
-            .ok_or("table row is empty")?
-            .trim()
-            .to_string();
+        let col = row.first().ok_or("table row is empty")?.trim().to_string();
         let raw = row.get(1).map(String::as_str).unwrap_or("");
         out.push((col, make_value(raw)));
     }

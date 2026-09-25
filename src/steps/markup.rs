@@ -83,7 +83,9 @@ fn xpath_select(xml: &str, expr: &str, require_nodeset: bool) -> Result<String, 
         sxd_xpath::Value::Nodeset(nodes) => {
             let ordered = nodes.document_order();
             if ordered.is_empty() {
-                return Err(MarkupError::NoMatch(format!("XPath {expr:?} found no nodes")));
+                return Err(MarkupError::NoMatch(format!(
+                    "XPath {expr:?} found no nodes"
+                )));
             }
             Ok(ordered
                 .iter()
@@ -198,7 +200,10 @@ mod tests {
 
     #[test]
     fn xpath_select_reads_element_text() {
-        assert_eq!(xpath(users_xml(), "//user[@id='2']/email").unwrap(), "c@d.net");
+        assert_eq!(
+            xpath(users_xml(), "//user[@id='2']/email").unwrap(),
+            "c@d.net"
+        );
     }
 
     #[test]
@@ -208,23 +213,35 @@ mod tests {
 
     #[test]
     fn xpath_select_joins_multiple_matches_with_newlines() {
-        assert_eq!(xpath(users_xml(), "//user/email").unwrap(), "a@b.net\nc@d.net");
+        assert_eq!(
+            xpath(users_xml(), "//user/email").unwrap(),
+            "a@b.net\nc@d.net"
+        );
     }
 
     #[test]
     fn xpath_select_with_no_matches_is_a_retryable_no_match() {
-        assert!(matches!(xpath_select(users_xml(), "//missing", true), Err(MarkupError::NoMatch(_))));
+        assert!(matches!(
+            xpath_select(users_xml(), "//missing", true),
+            Err(MarkupError::NoMatch(_))
+        ));
     }
 
     #[test]
     fn xpath_select_on_malformed_xml_is_fatal() {
         let err = xpath_select("<not-closed>", "/x", true).unwrap_err();
-        assert!(matches!(err, MarkupError::Fatal(ref m) if m.contains("failed to parse")), "{err}");
+        assert!(
+            matches!(err, MarkupError::Fatal(ref m) if m.contains("failed to parse")),
+            "{err}"
+        );
     }
 
     #[test]
     fn xpath_select_with_an_invalid_expression_is_fatal() {
-        assert!(matches!(xpath_select(users_xml(), "///[[[", true), Err(MarkupError::Fatal(_))));
+        assert!(matches!(
+            xpath_select(users_xml(), "///[[[", true),
+            Err(MarkupError::Fatal(_))
+        ));
     }
 
     #[test]
@@ -272,13 +289,19 @@ mod tests {
     #[test]
     fn css_select_with_no_matches_is_a_retryable_no_match() {
         let html = r#"<html><body></body></html>"#;
-        assert!(matches!(css_select(html, ".missing"), Err(MarkupError::NoMatch(_))));
+        assert!(matches!(
+            css_select(html, ".missing"),
+            Err(MarkupError::NoMatch(_))
+        ));
     }
 
     #[test]
     fn css_select_with_an_invalid_selector_is_fatal() {
         let html = r#"<html><body></body></html>"#;
-        assert!(matches!(css_select(html, ":::"), Err(MarkupError::Fatal(_))));
+        assert!(matches!(
+            css_select(html, ":::"),
+            Err(MarkupError::Fatal(_))
+        ));
     }
 
     /// Pins the finding from the design spike: `sxd-document` (the XML
@@ -293,6 +316,9 @@ mod tests {
     #[test]
     fn css_select_tolerates_doctype_and_no_self_closing_void_elements() {
         let real = "<!doctype html>\n<html lang=\"en\">\n  <head><title>Post 1</title></head>\n  <body><h1 id=\"title\">sunt aut facere repellat provident</h1></body>\n</html>\n";
-        assert_eq!(css(real, "h1#title").unwrap(), "sunt aut facere repellat provident");
+        assert_eq!(
+            css(real, "h1#title").unwrap(),
+            "sunt aut facere repellat provident"
+        );
     }
 }

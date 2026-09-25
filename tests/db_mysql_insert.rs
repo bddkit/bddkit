@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::db::{combined, DB_LOCK};
+use common::db::{DB_LOCK, combined};
 use sqlx::AnyPool;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,7 +61,10 @@ async fn setup(dsn: &str) {
         // disagree if they were ever built as two separately-ordered lists.
         "CREATE TABLE composite_ai_rev (b INT AUTO_INCREMENT, a INT NOT NULL, note VARCHAR(50), PRIMARY KEY (b, a))",
     ] {
-        sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| panic!("{stmt}: {e}"));
+        sqlx::query(stmt)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("{stmt}: {e}"));
     }
     pool.close().await;
 }
@@ -98,7 +101,9 @@ fn run_feature(dsn: &str, feature_src: &str) -> std::process::Output {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_increment_pk_is_read_from_the_insert_result() {
     for (env, engine) in ENGINES {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let _guard = DB_LOCK.lock().await;
         setup(&dsn).await;
         // Reading the row back by <<last_insert_id_companies_ai>> proves the id
@@ -118,7 +123,9 @@ Feature: insert
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_generated_uuid_pk_lands_in_the_variable() {
     for (env, engine) in ENGINES {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let _guard = DB_LOCK.lock().await;
         setup(&dsn).await;
         let src = "\
@@ -135,7 +142,9 @@ Feature: insert
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pk_value_given_in_the_step_is_used_as_is() {
     for (env, engine) in ENGINES {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let _guard = DB_LOCK.lock().await;
         setup(&dsn).await;
         let src = "\
@@ -156,7 +165,9 @@ async fn a_server_default_that_is_not_auto_increment_fails_naming_the_column() {
     // never touches the no-RETURNING fallback this test targets. Only real
     // MySQL — no RETURNING at all — hits the "no source for this PK" path.
     for (env, engine) in [("BDDKIT_TEST_MYSQL_DSN", "mysql")] {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let _guard = DB_LOCK.lock().await;
         setup(&dsn).await;
         let src = "\
@@ -165,9 +176,16 @@ Feature: insert
     Given I have \"defaulted\" with \"tag: x\"
 ";
         let out = run_feature(&dsn, src);
-        assert!(!out.status.success(), "{engine}: must fail: {}", combined(&out));
+        assert!(
+            !out.status.success(),
+            "{engine}: must fail: {}",
+            combined(&out)
+        );
         let out = combined(&out);
-        assert!(out.contains("id"), "{engine}: error must name the column: {out}");
+        assert!(
+            out.contains("id"),
+            "{engine}: error must name the column: {out}"
+        );
         assert!(
             out.contains("server-generated"),
             "{engine}: error must name the reason: {out}"
@@ -178,7 +196,9 @@ Feature: insert
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composite_pk_mixes_auto_increment_and_a_given_value() {
     for (env, engine) in ENGINES {
-        let Ok(dsn) = std::env::var(env) else { continue };
+        let Ok(dsn) = std::env::var(env) else {
+            continue;
+        };
         let _guard = DB_LOCK.lock().await;
         setup(&dsn).await;
         // `a` auto-increments (AutoIncrement source), `b` is given (Known

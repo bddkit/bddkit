@@ -60,12 +60,10 @@ impl MacroCatalog {
 
         let mut definitions = Vec::new();
         for path in files {
-            let source = std::fs::read_to_string(&path).map_err(|error| {
-                format!("failed to read macros {}: {error}", path.display())
-            })?;
-            let raw: Vec<RawMacro> = serde_yaml_ng::from_str(&source).map_err(|error| {
-                format!("failed to parse macros {}: {error}", path.display())
-            })?;
+            let source = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read macros {}: {error}", path.display()))?;
+            let raw: Vec<RawMacro> = serde_yaml_ng::from_str(&source)
+                .map_err(|error| format!("failed to parse macros {}: {error}", path.display()))?;
             let lines = definition_lines(&source, raw.len(), &path)?;
             for (item, line) in raw.into_iter().zip(lines) {
                 definitions.push(compile(item, &path, line)?);
@@ -106,20 +104,11 @@ fn collect(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     if !path.is_dir() {
         return Err(format!("macro path {} does not exist", path.display()));
     }
-    let entries = std::fs::read_dir(path).map_err(|error| {
-        format!(
-            "failed to read macro directory {}: {error}",
-            path.display()
-        )
-    })?;
+    let entries = std::fs::read_dir(path)
+        .map_err(|error| format!("failed to read macro directory {}: {error}", path.display()))?;
     for entry in entries {
         let child = entry
-            .map_err(|error| {
-                format!(
-                    "failed to read macro directory {}: {error}",
-                    path.display()
-                )
-            })?
+            .map_err(|error| format!("failed to read macro directory {}: {error}", path.display()))?
             .path();
         if child.is_dir() {
             collect(&child, files)?;
@@ -210,8 +199,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture(name: &str, source: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("bddkit-macros-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bddkit-macros-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("macros.yaml");
         std::fs::write(&path, source).unwrap();

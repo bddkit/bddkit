@@ -63,9 +63,8 @@ fn all_tags(lf: &LoadedFeature) -> impl Iterator<Item = &String> {
         .chain(lf.feature.scenarios.iter().flat_map(|sc| &sc.tags))
 }
 
-static SERIAL_TAG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^serial\((.*)\)$").expect("constant regex")
-});
+static SERIAL_TAG: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^serial\((.*)\)$").expect("constant regex"));
 
 /// Chain name from the `@serial(name)` tag. Files in the same chain run strictly one
 /// after another; the chain sets ORDER, not shared state — variables live per
@@ -100,9 +99,8 @@ pub fn serial_of(lf: &LoadedFeature) -> Result<Option<String>, String> {
     Ok(found)
 }
 
-static PRIORITY_TAG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^priority\((.*)\)$").expect("constant regex")
-});
+static PRIORITY_TAG: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^priority\((.*)\)$").expect("constant regex"));
 
 /// A file's priority from the `@priority(N)` tag: higher goes earlier in the queue,
 /// no tag means 0, negatives are allowed. A file takes the MAXIMUM across all its
@@ -150,9 +148,8 @@ pub fn to_step(s: &gherkin::Step) -> ExpandedStep {
     }
 }
 
-static PLACEHOLDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"<<(\w+)>>|<(\w+)>").expect("constant regex")
-});
+static PLACEHOLDER: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"<<(\w+)>>|<(\w+)>").expect("constant regex"));
 
 /// Substitutes `<key>` from an Examples row. Single pass, because a naive
 /// `replace("<key>", v)` would eat the inner `<key>` inside the runtime token `<<key>>`
@@ -257,9 +254,7 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     if !p.is_dir() {
         anyhow::bail!("path {} does not exist", p.display());
     }
-    for entry in
-        std::fs::read_dir(p).with_context(|| format!("failed to read {}", p.display()))?
-    {
+    for entry in std::fs::read_dir(p).with_context(|| format!("failed to read {}", p.display()))? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
@@ -514,10 +509,7 @@ Feature: f
             let lf = loaded(
                 "@serial(x)\nFeature: f\n  @serial(x)\n  Scenario: s\n    Then the response code is 200\n",
             );
-            assert_eq!(
-                serial_of(&lf).expect("names match"),
-                Some("x".to_string())
-            );
+            assert_eq!(serial_of(&lf).expect("names match"), Some("x".to_string()));
         }
 
         #[test]
@@ -533,7 +525,10 @@ Feature: f
         fn an_empty_chain_name_is_an_error() {
             let lf =
                 loaded("@serial()\nFeature: f\n  Scenario: s\n    Then the response code is 200\n");
-            assert!(serial_of(&lf).is_err(), "@serial() without a name must fail");
+            assert!(
+                serial_of(&lf).is_err(),
+                "@serial() without a name must fail"
+            );
         }
     }
 

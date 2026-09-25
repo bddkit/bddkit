@@ -47,7 +47,9 @@ pub fn complete_login(
         .vars
         .get(&format!("{prefix}_a"))
         .ok_or_else(|| {
-            format!("run the step \"I start an SRP login as {prefix:?}\" before completing the login")
+            format!(
+                "run the step \"I start an SRP login as {prefix:?}\" before completing the login"
+            )
         })?
         .to_string();
     let proof = srp::complete_login(&p, salt, identity, password, &a, b)?;

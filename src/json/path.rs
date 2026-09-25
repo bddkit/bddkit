@@ -60,7 +60,9 @@ fn split_indices(segment: &str) -> Result<(&str, Vec<usize>), String> {
         indices.push(n);
         rest = &rest[close + 1..];
         if !rest.is_empty() && !rest.starts_with('[') {
-            return Err(format!("trailing garbage after index in path segment {segment:?}"));
+            return Err(format!(
+                "trailing garbage after index in path segment {segment:?}"
+            ));
         }
     }
     Ok((name, indices))

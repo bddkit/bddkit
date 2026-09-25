@@ -71,17 +71,26 @@ pub fn layers(os: Os, env: &Env, config_dir: &Path) -> Result<Vec<Layer>> {
         if !dir.is_dir() {
             bail!("bddkit directory {} does not exist", dir.display());
         }
-        return Ok(vec![Layer { name: "override", dir: dir.clone() }]);
+        return Ok(vec![Layer {
+            name: "override",
+            dir: dir.clone(),
+        }]);
     }
     let mut out = Vec::new();
     if let Some(dir) = shared(os, env) {
-        out.push(Layer { name: "shared", dir });
+        out.push(Layer {
+            name: "shared",
+            dir,
+        });
     }
     if let Some(dir) = user(os, env) {
         out.push(Layer { name: "user", dir });
     }
     if let Some(dir) = project(config_dir)? {
-        out.push(Layer { name: "project", dir });
+        out.push(Layer {
+            name: "project",
+            dir,
+        });
     }
     Ok(out)
 }
@@ -160,7 +169,10 @@ mod tests {
     fn linux_reads_shared_then_user_then_project() {
         let root = temp("linux");
         std::fs::create_dir_all(root.join(".bddkit")).expect("mkdir");
-        let env = Env { home: Some(PathBuf::from("/home/t")), ..Env::default() };
+        let env = Env {
+            home: Some(PathBuf::from("/home/t")),
+            ..Env::default()
+        };
         let layers = layers(Os::Linux, &env, &root).expect("resolves");
         assert_eq!(names(&layers), ["shared", "user", "project"]);
         assert_eq!(layers[0].dir, PathBuf::from("/etc/bddkit"));
@@ -181,9 +193,15 @@ mod tests {
 
     #[test]
     fn macos_user_layer_is_dot_config_not_library() {
-        let env = Env { home: Some(PathBuf::from("/Users/t")), ..Env::default() };
+        let env = Env {
+            home: Some(PathBuf::from("/Users/t")),
+            ..Env::default()
+        };
         let layers = layers(Os::MacOs, &env, Path::new("/nonexistent")).expect("resolves");
-        assert_eq!(layers[0].dir, PathBuf::from("/Library/Application Support/bddkit"));
+        assert_eq!(
+            layers[0].dir,
+            PathBuf::from("/Library/Application Support/bddkit")
+        );
         assert_eq!(layers[1].dir, PathBuf::from("/Users/t/.config/bddkit"));
     }
 
@@ -197,13 +215,20 @@ mod tests {
         };
         let layers = layers(Os::Windows, &env, Path::new("/nonexistent")).expect("resolves");
         assert_eq!(names(&layers), ["shared", "user"]);
-        assert_eq!(layers[0].dir, PathBuf::from(r"C:\ProgramData").join("bddkit"));
-        assert_eq!(layers[1].dir, PathBuf::from(r"C:\Users\t\AppData\Local").join("bddkit"));
+        assert_eq!(
+            layers[0].dir,
+            PathBuf::from(r"C:\ProgramData").join("bddkit")
+        );
+        assert_eq!(
+            layers[1].dir,
+            PathBuf::from(r"C:\Users\t\AppData\Local").join("bddkit")
+        );
     }
 
     #[test]
     fn no_user_variable_at_all_means_no_user_layer() {
-        let layers = layers(Os::Linux, &Env::default(), Path::new("/nonexistent")).expect("resolves");
+        let layers =
+            layers(Os::Linux, &Env::default(), Path::new("/nonexistent")).expect("resolves");
         assert_eq!(names(&layers), ["shared"]);
     }
 
@@ -218,7 +243,13 @@ mod tests {
             ..Env::default()
         };
         let layers = layers(Os::Linux, &env, &root).expect("resolves");
-        assert_eq!(layers, vec![Layer { name: "override", dir: only }]);
+        assert_eq!(
+            layers,
+            vec![Layer {
+                name: "override",
+                dir: only
+            }]
+        );
     }
 
     #[test]
@@ -228,7 +259,10 @@ mod tests {
             ..Env::default()
         };
         let error = layers(Os::Linux, &env, Path::new(".")).expect_err("must exist");
-        assert!(format!("{error:#}").contains("/nonexistent/bddkit-dir"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("/nonexistent/bddkit-dir"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -237,8 +271,14 @@ mod tests {
         std::fs::create_dir_all(root.join(".bddkit")).expect("mkdir outer");
         std::fs::create_dir_all(root.join("suites/a/.bddkit")).expect("mkdir inner");
         std::fs::create_dir_all(root.join("suites/b")).expect("mkdir b");
-        assert_eq!(project(&root.join("suites/a")).expect("ok"), Some(root.join("suites/a/.bddkit")));
-        assert_eq!(project(&root.join("suites/b")).expect("ok"), Some(root.join(".bddkit")));
+        assert_eq!(
+            project(&root.join("suites/a")).expect("ok"),
+            Some(root.join("suites/a/.bddkit"))
+        );
+        assert_eq!(
+            project(&root.join("suites/b")).expect("ok"),
+            Some(root.join(".bddkit"))
+        );
     }
 
     #[test]
@@ -257,8 +297,14 @@ mod tests {
     #[test]
     fn every_layer_yields_base_then_local() {
         let layers = vec![
-            Layer { name: "user", dir: PathBuf::from("/u") },
-            Layer { name: "project", dir: PathBuf::from("/p/.bddkit") },
+            Layer {
+                name: "user",
+                dir: PathBuf::from("/u"),
+            },
+            Layer {
+                name: "project",
+                dir: PathBuf::from("/p/.bddkit"),
+            },
         ];
         let got: Vec<(String, PathBuf)> = candidates(&layers, "plugins")
             .into_iter()
@@ -268,9 +314,18 @@ mod tests {
             got,
             vec![
                 ("user".to_string(), PathBuf::from("/u/plugins.yaml")),
-                ("user.local".to_string(), PathBuf::from("/u/plugins.local.yaml")),
-                ("project".to_string(), PathBuf::from("/p/.bddkit/plugins.yaml")),
-                ("project.local".to_string(), PathBuf::from("/p/.bddkit/plugins.local.yaml")),
+                (
+                    "user.local".to_string(),
+                    PathBuf::from("/u/plugins.local.yaml")
+                ),
+                (
+                    "project".to_string(),
+                    PathBuf::from("/p/.bddkit/plugins.yaml")
+                ),
+                (
+                    "project.local".to_string(),
+                    PathBuf::from("/p/.bddkit/plugins.local.yaml")
+                ),
             ]
         );
     }

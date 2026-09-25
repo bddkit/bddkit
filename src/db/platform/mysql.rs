@@ -261,9 +261,11 @@ mod tests {
         // silently wrong at every length. Only the blob family, and
         // everything non-binary, is left alone.
         assert!(MYSQL.check_bindable(&col("id", "binary", Some(8))).is_err());
-        assert!(MYSQL
-            .check_bindable(&col("name", "varchar", Some(255)))
-            .is_ok());
+        assert!(
+            MYSQL
+                .check_bindable(&col("name", "varchar", Some(255)))
+                .is_ok()
+        );
     }
 
     #[test]
