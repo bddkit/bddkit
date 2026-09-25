@@ -93,7 +93,7 @@ YAML files listed under `macro_paths` declare domain steps (`I login as user "..
 
 ## Eventual assertions
 
-`I expect the next assertion to pass ...` arms exactly one future assertion: inputs are interpolated once, a later modifier silently replaces an earlier one, and an unconsumed modifier is discarded at scenario end or reset. DB attempts query the current connection anew; an HTTP response assertion first checks the saved exchange, then replays its immutable original request at its original API after each mismatch, freshly signing Hawk on every replay. Polling options are inherited global → resource (`options.rs`).
+`I expect the next assertion to pass ...` arms exactly one future assertion: inputs are interpolated once, a later modifier silently replaces an earlier one, and an unconsumed modifier is discarded at scenario end or reset. DB attempts query the current connection anew; an HTTP response assertion first checks the saved exchange, then replays its immutable original request at its original API after each mismatch, freshly signing Hawk on every replay. Polling options are inherited global → resource (`options.rs`). A `vars`-group assertion (`variable "x" should …`) answers `Fatal`, never `NotYet`, on a mismatch — nothing runs between attempts, so its subject cannot change (`vars::settled`); a runner test that needs a pollable assertion without network uses the echo plugin's `the echo counter should reach N`, not a variable.
 
 ## Adding a built-in step
 

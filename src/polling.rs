@@ -9,6 +9,14 @@ pub enum AttemptError {
 
 pub type AttemptResult = Result<(), AttemptError>;
 
+impl AttemptError {
+    pub fn into_message(self) -> String {
+        match self {
+            Self::NotYet(message) | Self::Fatal(message) => message,
+        }
+    }
+}
+
 impl From<String> for AttemptError {
     fn from(error: String) -> Self {
         Self::Fatal(error)

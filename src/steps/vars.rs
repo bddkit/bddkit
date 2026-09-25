@@ -5,7 +5,9 @@ use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+use super::assert;
 use super::markup;
+use regex::Regex;
 
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
@@ -75,14 +77,45 @@ fn scalar(v: &serde_json::Value) -> String {
 pub fn extract_from_json(w: &mut World, p: &str, name: &str, global: bool) -> Result<(), String> {
     let ex = w.http.last().ok_or("no request has been sent yet")?;
     let v = ex.json()?;
-    let found = path::read(&v, p)?;
-    let value = scalar(found);
-    if global {
-        w.vars.set_global(name, value);
-    } else {
-        w.vars.set(name, value);
+    let value = scalar(path::read(&v, p)?);
+    set_variable(w, name, &value, global)
+}
+
+pub fn extract_json_from_variable(
+    w: &mut World,
+    p: &str,
+    source: &str,
+    name: &str,
+    global: bool,
+) -> Result<(), String> {
+    let v = variable_json(w, source).map_err(AttemptError::into_message)?;
+    let value = scalar(path::read(&v, p)?);
+    set_variable(w, name, &value, global)
+}
+
+/// The first capture group of the first match — never the whole match, so a
+/// pattern without a group is an error rather than a silent change of meaning.
+pub fn extract_regex_from_variable(
+    w: &mut World,
+    pattern: &str,
+    source: &str,
+    name: &str,
+    global: bool,
+) -> Result<(), String> {
+    let re = Regex::new(pattern).map_err(|e| format!("invalid regex {pattern:?}: {e}"))?;
+    if re.captures_len() < 2 {
+        return Err(format!("regex {pattern:?} has no capture group to extract"));
     }
-    Ok(())
+    let text = variable(w, source).map_err(AttemptError::into_message)?;
+    let caps = re
+        .captures(text)
+        .ok_or_else(|| format!("regex {pattern:?} does not match variable {source:?}: {text:?}"))?;
+    let value = caps
+        .get(1)
+        .ok_or_else(|| format!("capture group 1 of {pattern:?} did not take part in the match"))?
+        .as_str()
+        .to_string();
+    set_variable(w, name, &value, global)
 }
 
 pub fn extract_from_cookies(
@@ -111,21 +144,81 @@ pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<
     Ok(())
 }
 
-pub fn variable_equals(w: &World, name: &str, expected: &str, negate: bool) -> AttemptResult {
-    let got = w
-        .vars
+fn variable<'a>(w: &'a World, name: &str) -> Result<&'a str, AttemptError> {
+    w.vars
         .get(name)
-        .ok_or_else(|| AttemptError::Fatal(format!("variable {name:?} is not set")))?;
-    let equal = got == expected;
-    match (equal, negate) {
+        .ok_or_else(|| AttemptError::Fatal(format!("variable {name:?} is not set")))
+}
+
+fn variable_json(w: &World, name: &str) -> Result<serde_json::Value, AttemptError> {
+    serde_json::from_str(variable(w, name)?)
+        .map_err(|e| AttemptError::Fatal(format!("variable {name:?} is not valid JSON: {e}")))
+}
+
+/// Nothing runs between two attempts, so a variable cannot change under an
+/// armed `I expect the next assertion to pass …`: a mismatch is final, and
+/// polling it again would only burn the timeout to report the same thing.
+fn settled(result: AttemptResult) -> AttemptResult {
+    result.map_err(|e| AttemptError::Fatal(e.into_message()))
+}
+
+pub fn variable_equals(w: &World, name: &str, expected: &str, negate: bool) -> AttemptResult {
+    let got = variable(w, name)?;
+    match (got == expected, negate) {
         (true, false) | (false, true) => Ok(()),
-        (false, false) => Err(AttemptError::NotYet(format!(
+        (false, false) => Err(AttemptError::Fatal(format!(
             "    expected: {expected}\n    actual:   {got}"
         ))),
-        (true, true) => Err(AttemptError::NotYet(format!(
+        (true, true) => Err(AttemptError::Fatal(format!(
             "value must not equal {expected:?}, but it does"
         ))),
     }
+}
+
+fn subject(name: &str) -> String {
+    format!("variable {name:?}")
+}
+
+pub fn variable_contains(w: &World, name: &str, needle: &str, negate: bool) -> AttemptResult {
+    let text = variable(w, name)?;
+    settled(assert::check_contains(&subject(name), text, needle, negate))
+}
+
+pub fn variable_matches(w: &World, name: &str, pattern: &str, negate: bool) -> AttemptResult {
+    let text = variable(w, name)?;
+    settled(assert::check_matches(&subject(name), text, pattern, negate))
+}
+
+pub fn variable_empty(w: &World, name: &str) -> AttemptResult {
+    settled(assert::check_empty(&subject(name), variable(w, name)?))
+}
+
+fn json_check(
+    w: &World,
+    name: &str,
+    docstring: Option<&String>,
+    check: impl FnOnce(&serde_json::Value, &serde_json::Value) -> AttemptResult,
+) -> AttemptResult {
+    let expected = assert::expected_json(docstring)?;
+    settled(check(&variable_json(w, name)?, &expected))
+}
+
+pub fn variable_contains_json(w: &World, name: &str, docstring: Option<&String>) -> AttemptResult {
+    json_check(w, name, docstring, assert::check_contains_json)
+}
+
+pub fn variable_equals_json(w: &World, name: &str, docstring: Option<&String>) -> AttemptResult {
+    json_check(w, name, docstring, assert::check_equals_json)
+}
+
+pub fn variable_not_contains_json(
+    w: &World,
+    name: &str,
+    docstring: Option<&String>,
+) -> AttemptResult {
+    json_check(w, name, docstring, |actual, expected| {
+        assert::check_not_contains_json(&subject(name), actual, expected)
+    })
 }
 
 #[cfg(test)]
@@ -273,5 +366,100 @@ mod tests {
         let err = extract_from_markup(&mut w, ".missing", "pageTitle").unwrap_err();
         assert!(err.contains("missing"), "{err}");
         assert_eq!(w.vars.get("pageTitle"), None);
+    }
+
+    fn world_with(name: &str, value: &str) -> World {
+        let mut w = world();
+        w.vars.set(name, value.to_string());
+        w
+    }
+
+    #[test]
+    fn a_json_step_over_a_non_json_variable_names_the_variable_and_the_parse_error() {
+        let w = world_with("out", "not json");
+        let doc = r#"{"a": 1}"#.to_string();
+        let Err(AttemptError::Fatal(msg)) = variable_contains_json(&w, "out", Some(&doc)) else {
+            panic!("a non-JSON variable must be fatal");
+        };
+        assert!(
+            msg.contains(r#"variable "out" is not valid JSON: expected"#),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn contains_json_over_a_multi_line_variable_uses_the_body_matcher() {
+        let w = world_with("out", "{\n  \"id\": 7,\n  \"tags\": [\"a\", \"b\"]\n}\n");
+        let doc = r#"{"id": "@variableType(int)", "tags": ["b"]}"#.to_string();
+        assert_eq!(variable_contains_json(&w, "out", Some(&doc)), Ok(()));
+    }
+
+    #[test]
+    fn a_text_mismatch_over_a_variable_is_fatal_not_not_yet() {
+        let w = world_with("id", "abc");
+        assert!(matches!(
+            variable_matches(&w, "id", r"^\d+$", false),
+            Err(AttemptError::Fatal(_))
+        ));
+    }
+
+    #[test]
+    fn variable_equals_mismatch_is_fatal() {
+        let w = world_with("x", "1");
+        assert!(matches!(
+            variable_equals(&w, "x", "2", false),
+            Err(AttemptError::Fatal(_))
+        ));
+    }
+
+    #[test]
+    fn an_unset_variable_is_fatal_with_the_variable_equals_message() {
+        let Err(AttemptError::Fatal(msg)) = variable_empty(&world(), "nope") else {
+            panic!("an unset variable must be fatal");
+        };
+        assert_eq!(msg, r#"variable "nope" is not set"#);
+    }
+
+    #[test]
+    fn extract_regex_takes_the_first_group_of_the_first_match() {
+        let mut w = world_with("out", "id=12 id=34");
+        extract_regex_from_variable(&mut w, r"id=(\d+)", "out", "id", false).expect("matches");
+        assert_eq!(w.vars.get("id"), Some("12"));
+    }
+
+    #[test]
+    fn extract_regex_without_a_capture_group_is_refused() {
+        let mut w = world_with("out", "id=12");
+        let err = extract_regex_from_variable(&mut w, r"id=\d+", "out", "id", false).unwrap_err();
+        assert!(err.contains("no capture group"), "{err}");
+    }
+
+    /// Every variable already outlives its scenario, so only a macro frame
+    /// can tell `global` apart: what is not global is gone once it pops.
+    #[test]
+    fn extract_json_from_variable_global_outlives_a_macro_frame() {
+        let mut w = world_with("out", r#"{"data": {"id": 5}}"#);
+        w.vars.push_frame();
+        extract_json_from_variable(&mut w, "data.id", "out", "kept", true).expect("path exists");
+        extract_json_from_variable(&mut w, "data.id", "out", "dropped", false)
+            .expect("path exists");
+        w.vars.pop_frame(&[]).expect("a frame was pushed");
+        assert_eq!(
+            (w.vars.get("kept"), w.vars.get("dropped")),
+            (Some("5"), None)
+        );
+    }
+
+    #[test]
+    fn extract_regex_from_variable_global_outlives_a_macro_frame() {
+        let mut w = world_with("out", "id=12");
+        w.vars.push_frame();
+        extract_regex_from_variable(&mut w, r"id=(\d+)", "out", "kept", true).expect("matches");
+        extract_regex_from_variable(&mut w, r"id=(\d+)", "out", "dropped", false).expect("matches");
+        w.vars.pop_frame(&[]).expect("a frame was pushed");
+        assert_eq!(
+            (w.vars.get("kept"), w.vars.get("dropped")),
+            (Some("12"), None)
+        );
     }
 }

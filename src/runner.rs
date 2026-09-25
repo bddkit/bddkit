@@ -70,11 +70,13 @@ fn execute_step<'a>(
                 let args = prepare(step, caps, &world.vars, generator)?;
                 match kind {
                     StepKind::Action => {
-                        dispatch(world, id, &args, 0).await.map_err(attempt_message)
+                        dispatch(world, id, &args, 0).await.map_err(AttemptError::into_message)
                     }
                     StepKind::Assertion(source) => {
                         let Some(layer) = world.take_options() else {
-                            return dispatch(world, id, &args, 0).await.map_err(attempt_message);
+                            return dispatch(world, id, &args, 0)
+                                .await
+                                .map_err(AttemptError::into_message);
                         };
                         let base = match source {
                             OptionsSource::Global => world.options.clone(),
@@ -242,12 +244,6 @@ fn execute_step<'a>(
             }
         }
     })
-}
-
-fn attempt_message(error: AttemptError) -> String {
-    match error {
-        AttemptError::NotYet(error) | AttemptError::Fatal(error) => error,
-    }
 }
 
 /// Everything shared across the whole run, behind one `Arc`: a worker clones
@@ -582,32 +578,40 @@ mod tests {
     use std::path::PathBuf;
 
     fn apis() -> Arc<crate::http::Apis> {
+        apis_at("http://example.test")
+    }
+
+    fn apis_at(base: &str) -> Arc<crate::http::Apis> {
         let mut by_name = std::collections::HashMap::new();
         by_name.insert(
             "default".to_string(),
-            crate::http::ApiResource::new("http://example.test", 1, Vec::new(), Options::default())
-                .unwrap(),
+            crate::http::ApiResource::new(base, 1, Vec::new(), Options::default()).unwrap(),
         );
         Arc::new(crate::http::Apis::new(by_name, Some("default".to_string())).unwrap())
     }
 
-    fn context_with_generator(registry: Registry, generator: Arc<Generator>) -> Arc<RunContext> {
+    fn context_with(
+        registry: Registry,
+        apis: Arc<crate::http::Apis>,
+        generator: Arc<Generator>,
+        plugins: Option<Arc<crate::plugin::Plugins>>,
+    ) -> Arc<RunContext> {
         Arc::new(RunContext::new(
             registry,
-            apis(),
+            apis,
             generator,
             crate::feature::TagFilter::new(&[]),
             None,
             String::new(),
             None,
-            None,
+            plugins,
             Options::default(),
             false,
         ))
     }
 
     fn context(registry: Registry) -> Arc<RunContext> {
-        context_with_generator(registry, Arc::new(Generator::new()))
+        context_with(registry, apis(), Arc::new(Generator::new()), None)
     }
 
     /// The fixture plugin, with one declared instance "a" that is also the
@@ -637,14 +641,8 @@ mod tests {
                 (lib, index, pattern, assertion && force_action != Some(index))
             })
             .collect();
-        Registry::with_macros_and_plugins(
-            MacroCatalog {
-                definitions: Vec::new(),
-            },
-            &steps,
-            &["echo".to_string()],
-        )
-        .expect("the plugin registry builds")
+        Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &["echo".to_string()])
+            .expect("the plugin registry builds")
     }
 
     /// The `Arc` comes back too: a test that asserts how many instances were
@@ -803,33 +801,28 @@ mod tests {
         assert!(error.contains("prefix=p-"), "{error}");
     }
 
-    fn registry(name: &str, source: &str) -> Registry {
-        let dir =
-            std::env::temp_dir().join(format!("bddkit-runner-{}-{name}", std::process::id()));
+    fn macro_catalog(name: &str, source: &str) -> MacroCatalog {
+        let dir = std::env::temp_dir().join(format!("bddkit-runner-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("macros.yaml");
         std::fs::write(&path, source).unwrap();
-        Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap()
+        MacroCatalog::load(&[path]).unwrap()
+    }
+
+    fn registry(name: &str, source: &str) -> Registry {
+        Registry::with_macros(macro_catalog(name, source)).unwrap()
     }
 
     async fn run(feature: &str, registry: Registry) -> FileResult {
-        run_with_generator(feature, registry, Arc::new(Generator::new())).await
+        run_in(feature, context(registry)).await
     }
 
-    async fn run_with_generator(
-        feature: &str,
-        registry: Registry,
-        generator: Arc<Generator>,
-    ) -> FileResult {
+    async fn run_in(feature: &str, context: Arc<RunContext>) -> FileResult {
         let loaded = LoadedFeature {
             path: PathBuf::from("macro.feature"),
             feature: parse_str(feature).unwrap(),
         };
-        run_file(
-            Arc::new(loaded),
-            context_with_generator(registry, generator),
-        )
-        .await
+        run_file(Arc::new(loaded), context).await
     }
 
     /// `tokio::spawn` requires `Send + 'static`. This is checked by the
@@ -1054,27 +1047,50 @@ Feature: macro
                 .expect("scenario should fail")
         }
 
+        /// A built-in variable assertion is final on its first attempt (issue
+        /// #39), so the modifier's plumbing is driven through the echo
+        /// plugin's counter instead: a real `not_yet` that only a retry can
+        /// change, with no network under the paused clock.
+        async fn run_with_echo(feature: &str, macros: MacroCatalog) -> FileResult {
+            let plugins = echo_plugins();
+            let registry =
+                Registry::with_macros_and_plugins(macros, &plugins.steps(), &["echo".to_string()])
+                    .expect("the plugin registry builds");
+            let context = context_with(
+                registry,
+                apis(),
+                Arc::new(Generator::new()),
+                Some(Arc::new(plugins)),
+            );
+            run_in(feature, context).await
+        }
+
+        async fn echo_failure(feature: &str, macros: MacroCatalog) -> String {
+            run_with_echo(feature, macros).await.scenarios[0]
+                .failure
+                .clone()
+                .expect("scenario should fail")
+        }
+
         #[tokio::test(start_paused = true)]
-        async fn variable_mismatch_times_out_with_the_last_observation() {
-            let failure = failure(
+        async fn a_counter_that_never_arrives_times_out_with_the_last_observation() {
+            let failure = echo_failure(
                 r#"
 Feature: eventual assertion
   Scenario: timeout
-    Given set variable "state" to "pending"
-    And I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
-    Then variable "state" should be equal to "ready"
+    Given I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
+    Then the echo counter should reach 1000
 "#,
-                Registry::new().unwrap(),
+                MacroCatalog::default(),
             )
             .await;
 
             for expected in [
-                "variable \"state\" should be equal to \"ready\"",
+                "the echo counter should reach 1000",
                 "1s",
                 "100ms",
                 "11 attempts",
-                "expected: ready",
-                "actual:   pending",
+                "counter is 11 of 1000",
             ] {
                 assert!(
                     failure.contains(expected),
@@ -1084,23 +1100,61 @@ Feature: eventual assertion
         }
 
         #[tokio::test(start_paused = true)]
+        async fn a_variable_mismatch_under_a_modifier_fails_at_once() {
+            // Nothing runs between two attempts, so the variable cannot
+            // change: polling it would burn the timeout to repeat itself.
+            let started = Instant::now();
+            let failure = failure(
+                r#"
+Feature: eventual assertion
+  Scenario: final
+    Given set variable "state" to "pending"
+    And I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
+    Then variable "state" should be equal to "ready"
+"#,
+                Registry::new().unwrap(),
+            )
+            .await;
+
+            assert!(!failure.contains("did not pass"), "{failure}");
+            assert!(failure.contains("expected: ready"), "{failure}");
+            assert!(failure.contains("actual:   pending"), "{failure}");
+            assert_eq!(Instant::now(), started);
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn a_retrying_assertion_prepares_unique_capture_once() {
+            // Real time and a real stub: the built-in path is the one under
+            // test, and a built-in retry needs a response it can re-request.
+            let app =
+                axum::Router::new().route("/state", axum::routing::get(|| async { "pending" }));
+            let (base, _server) = crate::http::tests::spawn_app(app).await;
             let generator = Arc::new(Generator::new());
+            let context = context_with(
+                Registry::new().unwrap(),
+                apis_at(&base),
+                generator.clone(),
+                None,
+            );
             let before = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
-            let result = run_with_generator(
+            let result = run_in(
                 r#"
 Feature: eventual assertion
   Scenario: stable preparation
-    Given set variable "state" to "pending"
+    When I request "/state"
     And I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
-    Then variable "state" should be equal to "<<unique(number)>>"
+    Then the response body contains "<<unique(number)>>"
 "#,
-                Registry::new().unwrap(),
-                generator.clone(),
+                context,
             )
             .await;
             let failure = result.scenarios[0].failure.as_deref().unwrap();
-            assert!(failure.contains("11 attempts"), "{failure}");
+            let attempts: u64 = regex::Regex::new(r"(\d+) attempts")
+                .unwrap()
+                .captures(failure)
+                .and_then(|caps| caps[1].parse().ok())
+                .unwrap_or_else(|| panic!("no attempt count in {failure}"));
+            assert!(attempts > 1, "the assertion was never retried: {failure}");
             let after = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
 
             assert_eq!(after - before, 2, "unique() must be evaluated only once");
@@ -1129,16 +1183,15 @@ Feature: eventual assertion
 
         #[tokio::test(start_paused = true)]
         async fn a_later_modifier_silently_replaces_the_first() {
-            let failure = failure(
+            let failure = echo_failure(
                 r#"
 Feature: eventual assertion
   Scenario: replacement
-    Given set variable "state" to "pending"
-    And I expect the next assertion to pass within "5" seconds
+    Given I expect the next assertion to pass within "5" seconds
     And I expect the next assertion to pass within "1" seconds
-    Then variable "state" should be equal to "ready"
+    Then the echo counter should reach 1000
 "#,
-                Registry::new().unwrap(),
+                MacroCatalog::default(),
             )
             .await;
 
@@ -1148,15 +1201,15 @@ Feature: eventual assertion
 
         #[tokio::test(start_paused = true)]
         async fn a_modifier_survives_an_ordinary_action() {
-            let failure = failure(
+            let failure = echo_failure(
                 r#"
 Feature: eventual assertion
   Scenario: action
     Given I expect the next assertion to pass within "1" seconds
     And set variable "state" to "pending"
-    Then variable "state" should be equal to "ready"
+    Then the echo counter should reach 1000
 "#,
-                Registry::new().unwrap(),
+                MacroCatalog::default(),
             )
             .await;
 
@@ -1165,24 +1218,23 @@ Feature: eventual assertion
 
         #[tokio::test(start_paused = true)]
         async fn a_modifier_survives_a_macro_boundary() {
-            let registry = registry(
+            let macros = macro_catalog(
                 "eventual",
                 r#"
-- step: I check state through a macro
+- step: I check the counter through a macro
   do:
     - set variable "macro_ran" to "yes"
-    - variable "state" should be equal to "ready"
+    - the echo counter should reach 1000
 "#,
             );
-            let failure = failure(
+            let failure = echo_failure(
                 r#"
 Feature: eventual assertion
   Scenario: macro
-    Given set variable "state" to "pending"
-    And I expect the next assertion to pass within "1" seconds
-    Then I check state through a macro
+    Given I expect the next assertion to pass within "1" seconds
+    Then I check the counter through a macro
 "#,
-                registry,
+                macros,
             )
             .await;
 
@@ -1191,22 +1243,25 @@ Feature: eventual assertion
 
         #[tokio::test(start_paused = true)]
         async fn the_first_assertion_consumes_the_modifier() {
+            // The first assertion is a built-in one on purpose: the built-in
+            // and the plugin paths take the modifier in separate code, and
+            // only a leak from the built-in take would reach the echo step.
             let started = Instant::now();
-            let failure = failure(
+            let failure = echo_failure(
                 r#"
 Feature: eventual assertion
   Scenario: one shot
     Given set variable "state" to "ready"
     And I expect the next assertion to pass within "1" seconds
     Then variable "state" should be equal to "ready"
-    And variable "state" should be equal to "later"
+    And the echo counter should reach 1000
 "#,
-                Registry::new().unwrap(),
+                MacroCatalog::default(),
             )
             .await;
 
             assert!(!failure.contains("did not pass"), "{failure}");
-            assert!(failure.contains("expected: later"), "{failure}");
+            assert!(failure.contains("counter is 1 of 1000"), "{failure}");
             assert_eq!(Instant::now(), started);
         }
 
@@ -1228,16 +1283,15 @@ Feature: eventual assertion
         #[tokio::test(start_paused = true)]
         async fn a_scenario_reset_discards_a_dangling_modifier() {
             let started = Instant::now();
-            let result = run(
+            let result = run_with_echo(
                 r#"
 Feature: eventual assertion
   Scenario: arm
     Given I expect the next assertion to pass within "1" seconds
   Scenario: assert
-    Given set variable "state" to "pending"
-    Then variable "state" should be equal to "ready"
+    Then the echo counter should reach 1000
 "#,
-                Registry::new().unwrap(),
+                MacroCatalog::default(),
             )
             .await;
 
@@ -1247,6 +1301,7 @@ Feature: eventual assertion
                 .as_deref()
                 .expect("second scenario fails");
             assert!(!failure.contains("did not pass"), "{failure}");
+            assert!(failure.contains("counter is 1 of 1000"), "{failure}");
             assert_eq!(Instant::now(), started);
         }
 

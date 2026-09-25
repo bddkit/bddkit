@@ -28,6 +28,18 @@ ExtractFromCookiesGlobal: nolasa atbildes sīkdatni mainīgajā, kas redzams vis
 ExtractFromCookies: nolasa atbildes sīkdatni mainīgajā
 VariableNotEquals: pārbauda, vai mainīgais atšķiras no šīs vērtības
 VariableEquals: pārbauda, vai mainīgais ir tieši šī vērtība
+VariableContains: pārbauda, vai mainīgā teksts satur šo apakšvirkni
+VariableNotContains: pārbauda, vai mainīgā teksts nesatur šo apakšvirkni
+VariableMatches: pārbauda, vai mainīgā teksts atbilst regulārajai izteiksmei, bez piesaistes malām
+VariableNotMatches: pārbauda, vai mainīgā teksts neatbilst regulārajai izteiksmei
+VariableEmpty: pārbauda, vai mainīgā teksts ir tukšs vai sastāv tikai no atstarpēm
+VariableContainsJson: pārbauda, vai mainīgā teksts ir JSON, kas satur šo JSON, ar tādu pašu salīdzināšanu kā atbildes saturam
+VariableEqualsJson: pārbauda, vai mainīgā teksts ir JSON, kas precīzi vienāds ar šo JSON
+VariableNotContainsJson: pārbauda, vai mainīgā teksts ir JSON, kas nesatur šo JSON
+ExtractJsonFromVariableGlobal: nolasa JSON ceļu no mainīgā teksta mainīgajā, kas redzams visam failam
+ExtractJsonFromVariable: nolasa JSON ceļu no mainīgā teksta mainīgajā
+ExtractRegexFromVariableGlobal: nolasa regulārās izteiksmes pirmo tveršanas grupu no mainīgā teksta mainīgajā, kas redzams visam failam
+ExtractRegexFromVariable: nolasa regulārās izteiksmes pirmo tveršanas grupu no mainīgā teksta mainīgajā
 EncryptWithAes: šifrē vērtību ar AES atslēgu un saglabā rezultātu mainīgajā
 UseApi: pārslēdz API resursu un tā noklusējuma galvenes līdz scenārija beigām
 UseConnection: pārslēdz datubāzes savienojumu līdz scenārija beigām

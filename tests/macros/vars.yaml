@@ -1,0 +1,5 @@
+# No `exports`: what this macro extracts survives its frame only if `global`.
+- step: 'I pull the user id out of variable "{source}"'
+  do:
+    - extract "user.id" from variable "<<source>>" as JSON as "uid" global
+    - extract "(\d+)" from variable "<<source>>" as "digits" global

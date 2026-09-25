@@ -61,12 +61,13 @@ run m4k2p9x7q3b1
   ✓ examples/features/methods.feature — scenarios: 8
   ✓ examples/features/json_matchers.feature — scenarios: 4
   ✓ examples/features/variables.feature — scenarios: 5
+  ✓ examples/features/variable_assertions.feature — scenarios: 3
   ✓ examples/features/macros.feature — scenarios: 6
   ✓ examples/features/content_types.feature — scenarios: 4
   ✓ examples/features/eventual.feature — scenarios: 1
 
 run m4k2p9x7q3b1
-files: 6, scenarios: 28, failed: 0
+files: 7, scenarios: 31, failed: 0
 ```
 
 The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
@@ -153,6 +154,23 @@ api:
 ```
 
 `--json` emits the same listing machine-readably, with the raw pattern included. `--config <file>` also loads that suite's plugins, so their steps appear under their own groups. Descriptions follow `--lang`, else `$BDDKIT_LANG`, else English; `ru` and `lv` ship with the binary, and an untranslated step falls back to English rather than to a blank line.
+
+### Asserting over a variable
+
+Text reaches a variable from more places than the response body — `I extract` from a column, a plugin's published vars, `extract … from cookies`. The response body's checks work over any of them:
+
+| Step | Effect |
+|---|---|
+| `variable "<name>" should contain "<text>"` / `should not contain "<text>"` | plain substring |
+| `variable "<name>" should match "<regex>"` / `should not match "<regex>"` | `regex` crate syntax, unanchored |
+| `variable "<name>" should be empty` | empty or whitespace only, as for the body |
+| `variable "<name>" should contain JSON:` (doc string) | the body's `contains JSON` matching, `@variableType` / `@arrayLength` / `@regExp` included |
+| `variable "<name>" should equal JSON:` (doc string) | the body's `equals JSON` matching |
+| `variable "<name>" should not contain JSON:` (doc string) | the negation of `should contain JSON:` |
+| `extract "<path>" from variable "<name>" as JSON as "<target>"` | a JSON path of the variable's text into `<target>`; `global` suffix as for `extract … from JSON` |
+| `extract "<regex>" from variable "<name>" as "<target>"` | the first capture group of the first match into `<target>`; a regex with no group is an error; `global` suffix as above |
+
+A variable that is not set fails the step, and so does a JSON step over a variable whose text is not JSON — naming the variable and the parse error, not reporting a mismatch. Every variable assertion, `should be equal to` included, fails on its first mismatch even under `I expect the next assertion to pass …`: nothing runs between two attempts, so the value cannot change and polling it would only burn the timeout.
 
 ## What a resource's config takes
 
@@ -309,6 +327,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | Every HTTP method, 404 included | `examples/features/methods.feature` |
 | JSON matchers and paths | `examples/features/json_matchers.feature` |
 | Variables: set, extract, reuse | `examples/features/variables.feature` |
+| Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
 | Macros, nesting, Scenario Outline | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
 | Non-JSON responses, form login | `examples/features/content_types.feature` |
 | Polling an assertion until it passes | `examples/features/eventual.feature` |
