@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/bddkit/bddkit/compare/v0.2.1...v0.2.2) - 2026-09-26
+
+### Added
+
+- show each database query's duration in debug mode (issue #54)
+- default config file lookup (issue #48)
+- assertions over a variable's text, and extract from a variable ([#39](https://github.com/bddkit/bddkit/pull/39))
+
+### Fixed
+
+- normalize feature-file paths to forward slashes in output (issue #56)
+
+### Other
+
+- revert manual CHANGELOG edit — release-plz generates it
+- check formatting (cargo fmt --check)
+- cargo fmt (root + fixture plugins)
+- Merge pull request #59 from sergeym/feat/issue-39-variable-assertions
+
 ## [0.2.1](https://github.com/bddkit/bddkit/compare/v0.2.0...v0.2.1) - 2026-09-20
 
 ### Added
