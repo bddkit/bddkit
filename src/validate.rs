@@ -1,4 +1,4 @@
-use crate::feature::{LoadedFeature, TagFilter, expand_outlines};
+use crate::feature::{LoadedFeature, TagFilter, display_path, expand_outlines};
 use crate::steps::{Registry, StepTarget};
 use std::path::PathBuf;
 
@@ -14,7 +14,7 @@ impl std::fmt::Display for Problem {
         write!(
             f,
             "  {}:{}\n    {}",
-            self.file.display(),
+            display_path(&self.file),
             self.line,
             self.message
         )
