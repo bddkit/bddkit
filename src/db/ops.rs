@@ -6,7 +6,9 @@ use crate::world::World;
 use sqlx::AnyPool;
 use sqlx::any::AnyArguments;
 use sqlx::{Any, query::Query};
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Prints the SQL and parameters if debug mode is enabled (§8).
 pub fn log_sql(w: &World, sql: &str, binds: &[Option<String>], logs: &[String]) {
@@ -17,6 +19,18 @@ pub fn log_sql(w: &World, sql: &str, binds: &[Option<String>], logs: &[String]) 
             eprintln!("  auto: {l}");
         }
     }
+}
+
+/// Runs a query future, printing its duration in debug mode right after
+/// `log_sql`'s output — on failure too, since a slow query that ends in an
+/// error is exactly what this is meant to diagnose (issue #54).
+async fn timed<T, E>(w: &World, fut: impl Future<Output = Result<T, E>>) -> Result<T, E> {
+    let start = Instant::now();
+    let result = fut.await;
+    if w.debug {
+        eprintln!("TIME: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
 }
 
 /// Resolves a reference into (pool, platform, schema, parsed reference). The
@@ -69,16 +83,14 @@ pub async fn insert(
     log_sql(w, &sql, &binds, &logs);
 
     if pk_vars.is_empty() {
-        bind_all(sqlx::query(&sql), &binds)
-            .execute(pool)
+        timed(w, bind_all(sqlx::query(&sql), &binds).execute(pool))
             .await
             .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
         return Ok(());
     }
 
     let assignments: Vec<(String, String)> = if has_returning {
-        let row = bind_all(sqlx::query(&sql), &binds)
-            .fetch_one(pool)
+        let row = timed(w, bind_all(sqlx::query(&sql), &binds).fetch_one(pool))
             .await
             .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
         // PK values come back as text, per Platform::returning, in pk_vars order.
@@ -98,8 +110,7 @@ pub async fn insert(
         // a pooled connection that hands the next statement to whichever
         // connection is free, and under concurrency that is normally another
         // file's id, not rarely.
-        let result = bind_all(sqlx::query(&sql), &binds)
-            .execute(pool)
+        let result = timed(w, bind_all(sqlx::query(&sql), &binds).execute(pool))
             .await
             .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
         let mut assignments = Vec::new();
@@ -146,8 +157,7 @@ pub async fn update(w: &mut World, raw_table: &str, set: &str, where_: &str) -> 
         &where_pairs,
     )?;
     log_sql(w, &sql, &binds, &[]);
-    let done = bind_all(sqlx::query(&sql), &binds)
-        .execute(pool)
+    let done = timed(w, bind_all(sqlx::query(&sql), &binds).execute(pool))
         .await
         .map_err(|e| format!("UPDATE {}: {e}", tref.sql_name()))?;
     let table = tref.table.clone();
@@ -165,8 +175,7 @@ pub async fn delete(w: &mut World, raw_table: &str, where_: &str) -> Result<(), 
     let where_pairs = value::parse_oneliner(where_)?;
     let (sql, binds) = plan::build_delete(platform, &schema, &tref.sql_name(), &where_pairs)?;
     log_sql(w, &sql, &binds, &[]);
-    let done = bind_all(sqlx::query(&sql), &binds)
-        .execute(pool)
+    let done = timed(w, bind_all(sqlx::query(&sql), &binds).execute(pool))
         .await
         .map_err(|e| format!("DELETE {}: {e}", tref.sql_name()))?;
     let table = tref.table.clone();
@@ -186,11 +195,12 @@ pub async fn exists(
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
     let (sql, binds) = plan::build_exists(platform, &schema, &tref.sql_name(), where_pairs)?;
     log_sql(w, &sql, &binds, &[]);
-    Ok(bind_all(sqlx::query(&sql), &binds)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("checking presence in {}: {e}", tref.sql_name()))?
-        .is_some())
+    Ok(
+        timed(w, bind_all(sqlx::query(&sql), &binds).fetch_optional(pool))
+            .await
+            .map_err(|e| format!("checking presence in {}: {e}", tref.sql_name()))?
+            .is_some(),
+    )
 }
 
 /// Reads one column (cast to text via `Platform::cast_text`) from the first
@@ -218,8 +228,7 @@ pub async fn extract(
         tref.sql_name()
     );
     log_sql(w, &sql, &binds, &[]);
-    let row = bind_all(sqlx::query(&sql), &binds)
-        .fetch_optional(pool)
+    let row = timed(w, bind_all(sqlx::query(&sql), &binds).fetch_optional(pool))
         .await
         .map_err(|e| format!("SELECT {}: {e}", tref.sql_name()))?
         .ok_or_else(|| format!("no row in {} matched the condition", tref.sql_name()))?;
@@ -235,8 +244,7 @@ pub async fn delete_all(w: &mut World, raw_table: &str) -> Result<(), String> {
     let (pool, _platform, _schema, tref) = resolve(w, raw_table).await?;
     let sql = plan::build_delete_all(&tref.sql_name());
     log_sql(w, &sql, &[], &[]);
-    let done = sqlx::query(&sql)
-        .execute(pool)
+    let done = timed(w, sqlx::query(&sql).execute(pool))
         .await
         .map_err(|e| format!("DELETE ALL {}: {e}", tref.sql_name()))?;
     let table = tref.table.clone();
@@ -285,8 +293,7 @@ pub async fn call_procedure(w: &mut World, name: &str, args_str: &str) -> Result
     if w.debug {
         eprintln!("SQL: {sql}\nARGUMENTS: {args:?}");
     }
-    bind_args(sqlx::query(&sql), &args)
-        .execute(&state.pool)
+    timed(w, bind_args(sqlx::query(&sql), &args).execute(&state.pool))
         .await
         .map_err(|e| format!("CALL {name}: {e}"))?;
     Ok(())
@@ -309,10 +316,12 @@ pub async fn call_function(
     if w.debug {
         eprintln!("SQL: {sql}\nARGUMENTS: {args:?}");
     }
-    let row = bind_args(sqlx::query(&sql), &args)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| format!("SELECT {name}(...): {e}"))?;
+    let row = timed(
+        w,
+        bind_args(sqlx::query(&sql), &args).fetch_one(&state.pool),
+    )
+    .await
+    .map_err(|e| format!("SELECT {name}(...): {e}"))?;
     let v = text_col(&row, 0).map_err(|e| format!("reading function result: {e}"))?;
     let value = v.unwrap_or_default();
     w.vars.set(var, value);
@@ -330,10 +339,12 @@ pub async fn next_sequence(w: &mut World, seq: &str, var: &str) -> Result<(), St
     if w.debug {
         eprintln!("SQL: {sql} [{seq}]");
     }
-    let row = bind_all(sqlx::query(&sql), &binds)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| format!("next value of sequence {seq:?}: {e}"))?;
+    let row = timed(
+        w,
+        bind_all(sqlx::query(&sql), &binds).fetch_one(&state.pool),
+    )
+    .await
+    .map_err(|e| format!("next value of sequence {seq:?}: {e}"))?;
     let v = text_col(&row, 0)
         .map_err(|e| format!("reading sequence: {e}"))?
         .unwrap_or_default();

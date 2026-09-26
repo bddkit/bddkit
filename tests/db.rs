@@ -1,6 +1,7 @@
 mod common;
 
 use common::db::{Engine, combined, engine, feature_command, run_feature, setup, test_dsn};
+use regex::Regex;
 use sqlx::AnyPool;
 use std::{
     io::{BufRead, BufReader, Read},
@@ -355,5 +356,47 @@ Feature: eventual database assertion
     assert!(
         output.matches(probe.as_str()).count() >= 2,
         "polling assertion did not make an initial miss and retry: {output}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_mode_shows_query_duration_after_success_and_after_failure() {
+    let _g = setup().await;
+    let time_line = Regex::new(r"(?m)^TIME: \d+\.\d{2} ms$").unwrap();
+
+    let ok_src = "\
+Feature: query timing
+  Scenario: successful insert
+    Given I am in debug mode
+    And I have \"companies\" with \"slug: timed-ok\"
+";
+    let ok_out = run_feature(ok_src, &_g);
+    assert!(ok_out.status.success(), "{}", combined(&ok_out));
+    let ok_output = combined(&ok_out);
+    assert!(
+        time_line.is_match(&ok_output),
+        "expected a `TIME: ... ms` line after a successful query: {ok_output}"
+    );
+
+    // The second insert repeats the composite PK of the first — a duplicate
+    // key error the server raises only after running the INSERT, so this
+    // exercises the failure path (issue #54: timing must show up there too).
+    let fail_src = "\
+Feature: query timing
+  Scenario: failing insert
+    Given I am in debug mode
+    And I have \"pair\" with \"a: 1, b: 1\"
+    And I have \"pair\" with \"a: 1, b: 1\"
+";
+    let fail_out = run_feature(fail_src, &_g);
+    assert!(
+        !fail_out.status.success(),
+        "expected a duplicate-key failure: {}",
+        combined(&fail_out)
+    );
+    let fail_output = combined(&fail_out);
+    assert!(
+        time_line.is_match(&fail_output),
+        "expected a `TIME: ... ms` line even when the query fails: {fail_output}"
     );
 }
