@@ -50,8 +50,9 @@ impl VarStack {
     }
 
     /// Pops the top frame, copying into the parent only what `exports` lists.
-    /// Supports a glob of the form `last_insert_id_*`.
-    pub fn pop_frame(&mut self, exports: &[String]) -> Result<(), String> {
+    /// Supports a glob of the form `last_insert_id_*`. Returns the exported
+    /// pairs so a caller in debug mode can log them.
+    pub fn pop_frame(&mut self, exports: &[String]) -> Result<Vec<(String, String)>, String> {
         // Check BEFORE popping: `Vec::pop` is irreversible, and the root frame must not be popped.
         if self.frames.len() <= 1 {
             return Err("cannot pop the root frame".into());
@@ -75,10 +76,10 @@ impl VarStack {
                 exported.push((pattern.clone(), v.clone()));
             }
         }
-        for (k, v) in exported {
-            self.set(&k, v);
+        for (k, v) in &exported {
+            self.set(k, v.clone());
         }
-        Ok(())
+        Ok(exported)
     }
 
     pub fn all_vars(&self) -> Vec<(String, String)> {
@@ -180,6 +181,16 @@ mod tests {
         s.pop_frame(&["companyId".to_string()]).unwrap();
         assert_eq!(s.get("companyId"), Some("42"));
         assert_eq!(s.get("tmp"), None);
+    }
+
+    #[test]
+    fn pop_frame_returns_the_exported_pairs_for_debug_logging() {
+        let mut s = VarStack::new();
+        s.push_frame();
+        s.set("companyId", "42".into());
+        s.set("tmp", "garbage".into());
+        let exported = s.pop_frame(&["companyId".to_string()]).unwrap();
+        assert_eq!(exported, vec![("companyId".to_string(), "42".to_string())]);
     }
 
     #[test]

@@ -2870,6 +2870,79 @@ fn debug_mode_logs_the_includes_with_and_export_lines() {
 }
 
 #[test]
+fn debug_mode_logs_a_macro_s_exported_variables() {
+    let dir = std::env::temp_dir().join(format!("bddkit-macro-debug-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: I login as user \"{email}\"\n  do:\n    - set variable \"token\" to \"<<email>>-token\"\n  exports: [token]\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("features/caller.feature"),
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n    When I login as user \"alice@example.com\"\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+    )
+    .expect("write config");
+
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(
+        code,
+        Some(0),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains(r#"macro "I login as user \"alice@example.com\"""#),
+        "stderr should name the macro call:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("  export token = alice@example.com-token"),
+        "stderr should contain the exported variable:\n{stderr}"
+    );
+}
+
+/// The header must print before the macro body runs, not after: otherwise a
+/// macro whose body fails logs nothing at all, the case debug mode is for.
+#[test]
+fn debug_mode_names_the_macro_even_when_its_body_fails() {
+    let dir = std::env::temp_dir().join(format!(
+        "bddkit-macro-debug-fail-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: I login as user \"{email}\"\n  do:\n    - variable \"missing\" should be equal to \"x\"\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("features/caller.feature"),
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n    When I login as user \"alice@example.com\"\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+    )
+    .expect("write config");
+
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(
+        code,
+        Some(1),
+        "the macro body's assertion must fail the run\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains(r#"macro "I login as user \"alice@example.com\"""#),
+        "the header must print even though the macro body failed:\n{stderr}"
+    );
+}
+
+#[test]
 fn doctor_reports_a_broken_include_the_same_way_run_does() {
     // Same missing-file fixture as include_of_a_missing_file_is_a_problem (Task 7),
     // but invoke `bddkit doctor --config cfg.yaml` instead of `run`.

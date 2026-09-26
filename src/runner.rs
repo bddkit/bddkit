@@ -120,6 +120,9 @@ fn execute_step<'a>(
                 for (name, value) in definition.params.iter().zip(args.caps) {
                     world.vars.set(name, value);
                 }
+                if world.debug {
+                    eprintln!("macro {:?}", step.text);
+                }
 
                 // A macro body resolves ITS OWN includes relative to the
                 // macro's own source file, never the caller's — the same
@@ -141,7 +144,13 @@ fn execute_step<'a>(
                         return Err(format!("  {}\n{error}", body_step.text));
                     }
                 }
-                world.vars.pop_frame(&definition.exports)
+                let exported = world.vars.pop_frame(&definition.exports)?;
+                if world.debug {
+                    for (k, v) in &exported {
+                        eprintln!("  export {k} = {}", debug_display(v));
+                    }
+                }
+                Ok(())
             }
             StepTarget::Plugin {
                 lib,
