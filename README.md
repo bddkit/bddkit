@@ -249,6 +249,8 @@ What does not carry over:
 
 `examples/README.md` has the same ground as a per-engine table, with the workaround for each row.
 
+In debug mode, every DB step prints the query's duration right after its SQL and parameters (`TIME: 3.41 ms`), on a failing query too — a slow query that ends in an error is exactly what this is meant to diagnose. Under `concurrency` greater than 1 that number also includes the wait for a free pooled connection, so it can read higher than the query's own time; for an accurate measurement run with `concurrency: 1`.
+
 ### Cleaning up what a run created
 
 Every `<<unique()>>` token is `u` followed by the run's own 12-character prefix and a counter, and `<<run_id>>` is that prefix. A `~` on the column name asks for SQL `LIKE` instead of `=`, so one step removes exactly the rows this run wrote — `examples/db-features/cleanup.feature` is it, working:
