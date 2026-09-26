@@ -89,9 +89,9 @@ struct AddArgs {
     group: String,
     /// The name the resource is reachable by
     name: String,
-    /// Path to the YAML config to edit
+    /// Path to the YAML config to edit [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     /// Override APP_ENV: selects .env.<name> / .env.<name>.local
     #[arg(long = "env")]
     env: Option<String>,
@@ -110,9 +110,12 @@ struct AddArgs {
 struct FieldsArgs {
     /// Only this kind: api, db, srp, or a plugin group
     kind: Option<String>,
-    /// Also describe the groups the plugins this config loads serve
+    /// Also describe the groups the plugins this config loads serve [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Builtins only, even when a config would otherwise be picked up
+    #[arg(long, conflicts_with = "config")]
+    no_config: bool,
     /// Machine-readable output
     #[arg(long)]
     json: bool,
@@ -135,10 +138,21 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
                 args.fields.remove(pos);
                 args.no_check = true;
             }
+            let config_path = match config::resolve_config_path(args.config.as_deref()) {
+                Ok(Some(resolved)) => resolved.path,
+                Ok(None) => {
+                    println!("{}\n\nnothing was written.", config::NO_CONFIG_FOUND);
+                    return Ok(1);
+                }
+                Err(error) => {
+                    println!("{error:#}\n\nnothing was written.");
+                    return Ok(1);
+                }
+            };
             resource::add(resource::AddInput {
                 group: &args.group,
                 name: &args.name,
-                config: &args.config,
+                config: &config_path,
                 env: args.env.as_deref(),
                 json: args.json.as_deref(),
                 no_check: args.no_check,
@@ -166,8 +180,12 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
     // loading the plugin — which is why `--config` is optional here, exactly
     // as it is for `steps list`: the common question, "what does an api entry
     // take", must cost nothing. It is also the only way to reach the lock
-    // file, which is anchored at the config's parent directory.
-    if let Some(path) = &args.config {
+    // file, which is anchored at the config's parent directory. `--no-config`
+    // is the same escape hatch `steps list` has.
+    if !args.no_config
+        && let Some(resolved) = config::resolve_config_path(args.config.as_deref())?
+    {
+        let path = &resolved.path;
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
         if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))?
@@ -201,9 +219,9 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
   bddkit doctor --config suite.yaml --junit reports/junit.xml
                                              also check that run's report path can be written")]
 struct DoctorArgs {
-    /// Path to the YAML config
+    /// Path to the YAML config [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     /// Override APP_ENV: selects .env.<name> / .env.<name>.local
     #[arg(long = "env")]
     env: Option<String>,
@@ -225,7 +243,7 @@ struct DoctorArgs {
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
     let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
     let report = doctor::check(
-        &args.config,
+        args.config.as_deref(),
         args.env.as_deref(),
         args.live,
         &dir_env,
@@ -250,9 +268,9 @@ struct DirArgs {
 
 #[derive(Args)]
 struct RunArgs {
-    /// Path to the YAML config
+    /// Path to the YAML config [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     /// Run only these directories or .feature files instead of the config's `paths`
     paths: Vec<PathBuf>,
     /// Run only scenarios with one of these tags (repeatable)
@@ -333,9 +351,12 @@ struct ListArgs {
     /// Machine-readable output
     #[arg(long)]
     json: bool,
-    /// Also list the steps of the plugins this config loads
+    /// Also list the steps of the plugins this config loads [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Builtins only, even when a config would otherwise be picked up
+    #[arg(long, conflicts_with = "config")]
+    no_config: bool,
     /// Description language (default: $BDDKIT_LANG, else en)
     #[arg(long)]
     lang: Option<String>,
@@ -369,7 +390,13 @@ fn list_steps(args: ListArgs) -> Result<i32> {
     // A plugin's vocabulary lives inside its `cdylib`, so listing it means
     // loading it — which is why `--config` is optional here and required by
     // `run`: the common question, "what steps exist", must cost nothing.
-    if let Some(path) = &args.config {
+    // `--no-config` is the escape hatch back to builtins-only, both for a
+    // deliberate lookup and for a broken `bddkit.yaml` that would otherwise
+    // block this simple vocabulary lookup.
+    if !args.no_config
+        && let Some(resolved) = config::resolve_config_path(args.config.as_deref())?
+    {
+        let path = &resolved.path;
         let cfg = config::load(path, None)?;
         let generator = unique::Generator::new();
         let env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
@@ -532,11 +559,14 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .paths()
         .into_iter()
         .try_for_each(report::prepare)?;
-    let cfg = config::load(&cli.config, cli.env.as_deref())?;
+    let config_path = config::resolve_config_path(cli.config.as_deref())?
+        .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
+        .path;
+    let cfg = config::load(&config_path, cli.env.as_deref())?;
     // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());
     let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
-    let plugins = load_plugins(&cli.config, &cfg, &generator, &env)?;
+    let plugins = load_plugins(&config_path, &cfg, &generator, &env)?;
 
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
