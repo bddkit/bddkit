@@ -391,7 +391,7 @@ fn check_features(
     for path in paths {
         match feature::load(&path) {
             Ok(lf) => loaded.push(std::sync::Arc::new(lf)),
-            Err(error) => problems.push(format!("{}\n  {error:#}", path.display())),
+            Err(error) => problems.push(format!("{}\n  {error:#}", feature::display_path(&path))),
         }
     }
     // No tag filter: `doctor` answers "is this suite whole", not "is this tag
@@ -412,11 +412,14 @@ fn check_features(
                 &filter,
                 |target| unserved_group(cfg, plugins, target),
             ));
-            problems.extend(
-                found
-                    .iter()
-                    .map(|p| format!("{}:{}\n  {}", p.file.display(), p.line, p.message)),
-            );
+            problems.extend(found.iter().map(|p| {
+                format!(
+                    "{}:{}\n  {}",
+                    feature::display_path(&p.file),
+                    p.line,
+                    p.message
+                )
+            }));
             None
         }
         Err(reason) => Some(reason),

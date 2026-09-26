@@ -26,6 +26,15 @@ pub struct LoadedFeature {
     pub feature: Feature,
 }
 
+/// Formats a path for user-facing output with `/` throughout, even on Windows,
+/// where a path built by joining discovered directory entries mixes `/` (what
+/// the tester typed) with `\` (what `Path::join` adds) — see issue #56. Output
+/// must stay round-trippable: Windows itself accepts `/` in paths, so this
+/// never changes what a tester can paste back into `bddkit run`.
+pub fn display_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Selects scenarios by tag. An empty filter lets everything through.
 pub struct TagFilter {
     wanted: Vec<String>,
@@ -81,7 +90,7 @@ pub fn serial_of(lf: &LoadedFeature) -> Result<Option<String>, String> {
         if name.is_empty() {
             return Err(format!(
                 "{}: @serial() tag has no chain name",
-                lf.path.display()
+                display_path(&lf.path)
             ));
         }
         match &found {
@@ -89,7 +98,7 @@ pub fn serial_of(lf: &LoadedFeature) -> Result<Option<String>, String> {
                 return Err(format!(
                     "{}: file is tagged with two chains — @serial({first}) and @serial({name}); \
                      a file can belong to only one",
-                    lf.path.display()
+                    display_path(&lf.path)
                 ));
             }
             Some(_) => {}
@@ -119,7 +128,7 @@ pub fn priority_of(lf: &LoadedFeature) -> Result<i64, String> {
             format!(
                 "{}: tag @priority({raw}) — the argument must be an integer \
                  (higher goes earlier in the queue, default 0)",
-                lf.path.display()
+                display_path(&lf.path)
             )
         })?;
         best = Some(best.map_or(value, |b: i64| b.max(value)));
@@ -222,7 +231,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
 
 pub fn load(path: &Path) -> Result<LoadedFeature> {
     let mut feature = Feature::parse_path(path, GherkinEnv::default())
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+        .with_context(|| format!("failed to parse {}", display_path(path)))?;
     // Tags above `Feature:` apply to all of its scenarios. gherkin stores them
     // separately, but a tester who writes @billing above the feature expects the
     // filter to select the whole file.
@@ -589,6 +598,18 @@ Feature: f
             );
             assert!(priority_of(&lf).is_err(), "@priority() must fail");
         }
+    }
+
+    #[test]
+    fn display_path_normalizes_backslashes_to_forward_slashes() {
+        let p = PathBuf::from("features\\api\\users\\create.feature");
+        assert_eq!(display_path(&p), "features/api/users/create.feature");
+    }
+
+    #[test]
+    fn display_path_leaves_a_unix_style_path_unchanged() {
+        let p = PathBuf::from("features/api/users/create.feature");
+        assert_eq!(display_path(&p), "features/api/users/create.feature");
     }
 
     #[test]

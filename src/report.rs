@@ -1,3 +1,4 @@
+use crate::feature::display_path;
 use anyhow::{Context, Result};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -70,14 +71,14 @@ pub fn render_file(r: &FileResult) -> String {
     let mark = if r.failed() == 0 { "✓" } else { "✗" };
     let mut out = format!(
         "  {mark} {} — scenarios: {}\n",
-        r.path.display(),
+        display_path(&r.path),
         r.scenarios.len()
     );
     for s in &r.scenarios {
         if let Some(f) = &s.failure {
             out.push_str(&format!(
                 "\nFAIL  {}:{} › {}\n{f}\n",
-                r.path.display(),
+                display_path(&r.path),
                 s.line,
                 s.name
             ));
@@ -149,7 +150,7 @@ fn junit(results: &[FileResult]) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites tests=\"{tests}\" failures=\"{failures}\" time=\"{time:.3}\">\n"
     );
     for r in results {
-        let file = xml(&r.path.display().to_string());
+        let file = xml(&display_path(&r.path));
         let _ = writeln!(
             out,
             "  <testsuite name=\"{file}\" tests=\"{}\" failures=\"{}\" time=\"{:.3}\">",
@@ -251,7 +252,7 @@ fn cucumber_json(results: &[FileResult]) -> serde_json::Value {
                 })
                 .collect();
             json!({
-                "uri": r.path.display().to_string(),
+                "uri": display_path(&r.path),
                 "id": id(&r.name),
                 "keyword": "Feature",
                 "name": r.name,
