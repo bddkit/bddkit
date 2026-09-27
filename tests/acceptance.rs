@@ -2526,6 +2526,33 @@ fn include_of_a_one_scenario_file_exports_its_declared_variable() {
     );
 }
 
+/// `I include "<file>" with prefix "<p>"` (issue #52) renames every exported
+/// variable to `<p>_<name>` as it crosses back into the caller — the same
+/// target file is included twice here, once per prefix, and neither call's
+/// `userId` export must clobber the other's.
+#[test]
+fn including_the_same_file_twice_with_different_prefixes_keeps_both_exports() {
+    let dir = build_include_project(
+        "include-prefix-test",
+        &[
+            (
+                "features/target.feature",
+                "tests/features/include/target.feature",
+            ),
+            (
+                "features/caller.feature",
+                "tests/features/include/caller_prefix.feature",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(
+        code,
+        Some(0),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
 /// A failed step inside an included scenario must not leave the caller's
 /// file-level `VarStack` swapped for the included one — `run_include` must
 /// restore it on the way out regardless of the include's own outcome. Two
@@ -2866,6 +2893,36 @@ fn debug_mode_logs_the_includes_with_and_export_lines() {
     assert!(
         stderr.contains("  export seen = "),
         "stderr should contain '  export seen = ' (with two-space indentation):\n{stderr}"
+    );
+}
+
+/// The `with prefix "<p>"` name applies before the debug log line is
+/// printed, so `--debug` shows the name that actually lands in the caller's
+/// scope (`buyer_seen`), not the included scenario's own export name (`seen`).
+#[test]
+fn debug_mode_logs_the_prefixed_export_name() {
+    let dir = build_include_project(
+        "debug-include-prefix-test",
+        &[
+            (
+                "features/outline.feature",
+                "tests/features/include/outline.feature",
+            ),
+            (
+                "features/caller_debug_export_prefix.feature",
+                "tests/features/include/caller_debug_export_prefix.feature",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(
+        code,
+        Some(0),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.contains("  export buyer_seen = "),
+        "stderr should contain '  export buyer_seen = ' (prefixed export name):\n{stderr}"
     );
 }
 

@@ -695,13 +695,13 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::Include,
         "general",
-        r#"^I include "(?P<file>[^"]*)"(?: with:)?$"#,
+        r#"^I include "(?P<file>[^"]*)"(?: with prefix "(?P<prefix>[^"]*)")?(?: with:)?$"#,
         "Runs the only scenario of another feature file inline, sharing HTTP/DB/plugin state.",
     ),
     action(
         StepId::IncludeScenario,
         "general",
-        r#"^I include "(?P<file>[^"]*)" scenario "(?P<name>[^"]*)"(?: with:)?$"#,
+        r#"^I include "(?P<file>[^"]*)" scenario "(?P<name>[^"]*)"(?: with prefix "(?P<prefix>[^"]*)")?(?: with:)?$"#,
         "Runs one named scenario of another feature file inline, sharing HTTP/DB/plugin state.",
     ),
 ];
@@ -1036,8 +1036,9 @@ static GROUP_NAME: LazyLock<Regex> = LazyLock::new(|| {
 
 fn builtin_patterns(pattern: &str) -> Vec<Vec<PatternToken>> {
     // A group name is display metadata for `bddkit steps list`, and the
-    // tokenizer below recognizes `([^"]*)`, `(\d+)`, the method alternation
-    // and the `(?: with:)?` table suffix by their literal text. Any other
+    // tokenizer below recognizes `([^"]*)`, `(\d+)`, the method alternation,
+    // the `(?: with prefix "...")?` include-prefix suffix and the
+    // `(?: with:)?` table suffix by their literal text. Any other
     // parenthesized construct panics rather than degrading into literal
     // characters — a silent degradation here would quietly stop a macro from
     // conflicting with the builtin it shadows, and `every_builtin_pattern_is_fully_tokenizable`
@@ -1046,20 +1047,40 @@ fn builtin_patterns(pattern: &str) -> Vec<Vec<PatternToken>> {
     // before the table was annotated.
     let pattern = &*GROUP_NAME.replace_all(pattern, "");
     const METHODS: &str = "(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)";
+    const WITH_PREFIX_SUFFIX: &str = r#"(?: with prefix "([^"]*)")?"#;
     const WITH_SUFFIX: &str = "(?: with:)?";
-    let variants: Vec<String> = if pattern.contains(METHODS) {
-        ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    // Optional suffixes are independent (a pattern may carry both `with
+    // prefix "..."` and `with:`), so each recognized construct expands its
+    // own axis over whatever variants the previous ones produced — a plain
+    // `if`/`else if` chain would only ever expand the first construct found
+    // and silently degrade the other into the unrecognized-`(` panic below.
+    let mut variants: Vec<String> = vec![pattern.to_string()];
+    if variants.iter().any(|v| v.contains(METHODS)) {
+        variants = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
             .iter()
             .map(|method| pattern.replace(METHODS, method))
-            .collect()
-    } else if pattern.contains(WITH_SUFFIX) {
-        [" with:", ""]
+            .collect();
+    }
+    if variants.iter().any(|v| v.contains(WITH_PREFIX_SUFFIX)) {
+        variants = variants
             .iter()
-            .map(|suffix| pattern.replace(WITH_SUFFIX, suffix))
-            .collect()
-    } else {
-        vec![pattern.to_string()]
-    };
+            .flat_map(|v| {
+                [r#" with prefix "([^"]*)""#, ""]
+                    .iter()
+                    .map(move |suffix| v.replace(WITH_PREFIX_SUFFIX, suffix))
+            })
+            .collect();
+    }
+    if variants.iter().any(|v| v.contains(WITH_SUFFIX)) {
+        variants = variants
+            .iter()
+            .flat_map(|v| {
+                [" with:", ""]
+                    .iter()
+                    .map(move |suffix| v.replace(WITH_SUFFIX, suffix))
+            })
+            .collect();
+    }
     variants
         .iter()
         .map(|variant| {
@@ -1918,7 +1939,10 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(caps, vec!["flows/register.feature".to_string()]);
+        assert_eq!(
+            caps,
+            vec!["flows/register.feature".to_string(), String::new()]
+        );
     }
 
     #[test]
@@ -1939,7 +1963,54 @@ mod tests {
             caps,
             vec![
                 "flows/admin.feature".to_string(),
-                "Activate a user".to_string()
+                "Activate a user".to_string(),
+                String::new(),
+            ]
+        );
+    }
+
+    #[test]
+    fn include_step_matches_with_prefix() {
+        let reg = Registry::new().unwrap();
+        let (target, caps) = reg
+            .find(r#"I include "flows/register.feature" with prefix "buyer""#)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            target,
+            StepTarget::Builtin {
+                id: StepId::Include,
+                ..
+            }
+        ));
+        assert_eq!(
+            caps,
+            vec!["flows/register.feature".to_string(), "buyer".to_string()]
+        );
+    }
+
+    #[test]
+    fn include_scenario_step_matches_with_prefix_and_table() {
+        let reg = Registry::new().unwrap();
+        let (target, caps) = reg
+            .find(
+                r#"I include "flows/admin.feature" scenario "Activate a user" with prefix "buyer" with:"#,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            target,
+            StepTarget::Builtin {
+                id: StepId::IncludeScenario,
+                ..
+            }
+        ));
+        assert_eq!(
+            caps,
+            vec![
+                "flows/admin.feature".to_string(),
+                "Activate a user".to_string(),
+                "buyer".to_string(),
             ]
         );
     }
@@ -1958,6 +2029,9 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(caps, vec!["flows/register.feature".to_string()]);
+        assert_eq!(
+            caps,
+            vec!["flows/register.feature".to_string(), String::new()]
+        );
     }
 }

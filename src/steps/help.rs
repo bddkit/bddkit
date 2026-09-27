@@ -161,9 +161,11 @@ pub fn render(rows: &[StepRow], verbose: bool) -> String {
 /// plugin pattern — or a builtin nobody has annotated — degrades instead of
 /// breaking the listing.
 ///
-/// ponytail: no nesting and no escaped parentheses, because no pattern in the
-/// step table or in any plugin manifest has either. A nested group would render
-/// as its outer span; give this a depth counter if one ever appears.
+/// ponytail: no escaped parentheses, because no pattern in the step table or
+/// in any plugin manifest has one. One level of nesting (a named group inside
+/// a `(?:…)?` suffix, e.g. the include-prefix clause) is handled by matching
+/// the CLOSING paren with a depth counter and recursing into a non-capturing
+/// group's body — see `Group::NonCapturing` below.
 pub fn template(pattern: &str) -> String {
     let body = pattern.trim_start_matches('^').trim_end_matches('$');
     let mut out = String::with_capacity(body.len());
@@ -171,7 +173,22 @@ pub fn template(pattern: &str) -> String {
     let mut index = 0usize;
     while let Some(start) = rest.find('(') {
         out.push_str(&rest[..start]);
-        let Some(end) = rest[start..].find(')') else {
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, c) in rest[start..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
             // Unbalanced: not a pattern this function can interpret, so hand
             // the remainder back verbatim rather than inventing a parameter.
             out.push_str(&rest[start..]);
@@ -187,8 +204,12 @@ pub fn template(pattern: &str) -> String {
             // `(?:…)` and `(?i)` capture nothing, so they take no argument and
             // must not consume a position — labelling the next real group
             // `<value2>` would misstate the dispatch order a plugin author
-            // reads this listing to learn.
-            Group::NonCapturing(text) => out.push_str(text),
+            // reads this listing to learn. Its body can itself hold a real
+            // named group (`(?: with prefix "(?P<prefix>[^"]*)")?`), so it is
+            // templated recursively rather than emitted as literal text — the
+            // one nesting depth this deriver needs to handle, per the
+            // ponytail note above `template`.
+            Group::NonCapturing(text) => out.push_str(&template(text)),
         }
         rest = &rest[start + end + 1..];
     }

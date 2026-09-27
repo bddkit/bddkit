@@ -299,11 +299,12 @@ fn run_include<'a>(
         }
 
         let path_literal = &caps[0];
-        let scenario_name = if id == StepId::IncludeScenario {
-            Some(caps[1].as_str())
+        let (scenario_name, prefix_raw) = if id == StepId::IncludeScenario {
+            (Some(caps[1].as_str()), caps[2].as_str())
         } else {
-            None
+            (None, caps[1].as_str())
         };
+        let prefix = (!prefix_raw.is_empty()).then_some(prefix_raw);
 
         let base_dir = source
             .parent()
@@ -383,18 +384,26 @@ fn run_include<'a>(
             }
         }
 
+        // The call-site `with prefix "<p>"` renames every exported variable to
+        // `<p>_<name>` as it crosses back into the caller's scope — this is
+        // what lets two includes of the same flow (e.g. registering a buyer
+        // and a seller) coexist without the second overwriting the first.
+        let apply_prefix = |name: String| match prefix {
+            Some(p) => format!("{p}_{name}"),
+            None => name,
+        };
         let export_result = if run_result.is_ok() {
             let mut resolved_exports = Vec::new();
             let mut missing = None;
             for name in &exports {
-                if let Some(prefix) = name.strip_suffix('*') {
+                if let Some(glob_prefix) = name.strip_suffix('*') {
                     for (k, v) in world.vars.all_vars() {
-                        if k.starts_with(prefix) {
-                            resolved_exports.push((k, v));
+                        if k.starts_with(glob_prefix) {
+                            resolved_exports.push((apply_prefix(k), v));
                         }
                     }
                 } else if let Some(v) = world.vars.get(name) {
-                    resolved_exports.push((name.clone(), v.to_string()));
+                    resolved_exports.push((apply_prefix(name.clone()), v.to_string()));
                 } else {
                     missing = Some(format!(
                         "I include {path_literal:?}: declared export {name:?}, but the variable is not set"
