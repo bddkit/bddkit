@@ -16,3 +16,9 @@ Feature: `I include` — reusing scenarios from another file
       | value |
       | <<myValue>> |
     Then variable "seen" should be equal to "from-caller"
+
+  Scenario: includes the same flow twice with a call-site prefix
+    Given I include "include_setup.feature" scenario "a user signs up" with prefix "buyer"
+    And I include "include_setup.feature" scenario "a user signs up" with prefix "seller"
+    Then variable "buyer_userId" should be equal to "abc123"
+    And variable "seller_userId" should be equal to "abc123"
