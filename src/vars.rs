@@ -37,6 +37,18 @@ impl VarStack {
         self.globals.insert(name.to_string(), value);
     }
 
+    /// True when `name` is already held by the ROOT frame — the file-level
+    /// variables, never a macro's own pushed frame — so a global write under
+    /// this name is permanently shadowed and never surfaces through `get`.
+    /// A macro-local frame shadowing `name` does not count: it is gone once
+    /// the macro pops, and the global write becomes visible again.
+    pub fn shadowed_by_frame(&self, name: &str) -> bool {
+        self.frames
+            .first()
+            .expect("the frame stack is never empty")
+            .contains_key(name)
+    }
+
     #[cfg(test)]
     pub fn remove(&mut self, name: &str) {
         for frame in self.frames.iter_mut() {
@@ -232,6 +244,23 @@ mod tests {
         s.set_global("x", "global".into());
         s.set("x", "framed".into());
         assert_eq!(s.get("x"), Some("framed"));
+    }
+
+    #[test]
+    fn shadowed_by_frame_is_true_for_a_root_frame_variable() {
+        let mut s = VarStack::new();
+        s.set("x", "file-level".into());
+        assert!(s.shadowed_by_frame("x"));
+    }
+
+    /// A macro's own pushed frame is not "file-level": it is gone once the
+    /// macro pops, and a global write made inside it becomes visible again.
+    #[test]
+    fn shadowed_by_frame_ignores_a_macro_local_frame() {
+        let mut s = VarStack::new();
+        s.push_frame();
+        s.set("x", "macro-local".into());
+        assert!(!s.shadowed_by_frame("x"));
     }
 
     #[test]

@@ -21,7 +21,7 @@ ResponseArrayLength: pārbauda, vai atbildes saturs ir norādītā garuma JSON m
 ResponseHeader: pārbauda, vai atbildes galvene ir tieši šī vērtība
 JsonNodeExists: pārbauda, vai atbildes saturā ir mezgls šajā JSON ceļā
 SetVariableGlobal: piešķir mainīgo, kas redzams visiem šī faila scenārijiem
-SetVariable: piešķir mainīgo pašreizējam scenārijam
+SetVariable: piešķir mainīgo visam feature failam
 ExtractFromJsonGlobal: nolasa atbildes JSON ceļu mainīgajā, kas redzams visam failam
 ExtractFromJson: nolasa atbildes JSON ceļu mainīgajā
 ExtractFromCookiesGlobal: nolasa atbildes sīkdatni mainīgajā, kas redzams visam failam

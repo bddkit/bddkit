@@ -32,6 +32,9 @@ pub struct StepResult {
     pub line: usize,
     pub status: StepStatus,
     pub duration: Duration,
+    /// Non-fatal notices raised while this step ran. Printed even for a
+    /// passing scenario, unlike a failure dump.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -75,6 +78,16 @@ pub fn render_file(r: &FileResult) -> String {
         r.scenarios.len()
     );
     for s in &r.scenarios {
+        for step in &s.steps {
+            for w in &step.warnings {
+                out.push_str(&format!(
+                    "\nWARN  {}:{} › {}\n  {w}\n",
+                    display_path(&r.path),
+                    step.line,
+                    step.text
+                ));
+            }
+        }
         if let Some(f) = &s.failure {
             out.push_str(&format!(
                 "\nFAIL  {}:{} › {}\n{f}\n",
@@ -304,6 +317,33 @@ mod tests {
         assert!(out.contains("features/auth.feature:34"), "{out}");
         assert!(out.contains("user login"), "{out}");
         assert!(out.contains("expected: 200"), "{out}");
+    }
+
+    #[test]
+    fn a_step_warning_appears_in_the_report_of_a_passing_scenario() {
+        let r = FileResult {
+            path: PathBuf::from("features/vars.feature"),
+            name: "vars".to_string(),
+            scenarios: vec![ScenarioResult {
+                name: "shadowed global".to_string(),
+                line: 5,
+                failure: None,
+                steps: vec![StepResult {
+                    keyword: "When".to_string(),
+                    text: r#"set variable "x" to "b" global"#.to_string(),
+                    line: 7,
+                    status: StepStatus::Passed,
+                    duration: Duration::ZERO,
+                    warnings: vec!["variable \"x\" is shadowed".to_string()],
+                }],
+                duration: Duration::ZERO,
+            }],
+        };
+        let out = render_file(&r);
+        assert!(out.contains("✓"), "the scenario still passes: {out}");
+        assert!(out.contains("WARN"), "{out}");
+        assert!(out.contains("features/vars.feature:7"), "{out}");
+        assert!(out.contains("variable \"x\" is shadowed"), "{out}");
     }
 
     #[test]
