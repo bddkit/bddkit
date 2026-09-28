@@ -15,6 +15,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint-install-scripts:
+    name: lint install scripts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      # shellcheck ships preinstalled on the ubuntu-latest runner image.
+      - name: shellcheck install.sh
+        run: shellcheck install.sh
+      # PSScriptAnalyzer ships preinstalled on the ubuntu-latest runner image's pwsh.
+      # PSAvoidUsingWriteHost is excluded on purpose: this is a top-level script piped
+      # through `irm | iex`, not a module, and Write-Host is the right call for
+      # colored, unbuffered status lines during an install.
+      - name: PSScriptAnalyzer install.ps1
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -ExcludeRule PSAvoidUsingWriteHost
+          $results | Format-Table -AutoSize
+          if ($results.Count -gt 0) { exit 1 }
+
   test:
     name: test & clippy
     runs-on: ubuntu-latest
