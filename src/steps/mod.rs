@@ -388,7 +388,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         StepId::SetVariable,
         "vars",
         r#"^set variable "(?P<name>[^"]*)" to "(?P<value>[^"]*)"$"#,
-        "sets a variable for the current scenario",
+        "sets a variable for the whole feature file",
     ),
     action(
         StepId::ExtractFromJsonGlobal,

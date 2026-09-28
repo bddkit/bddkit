@@ -21,7 +21,7 @@ ResponseArrayLength: проверяет, что тело ответа — JSON-�
 ResponseHeader: проверяет, что заголовок ответа равен ровно этому значению
 JsonNodeExists: проверяет, что в теле ответа есть узел по этому JSON-пути
 SetVariableGlobal: задаёт переменную, видимую всем сценариям этого файла
-SetVariable: задаёт переменную для текущего сценария
+SetVariable: задаёт переменную для всего файла с фичей
 ExtractFromJsonGlobal: читает JSON-путь ответа в переменную, видимую всему файлу
 ExtractFromJson: читает JSON-путь ответа в переменную
 ExtractFromCookiesGlobal: читает cookie ответа в переменную, видимую всему файлу

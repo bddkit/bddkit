@@ -603,6 +603,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     line: step.line,
                     status,
                     duration: step_started.elapsed(),
+                    warnings: std::mem::take(&mut world.warnings),
                 });
             }
             scenarios.push(ScenarioResult {

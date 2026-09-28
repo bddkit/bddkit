@@ -59,6 +59,11 @@ pub fn encrypt_with_aes(
 
 pub fn set_variable(w: &mut World, name: &str, value: &str, global: bool) -> Result<(), String> {
     if global {
+        if w.vars.shadowed_by_frame(name) {
+            w.warnings.push(format!(
+                "variable {name:?} was set global, but a file-level variable of the same name shadows it: <<{name}>> still reads the file-level value"
+            ));
+        }
         w.vars.set_global(name, value.to_string());
     } else {
         w.vars.set(name, value.to_string());
@@ -128,12 +133,7 @@ pub fn extract_from_cookies(
     let value = ex
         .set_cookie(cookie)
         .ok_or_else(|| format!("cookie {cookie:?} not found in the response"))?;
-    if global {
-        w.vars.set_global(name, value);
-    } else {
-        w.vars.set(name, value);
-    }
-    Ok(())
+    set_variable(w, name, &value, global)
 }
 
 pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<(), String> {
@@ -448,6 +448,26 @@ mod tests {
             (w.vars.get("kept"), w.vars.get("dropped")),
             (Some("5"), None)
         );
+    }
+
+    #[test]
+    fn a_global_write_shadowed_by_a_file_level_variable_warns() {
+        let mut w = world_with("x", "a");
+        set_variable(&mut w, "x", "b", true).expect("global write succeeds");
+        assert_eq!(
+            w.vars.get("x"),
+            Some("a"),
+            "the file-level value still wins"
+        );
+        assert_eq!(w.warnings.len(), 1);
+        assert!(w.warnings[0].contains("\"x\""), "{}", w.warnings[0]);
+    }
+
+    #[test]
+    fn a_global_write_with_no_shadowing_frame_is_silent() {
+        let mut w = world();
+        set_variable(&mut w, "x", "a", true).expect("global write succeeds");
+        assert!(w.warnings.is_empty());
     }
 
     #[test]

@@ -71,6 +71,9 @@ pub struct World {
     pub plugins: crate::plugin::PluginState,
     /// Per feature file, like `vars`: `reset_scenario` does not touch it.
     workspace: Workspace,
+    /// Non-fatal notices raised by the step just executed, drained by the
+    /// runner into that step's report entry. Never survives past one step.
+    pub warnings: Vec<String>,
 }
 
 impl World {
@@ -94,6 +97,7 @@ impl World {
             pending_options: None,
             plugins: crate::plugin::PluginState::new(plugins),
             workspace,
+            warnings: Vec::new(),
         }
     }
 
