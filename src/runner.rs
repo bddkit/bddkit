@@ -511,6 +511,13 @@ impl RunContext {
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
+
+    /// Arms the stop unconditionally, ignoring `--fail-fast`. Used by the
+    /// interrupt handler: an operator's Ctrl-C must stop new work regardless
+    /// of that flag, unlike a scenario failure's `request_stop`.
+    pub fn force_stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Runs one feature file. The variable frame is shared for the file; HTTP
@@ -1707,5 +1714,17 @@ Feature: eventual assertion
             "{:?}",
             result.scenarios[0].failure
         );
+    }
+
+    #[test]
+    fn force_stop_arms_the_stop_even_without_fail_fast() {
+        // request_stop is a no-op without --fail-fast; force_stop (the
+        // interrupt handler's tool) must not have that gate.
+        let ctx = context(Registry::new().expect("builtin steps register"));
+        assert!(!ctx.stopped());
+        ctx.request_stop();
+        assert!(!ctx.stopped(), "request_stop must stay gated by fail_fast");
+        ctx.force_stop();
+        assert!(ctx.stopped());
     }
 }

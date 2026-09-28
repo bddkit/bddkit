@@ -667,6 +667,59 @@ fn build_registry(
     })
 }
 
+/// Waits for the operator's "please stop" signal: Ctrl-C or a CI system's
+/// polite kill on Unix, Ctrl-C or Ctrl-Break on Windows.
+#[cfg(unix)]
+async fn wait_for_interrupt() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigint = signal(SignalKind::interrupt()).expect("install a SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("install a SIGTERM handler");
+    tokio::select! {
+        _ = sigint.recv() => {},
+        _ = sigterm.recv() => {},
+    }
+}
+
+#[cfg(windows)]
+async fn wait_for_interrupt() {
+    use tokio::signal::windows::{ctrl_break, ctrl_c};
+    let mut ctrl_c = ctrl_c().expect("install a Ctrl-C handler");
+    let mut ctrl_break = ctrl_break().expect("install a Ctrl-Break handler");
+    tokio::select! {
+        _ = ctrl_c.recv() => {},
+        _ = ctrl_break.recv() => {},
+    }
+}
+
+/// Runs for the lifetime of the process, spawned alongside `run_all`. On the
+/// first interrupt it stops the run from starting new work and asks every
+/// plugin to release what it holds (`Plugins::shutdown` — the same sweep a
+/// normal run does after the pool drains), then exits 130. A second interrupt
+/// during that cleanup exits immediately instead of waiting for it: "stop
+/// now" as promised in issue #62. If no interrupt ever arrives, `run` exits
+/// normally first and this task is simply dropped.
+async fn handle_interrupt(ctx: Arc<runner::RunContext>, plugins: Option<Arc<plugin::Plugins>>) {
+    wait_for_interrupt().await;
+    eprintln!("\ninterrupted: stopping new work, cleaning up plugins...");
+    ctx.force_stop();
+
+    let cleanup = async {
+        if let Some(plugins) = plugins {
+            // Plugins::shutdown makes blocking FFI calls; off the async
+            // thread so a second interrupt can still race it and win.
+            let _ = tokio::task::spawn_blocking(move || plugins.shutdown()).await;
+        }
+        eprintln!("cleanup finished");
+    };
+    tokio::select! {
+        () = cleanup => {},
+        () = wait_for_interrupt() => {
+            eprintln!("\nsecond interrupt: exiting now, without waiting for cleanup");
+        }
+    }
+    std::process::exit(130);
+}
+
 async fn run(cli: RunArgs) -> Result<i32> {
     cli.reports
         .paths()
@@ -783,6 +836,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
         cli.fail_fast,
     ));
 
+    tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone()));
     let results = runner::run_all(chains, ctx, cfg.concurrency).await;
 
     // After the pool has drained, including a failed or --fail-fast run: an

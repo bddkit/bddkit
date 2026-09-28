@@ -98,7 +98,11 @@ docker compose up -d db
 `examples/README.md` covers both suites, what each feature file demonstrates,
 and how to narrow a run to one file or one tag.
 
-`bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports. Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, including when no config is given and none of the above is found.
+`bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports. Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, `130` the run was interrupted (see "Interrupting a run" below), including when no config is given and none of the above is found.
+
+### Interrupting a run
+
+A Ctrl-C, or the polite "please stop" signal a CI job's cancellation sends (SIGINT/SIGTERM on Linux and macOS, Ctrl-C/Ctrl-Break on Windows), makes `bddkit run` stop starting new work the same way `--fail-fast` does — no new feature file, no new scenario — then asks every loaded plugin to release what it holds (stopping any process it started, gracefully first, then by force) exactly as a normal run does when the pool drains. `bddkit` then exits `130`, the conventional "interrupted" code, so a script can tell an interruption apart from a test failure (`1`) or a setup error (`2`). A second signal means "stop now": `bddkit` exits immediately without waiting for cleanup to finish. A CI system typically gives only a few seconds between its polite stop signal and a hard kill (`SIGKILL`), which no program can intercept — keep plugin shutdown grace periods within that window, or raise the CI's own cancellation timeout.
 
 ### Reports for CI
 

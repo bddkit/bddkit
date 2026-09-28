@@ -604,6 +604,76 @@ fn a_per_worker_instance_is_dropped_when_its_file_ends() {
     );
 }
 
+/// Issue #62: a SIGINT mid-run must stop promptly (exit 130, not the OS's
+/// default "killed by signal" disposition) and still run `Plugins::shutdown`
+/// on the way out — the file is deliberately never allowed to reach its own
+/// end, so the only thing that can have written the drop record is the
+/// interrupt handler's cleanup sweep.
+#[test]
+#[cfg(unix)]
+fn sigint_stops_new_work_and_still_drops_plugin_instances() {
+    const HOLD_SECS: u64 = 5;
+
+    let log = std::env::temp_dir().join(format!("bddkit-sigint-drops-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let dir = worker_project(
+        "sigint",
+        &[(
+            "a.feature",
+            &format!(
+                "Feature: a\n  Scenario: s\n    When I count in the worker as \"n\"\n    And I sleep \"{HOLD_SECS}\" seconds\n"
+            ),
+        )],
+        &format!(
+            "  worker:\n    main:\n      drop_log: \"{}\"\n",
+            log.display()
+        ),
+        1,
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn bddkit");
+
+    // Comfortably inside the 5-second sleep: the plugin step dispatches in a
+    // fraction of that, so this margin only has to outlast process startup
+    // (config load, plugin dylib load, worker spawn) before the sleep begins.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        child.try_wait().expect("poll bddkit").is_none(),
+        "the run ended before it could be interrupted"
+    );
+
+    let status = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("failed to send SIGINT");
+    assert!(status.success(), "kill -INT itself failed");
+
+    let out = child.wait_with_output().expect("collect bddkit output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(130),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stderr.contains("interrupted"), "{stderr}");
+    let recorded = std::fs::read_to_string(&log)
+        .map(|text| text.lines().count())
+        .unwrap_or(0);
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(
+        recorded, 1,
+        "Plugins::shutdown must drop the in-flight instance on interrupt\n--- stderr ---\n{stderr}"
+    );
+}
+
 /// The restriction this milestone lifts: under P1 a plugin exporting
 /// `bddkit_reset_scenario` refused to load at any concurrency above 1. The
 /// second scenario of `a.feature` is what proves the reset actually ran — its
