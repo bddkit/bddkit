@@ -376,7 +376,36 @@ A plugin that genuinely cannot be shared declares `per_worker` and then runs at 
 
 ## 7. Installing a plugin
 
-There is no `bddkit plugin install` yet — that is a later milestone. Write the lock file by hand:
+`bddkit plugin install <name>[@<version>]` installs a plugin from the index into your `.bddkit/` chain; `owner/repo[@<version>]` installs one that is not in it, taking its name from the manifest rather than from the argument. No version installs the latest release. The index URL is `$BDDKIT_PLUGIN_REGISTRY` (default the `bddkit/bddkit` registry file) and the GitHub base is `$BDDKIT_GITHUB_URL` (default `https://github.com`) — override either to point at a mirror, a private index, or a GitHub Enterprise instance.
+
+`bddkit plugin update [<name>…]` moves every plugin `install` put there to its latest release, or only the names given; `--dry-run` prints what would move without moving it.
+
+`bddkit plugin remove <name>` unregisters a plugin and deletes the files `install` put there.
+
+`bddkit plugin show [<name>]` lists every installed plugin, or with a name loads that one and prints its source, path, manifest version, groups, concurrency and step count, plus any lower-precedence file it is shadowed by.
+
+`bddkit plugin list [<query>]` browses the index, filtering case-insensitively on name or description, and marks what is already installed.
+
+**Where it goes.** With no `--layer`, install picks the user layer if its directory already exists, else the shared layer if that one exists instead (a container image shipping `/etc/bddkit/`), else the user layer, creating it — a project layer is never picked automatically, so running `install` inside a suite never drops a binary into the repository tree unasked. `--layer <label>` names one of the six candidate files directly: `shared`, `shared.local`, `user`, `user.local`, `project`, `project.local` — the same labels `doctor` prints; `--layer project` is also how a suite gets its first `.bddkit/` directory. `--bddkit-dir <dir>` (or `$BDDKIT_DIR`) wins over both: every subcommand then reads and writes that one directory alone, and combining it with `--layer` is refused.
+
+A plugin's library file is not written beside its lock entry: it goes into the data directory paired with the chosen layer, at `<data>/plugins/<repo-basename>/<version>/<library file>` — keyed by the repository, not the plugin's own name, because for `owner/repo` the name is known only after the library is loaded, and on Windows a directory holding a mapped DLL cannot be renamed.
+
+| Layer | Linux | macOS | Windows |
+|---|---|---|---|
+| shared | `/usr/local/lib/bddkit` | `/Library/Application Support/bddkit` | `%ProgramData%\bddkit` |
+| user | `$XDG_DATA_HOME/bddkit`, else `~/.local/share/bddkit` | same as Linux | `%LOCALAPPDATA%\bddkit` |
+| project, project.local | `.bddkit/` itself | same | same |
+| override | the override directory itself | same | same |
+
+A `project` entry is vendoring: `.bddkit/plugins/` is committed along with the lock file that points into it; `project.local` is the gitignored variant, for a local build that never leaves the machine.
+
+A `plugins.yaml` that `plugin install`, `update` or `remove` writes is tool-managed: it round-trips as a parsed value, so keys the host does not know about survive, but the comments and formatting around them do not — the opposite trade from `resource add`, which splices text precisely to keep both.
+
+The fields `install` writes: `version` and `source` (`owner/repo`, set for an index install too) are read back by `show` and `update`; `sha256` (of the downloaded archive) and `target` (the release triple that was installed) are written and otherwise ignored.
+
+### Writing the lock file by hand
+
+The manual alternative `plugin install` replaces — still valid, and still how a hand-picked build gets in:
 
 ```yaml
 # .bddkit/plugins.yaml
@@ -389,7 +418,7 @@ plugin:
 - **`name` must equal the manifest's `name`.** A mismatch fails the load with both names in the message — it means the lock file points at the wrong file, and every later diagnostic would name the wrong plugin.
 - `path` is absolute, or **relative to the lock file's own directory** — that is `.bddkit/`, not the project root. `./libbddkit_s3.so` in the example above resolves to `.bddkit/libbddkit_s3.so`.
 - **`~` is not expanded.** A `~/plugins/libs3.so` reaches `dlopen` verbatim and fails with a confusing "no such file".
-- Extra keys are ignored, so a file written by a future `plugin install` (`version`, `source`, `sha256`, `target`) still loads here.
+- Extra keys are ignored.
 
 The lock file is not a single fixed path — it comes from a chain of `.bddkit/` directories, one per layer, read lowest-precedence-first:
 
@@ -431,6 +460,22 @@ default_s3: backups
 A `resources.<group>` block with no plugin serving that group exits 2 with "no installed plugin serves the group". A loaded plugin whose group the config never mentions is fine — it is simply never used.
 
 Testers then select an instance with `I use "archive" s3`, which the host builds from the loaded group names. The selection resets to `default_<group>` at every scenario boundary, and macros may call plugin steps like any other step.
+
+### Publishing a plugin
+
+`plugin install` and `plugin update` expect a GitHub Releases page laid out one way, so publish yours to match.
+
+Tag every release `v<semver>` — `v0.1.0`, never `0.1.0` or `v1`. `plugin install <name>` with no `@<version>` follows this release's redirect and reads the tag off the landing URL, so an untagged release is invisible to it.
+
+Attach one asset per target, named `<repo-basename>-v<version>-<target>.tar.gz` — `.zip` instead of `.tar.gz` for `x86_64-pc-windows-msvc` — where `<repo-basename>` is the repository's own name (`bddkit-exec` for `bddkit/bddkit-exec`), not the plugin's manifest name. The five targets, verbatim: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`. Missing a target simply means that host cannot install this release.
+
+Each archive holds exactly one dynamic library for its target (`lib*.so`, `lib*.dylib`, or `*.dll`) — anything else inside it (a `LICENSE`, a `README`) is ignored, but a second library, or none, is a malformed release `plugin install` refuses.
+
+Attach `<asset>.sha256` beside each archive, in plain `sha256sum` output (`<hex>  <file name>`). It is checked against the download before anything is written, and it comes from the same release as the archive — it guards the download's integrity, not who built it.
+
+`bddkit-exec`'s release workflow is a working template for all of this.
+
+To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`.
 
 ## 8. Footguns
 
