@@ -836,8 +836,13 @@ async fn run(cli: RunArgs) -> Result<i32> {
         cli.fail_fast,
     ));
 
-    tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone()));
+    let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone()));
     let results = runner::run_all(chains, ctx, cfg.concurrency).await;
+    // A normal finish races a signal that arrives in the gap before the
+    // shutdown below: aborted here, not just left to lose the race, so a
+    // late signal can neither flip this run's exit code to 130 nor call
+    // Plugins::shutdown a second time concurrently with the one below.
+    interrupt.abort();
 
     // After the pool has drained, including a failed or --fail-fast run: an
     // instance that outlives the run is a bug the host must not permit. The
