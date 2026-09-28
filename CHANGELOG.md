@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/bddkit/bddkit/compare/v0.2.1...v0.2.2) - 2026-09-28
+
+### Added
+
+- bddkit plugin list, install, update, remove and show (issue #49)
+- add call-site export prefix to I include (issue #52)
+- log a macro's exported variables in debug mode (issue #53)
+- run an included scenario inline, sharing World state, exporting declared variables
+- detect an include cycle and cap include nesting at 16, recursively
+- validate an include's target, scenario and with: table before the first request
+- validate an include's with: table and build its concrete scenario
+- resolve an include's target file and pick its scenario
+- register the I include step patterns
+- collect the Outline placeholders a scenario's steps use
+- parse the @exports scenario tag
+- show each database query's duration in debug mode (issue #54)
+- default config file lookup (issue #48)
+- assertions over a variable's text, and extract from a variable ([#39](https://github.com/bddkit/bddkit/pull/39))
+
+### Fixed
+
+- address final review findings for I include (with: syntax, docstring gap, error chains, docs accuracy)
+- normalize feature-file paths to forward slashes in output (issue #56)
+
+### Other
+
+- document bddkit plugin commands, data directories and the release convention
+- remove tempfile dependency, dedupe with: shape-checking, extract acceptance test helper
+- document I include and its known limitations
+- thread the current file's path through execute_step's recursion
+- revert manual CHANGELOG edit — release-plz generates it
+- check formatting (cargo fmt --check)
+- cargo fmt (root + fixture plugins)
+- Merge pull request #59 from sergeym/feat/issue-39-variable-assertions
+
 ## [0.2.1](https://github.com/bddkit/bddkit/compare/v0.2.0...v0.2.1) - 2026-09-20
 
 ### Added
