@@ -48,6 +48,18 @@ re-sending the request or re-running the query — until it holds.
 exchange — method, URL, headers, bodies, status — with no debug flag and no
 re-run. JSON mismatches point at the path that differs.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/bddkit/bddkit/main/install.ps1 | iex
+```
+
+Installs a prebuilt binary from the [latest release](https://github.com/bddkit/bddkit/releases/latest) — Linux (x86_64/aarch64), macOS (x86_64/aarch64) or Windows (x86_64) — into `~/.local/bin` (`%LOCALAPPDATA%\bddkit\bin` on Windows). No prebuilt binary for your platform: `cargo install --git https://github.com/bddkit/bddkit`.
+
 ## Quick start
 
 ```bash
