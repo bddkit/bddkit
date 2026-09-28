@@ -43,13 +43,8 @@ pub enum Concurrency {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub name: String,
-    // Read only by the test that pins the manifest parse, but deserialised on
-    // every load: declaring it is what makes a manifest without a version a
-    // load failure rather than a silent default. `LockEntry` deliberately
-    // carries no version, so there is nothing to compare it against the way
-    // `name` is compared. A field cannot be #[cfg(test)] without changing what
-    // the host requires of a plugin.
-    #[allow(dead_code)]
+    // Printed by `plugin show`; also makes a manifest without a version a
+    // load failure.
     pub version: String,
     pub groups: Vec<String>,
     #[serde(default)]

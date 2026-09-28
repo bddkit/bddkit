@@ -1,6 +1,8 @@
 pub mod abi;
+pub mod install;
 pub mod library;
 pub mod lock;
+pub mod manage;
 
 use crate::config::InstanceSpec;
 use crate::options::Options;
@@ -76,6 +78,19 @@ impl Plugins {
         let mut groups: BTreeMap<String, usize> = BTreeMap::new();
         for entry in entries {
             let lib = Library::load(&entry.name, &entry.path)?;
+            // The lock entry's name is the one every diagnostic and every
+            // `plugin remove`/`plugin update` keys on, so it must be the
+            // plugin's own. A mismatch is never legitimate: it means the lock
+            // file points at the wrong file. Checked here rather than in
+            // `Library::load`, which `plugin install owner/repo` calls before
+            // any name is known.
+            if lib.manifest.name != entry.name {
+                bail!(
+                    "lock entry {:?} points at a plugin whose manifest says {:?}",
+                    entry.name,
+                    lib.manifest.name
+                );
+            }
             library::check_reset_scenario(
                 &lib.name,
                 lib.manifest.concurrency,
@@ -1360,6 +1375,20 @@ pub(crate) mod tests {
             first, second,
             "two workers must never share an artifact path"
         );
+    }
+
+    #[test]
+    fn a_lock_entry_naming_another_plugin_is_refused() {
+        // The fixture's manifest says "echo"; loading it under any other lock
+        // name means the lock file is wrong, and every later diagnostic would
+        // name the wrong plugin.
+        let mut wrong = entry();
+        wrong.name = "mail".to_string();
+        let error = Plugins::load(vec![wrong], &[], &[], 1, &Options::default())
+            .expect_err("names disagree");
+        let text = format!("{error:#}");
+        assert!(text.contains("\"mail\""), "{text}");
+        assert!(text.contains("\"echo\""), "{text}");
     }
 
     #[test]

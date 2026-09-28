@@ -317,7 +317,9 @@ When I upload file "report.pdf"
 
 The selection resets to `default_<group>` at every scenario boundary, exactly like the current API and the current connection. With one instance in a group its `default_<group>` is inferred; with several it must be spelled out.
 
-Which plugins are installed is **machine state, not test config**, and does not belong in the repository with the suite: the config describes the system under test, a path to a `.so` describes one laptop or one CI runner. It comes from a chain of `.bddkit/` directories, read layer by layer:
+`bddkit plugin install <name>` fetches a plugin release and registers it in a lock file for you — see [`docs/plugin-authoring.md` §7](docs/plugin-authoring.md#7-installing-a-plugin) for `update`, `remove`, `show` and `list` alongside it.
+
+Which plugins are installed is **machine state, not test config**, and by default does not belong in the repository with the suite: the config describes the system under test, a path to a `.so` describes one laptop or one CI runner. The one deliberate exception is vendoring — installing into the `project` layer commits `.bddkit/plugins/` along with the lock file that points into it, for a suite that wants to carry its own plugin build; `project.local` is the gitignored variant for a local build that never leaves the machine. Otherwise it comes from a chain of `.bddkit/` directories, read layer by layer:
 
 | Layer | Linux | macOS | Windows |
 |---|---|---|---|
@@ -376,15 +378,7 @@ connection and would never see uncommitted rows, so rolling back per scenario
 would break any test where a step writes and the API reads. Isolation comes
 from unique data instead.
 
-**Where this is going.** `api`, `db`, and `srp` are the resource kinds that
-ship, not the ceiling — any other key under `resources:` is a capability group
-a plugin serves, so reaching an object store or a mailbox is the same move as
-reaching a second database. The seams that made that possible were there from
-the start: options cascade per instance, `I use "<name>" <kind>` is one step
-shape, and dispatch returns `passed | not yet | fatal` so eventual assertions
-work without knowing what they retry. What is still missing is the
-`bddkit plugin install` side of it — today `plugins.yaml` is written
-by hand.
+**Where this is going.** `api`, `db`, and `srp` are the resource kinds that ship, not the ceiling — any other key under `resources:` is a capability group a plugin serves, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
 
 ## Development
 

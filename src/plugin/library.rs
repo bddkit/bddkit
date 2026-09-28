@@ -127,16 +127,6 @@ impl Library {
             .with_context(|| format!("plugin {name:?} returned no manifest"))?;
         let manifest: Manifest = serde_json::from_str(&manifest_json)
             .with_context(|| format!("plugin {name:?} returned a malformed manifest"))?;
-        // The lock entry's name is the one every diagnostic and every P2
-        // `plugin remove`/`plugin update` keys on, so it must be the plugin's
-        // own. A mismatch is never legitimate: it means the lock file points at
-        // the wrong file.
-        if manifest.name != name {
-            bail!(
-                "lock entry {name:?} points at a plugin whose manifest says {:?}",
-                manifest.name
-            );
-        }
         if manifest.groups.is_empty() {
             bail!("plugin {name:?} claims no resource group");
         }
@@ -446,14 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_entry_naming_another_plugin_is_refused() {
-        // The fixture's manifest says "echo"; loading it under any other lock
-        // name means the lock file is wrong, and every later diagnostic would
-        // name the wrong plugin.
-        let error = Library::load("mail", &fixture()).expect_err("names disagree");
-        let text = format!("{error:#}");
-        assert!(text.contains("\"mail\""), "{text}");
-        assert!(text.contains("\"echo\""), "{text}");
+    fn loads_under_any_label_and_keeps_the_manifest_name() {
+        // `plugin install owner/repo` loads before the name is known; the
+        // lock-driven path checks the name itself (`Plugins::load`).
+        let lib = Library::load("someone/echo-plugin", &fixture()).expect("loads");
+        assert_eq!(lib.manifest.name, "echo");
     }
 
     #[test]

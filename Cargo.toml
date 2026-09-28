@@ -51,6 +51,9 @@ sha2 = "0.10"
 sha1 = "0.10"
 getrandom = "0.3"
 scraper = "0.27.0"
+flate2 = "1.1.9"
+tar = "0.4.46"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 axum = "0.8"
