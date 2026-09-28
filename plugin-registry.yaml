@@ -1,0 +1,14 @@
+# The plugin index `bddkit plugin list` and `bddkit plugin install <name>`
+# read. A plugin gets here by a pull request adding one entry; `name` must be
+# the plugin manifest's own name, and `repo` must publish releases following
+# the convention in docs/plugin-authoring.md, section 7.
+plugin:
+  - name: browser
+    repo: bddkit/bddkit-browser
+    description: Drive a real browser through WebDriver as a resource group
+  - name: exec
+    repo: bddkit/bddkit-exec
+    description: Run local commands, stream background processes and validate their output as a resource group
+  - name: s3
+    repo: bddkit/bddkit-s3
+    description: S3-compatible object storage (AWS S3, MinIO, ...) as a resource group

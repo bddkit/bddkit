@@ -39,6 +39,7 @@ pub struct Env {
     pub override_dir: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
+    pub xdg_data_home: Option<PathBuf>,
     pub local_app_data: Option<PathBuf>,
     pub program_data: Option<PathBuf>,
 }
@@ -54,6 +55,7 @@ impl Env {
             override_dir: flag.or_else(|| var("BDDKIT_DIR")),
             home: var("HOME"),
             xdg_config_home: var("XDG_CONFIG_HOME"),
+            xdg_data_home: var("XDG_DATA_HOME"),
             local_app_data: var("LOCALAPPDATA"),
             program_data: var("ProgramData"),
         }
@@ -121,6 +123,48 @@ pub fn project(config_dir: &Path) -> Result<Option<PathBuf>> {
         .ancestors()
         .map(|dir| dir.join(".bddkit"))
         .find(|dir| dir.is_dir()))
+}
+
+/// Where the libraries a layer's lock file installs live. Config and data are
+/// split the way FHS and XDG split them — `/etc` and `~/.config` hold what a
+/// person edits, never a binary. `project` and `override` have one directory
+/// to offer, so their libraries sit beside the lock file; so does every layer
+/// on Windows and the shared one on macOS, whose directories are data
+/// directories already.
+pub fn data_dir(os: Os, env: &Env, layer: &Layer) -> PathBuf {
+    match (layer.name, os) {
+        ("shared", Os::Linux) => PathBuf::from("/usr/local/lib/bddkit"),
+        ("user", Os::Linux | Os::MacOs) => env
+            .xdg_data_home
+            .as_ref()
+            .map(|dir| dir.join("bddkit"))
+            .or_else(|| {
+                env.home
+                    .as_ref()
+                    .map(|home| home.join(".local/share/bddkit"))
+            })
+            .unwrap_or_else(|| layer.dir.clone()),
+        _ => layer.dir.clone(),
+    }
+}
+
+/// The layer `plugin install` writes to when no `--layer` names one: the
+/// override if there is one; else the user layer if its directory exists;
+/// else the shared layer if IT exists — a container image that ships
+/// `/etc/bddkit/`; else the user layer, to be created. A project layer is
+/// never picked: an install run inside a suite must not drop a binary into
+/// the repository tree unasked.
+pub fn install_layer(layers: &[Layer]) -> Option<&Layer> {
+    let find = |name: &str| layers.iter().find(|layer| layer.name == name);
+    if let Some(dir) = find("override") {
+        return Some(dir);
+    }
+    let user = find("user");
+    match (user, find("shared")) {
+        (Some(user), _) if user.dir.is_dir() => Some(user),
+        (_, Some(shared)) if shared.dir.is_dir() => Some(shared),
+        _ => user,
+    }
 }
 
 /// One file the chain reads, and the layer label `doctor` prints for it.
@@ -292,6 +336,96 @@ mod tests {
             .map(|dir| dir.join(".bddkit"))
             .find(|dir| dir.is_dir());
         assert_eq!(found, expected);
+    }
+
+    fn layer(name: &'static str, dir: &Path) -> Layer {
+        Layer {
+            name,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn shared_libraries_live_outside_etc_on_linux() {
+        let env = Env::default();
+        let shared = layer("shared", Path::new("/etc/bddkit"));
+        assert_eq!(
+            data_dir(Os::Linux, &env, &shared),
+            PathBuf::from("/usr/local/lib/bddkit")
+        );
+        let mac = layer("shared", Path::new("/Library/Application Support/bddkit"));
+        assert_eq!(data_dir(Os::MacOs, &env, &mac), mac.dir);
+        let win = layer("shared", Path::new(r"C:\ProgramData\bddkit"));
+        assert_eq!(data_dir(Os::Windows, &env, &win), win.dir);
+    }
+
+    #[test]
+    fn user_libraries_follow_xdg_data_home_then_local_share() {
+        let user = layer("user", Path::new("/home/t/.config/bddkit"));
+        let home_only = Env {
+            home: Some(PathBuf::from("/home/t")),
+            ..Env::default()
+        };
+        assert_eq!(
+            data_dir(Os::Linux, &home_only, &user),
+            PathBuf::from("/home/t/.local/share/bddkit")
+        );
+        assert_eq!(
+            data_dir(Os::MacOs, &home_only, &user),
+            PathBuf::from("/home/t/.local/share/bddkit")
+        );
+        let xdg = Env {
+            home: Some(PathBuf::from("/home/t")),
+            xdg_data_home: Some(PathBuf::from("/data")),
+            ..Env::default()
+        };
+        assert_eq!(
+            data_dir(Os::Linux, &xdg, &user),
+            PathBuf::from("/data/bddkit")
+        );
+        let win = layer("user", Path::new(r"C:\Users\t\AppData\Local\bddkit"));
+        assert_eq!(data_dir(Os::Windows, &xdg, &win), win.dir);
+    }
+
+    #[test]
+    fn project_and_override_libraries_sit_beside_the_lock_file() {
+        let env = Env::default();
+        for name in ["project", "override"] {
+            let l = layer(name, Path::new("/suite/.bddkit"));
+            assert_eq!(data_dir(Os::Linux, &env, &l), l.dir);
+        }
+    }
+
+    #[test]
+    fn install_prefers_an_existing_user_dir_then_an_existing_shared_dir() {
+        let root = temp("install-layer");
+        let (user, shared, project) =
+            (root.join("user"), root.join("shared"), root.join("project"));
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let chain = [
+            layer("shared", &shared),
+            layer("user", &user),
+            layer("project", &project),
+        ];
+
+        // Neither exists: the user layer, which install will create.
+        assert_eq!(install_layer(&chain).map(|l| l.name), Some("user"));
+        // Only shared exists — a container image shipping /etc/bddkit.
+        std::fs::create_dir_all(&shared).expect("mkdir");
+        assert_eq!(install_layer(&chain).map(|l| l.name), Some("shared"));
+        // Both exist: user wins — no root needed, and it outranks shared anyway.
+        std::fs::create_dir_all(&user).expect("mkdir");
+        assert_eq!(install_layer(&chain).map(|l| l.name), Some("user"));
+    }
+
+    #[test]
+    fn install_takes_the_override_and_never_the_project() {
+        let root = temp("install-override");
+        let chain = [layer("override", &root)];
+        assert_eq!(install_layer(&chain).map(|l| l.name), Some("override"));
+        // No user layer at all (no HOME): nothing to pick, the project is not a fallback.
+        let chain = [layer("project", &root)];
+        assert_eq!(install_layer(&chain), None);
     }
 
     #[test]

@@ -58,8 +58,119 @@ enum Command {
     Doctor(DoctorArgs),
     /// Show what a resource's config takes
     Resource(ResourceArgs),
+    /// Find, install, update and remove plugins
+    Plugin(PluginArgs),
     /// Print the version, and where to look next
     Version,
+}
+
+const LAYERS: [&str; 6] = [
+    "shared",
+    "shared.local",
+    "user",
+    "user.local",
+    "project",
+    "project.local",
+];
+
+#[derive(Args)]
+#[command(after_help = "Examples:
+  bddkit plugin list                        every plugin in the index
+  bddkit plugin list mail                   only those whose name or description matches
+  bddkit plugin install exec                the latest release, into the user layer
+  bddkit plugin install exec@0.1.0 --layer project.local
+  bddkit plugin install someone/bddkit-widget
+  bddkit plugin update --dry-run            what would move, without moving it
+  bddkit plugin show exec                   one plugin in detail")]
+struct PluginArgs {
+    #[command(subcommand)]
+    command: Option<PluginCommand>,
+    /// Only used to find the project's `.bddkit/` [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Use this directory only, skipping the shared, user and project layers
+    /// (overrides $BDDKIT_DIR)
+    #[arg(long = "bddkit-dir", global = true)]
+    bddkit_dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Browse the plugin index
+    List {
+        /// Case-insensitive substring of a name or description
+        query: Option<String>,
+    },
+    /// Download a plugin release and register it in a lock file
+    Install {
+        /// An index name or owner/repo, optionally @<version>
+        plugin: String,
+        /// The lock file to write [default: user, or shared when only that directory exists]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
+        layer: Option<String>,
+    },
+    /// Move installed plugins to their latest release
+    Update {
+        /// Only these plugins [default: every one installed by bddkit]
+        names: Vec<String>,
+        /// Only this lock file
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
+        layer: Option<String>,
+        /// Show what would change, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Unregister a plugin and delete the files install put there
+    Remove {
+        name: String,
+        /// The lock file to remove it from [default: the only one declaring it]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
+        layer: Option<String>,
+    },
+    /// Show installed plugins, or one plugin in detail
+    Show { name: Option<String> },
+}
+
+/// Every failure here is exit 1: nothing ran, but there is no run whose
+/// start a 2 would date — the same currency as `resource add`.
+async fn plugin_command(args: PluginArgs) -> Result<i32> {
+    let Some(command) = args.command else {
+        use clap::CommandFactory;
+        let mut cli = Cli::command();
+        cli.build();
+        cli.find_subcommand_mut("plugin")
+            .expect("the plugin subcommand is declared")
+            .print_help()?;
+        println!();
+        return Ok(0);
+    };
+    let outcome: Result<i32> = async {
+        // Located, never parsed: only the project layer's anchor is needed.
+        let config_dir = match config::resolve_config_path(args.config.as_deref())? {
+            Some(resolved) => config_dir(&resolved.path).to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        let ctx =
+            plugin::manage::Context::new(dirs::Env::from_process(args.bddkit_dir), &config_dir)?;
+        match command {
+            PluginCommand::List { query } => ctx.list(query.as_deref()).await,
+            PluginCommand::Install { plugin, layer } => {
+                ctx.install(&plugin, layer.as_deref()).await
+            }
+            PluginCommand::Update {
+                names,
+                layer,
+                dry_run,
+            } => ctx.update(&names, layer.as_deref(), dry_run).await,
+            PluginCommand::Remove { name, layer } => ctx.remove(&name, layer.as_deref()).await,
+            PluginCommand::Show { name } => ctx.show(name.as_deref()).await,
+        }
+    }
+    .await;
+    Ok(outcome.unwrap_or_else(|error| {
+        eprintln!("error: {error:#}");
+        1
+    }))
 }
 
 #[derive(Args)]
@@ -450,6 +561,7 @@ async fn main() {
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
+        Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Version => {
             use clap::CommandFactory;
             // Rendered, never re-formatted from `LONG_VERSION` by hand: the

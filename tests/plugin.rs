@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A throwaway project: config, feature file, and the hand-written lock file
-/// the P1 loader reads. `plugin install` is a later milestone.
+/// the run-path loader reads — the hand-written form `plugin install` also
+/// writes, exercised by `tests/plugin_cli.rs` instead of here.
 fn project(name: &str, feature: &str, config_tail: &str) -> PathBuf {
     project_at(name, feature, config_tail, 1)
 }
