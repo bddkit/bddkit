@@ -299,10 +299,16 @@ fn run_include<'a>(
         }
 
         let path_literal = &caps[0];
+        // The prefix is the last capture of the `with prefix "…"` twin of each
+        // include step and absent from the other one (an optional may not hold
+        // a parameter, so the two are separate declarations).
         let (scenario_name, prefix_raw) = if id == StepId::IncludeScenario {
-            (Some(caps[1].as_str()), caps[2].as_str())
+            (
+                Some(caps[1].as_str()),
+                caps.get(2).map_or("", String::as_str),
+            )
         } else {
-            (None, caps[1].as_str())
+            (None, caps.get(1).map_or("", String::as_str))
         };
         let prefix = (!prefix_raw.is_empty()).then_some(prefix_raw);
 

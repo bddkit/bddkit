@@ -53,17 +53,24 @@ pub struct StepRow {
 pub fn builtin_rows(overlay: &BTreeMap<String, String>) -> Vec<StepRow> {
     crate::steps::BUILTIN_STEPS
         .iter()
-        .map(|def| StepRow {
-            group: def.group.to_string(),
-            template: template(def.pattern),
-            pattern: def.pattern.to_string(),
-            kind: match def.kind {
-                crate::steps::StepKind::Action => "action",
-                crate::steps::StepKind::Assertion(_) => "assertion",
-            },
-            description: Some(
-                describe(&format!("{:?}", def.id), def.description, overlay).to_string(),
-            ),
+        .map(|def| {
+            // `all_builtin_expressions_compile` pins that this cannot fail, and
+            // the registry refuses the same expression at startup.
+            let compiled = crate::steps::expression::compile(def.expression, "text")
+                .expect("builtin expressions compile; all_builtin_expressions_compile pins it");
+            StepRow {
+                group: def.group.to_string(),
+                template: compiled.template,
+                // The regex that actually runs, as the field's doc says.
+                pattern: compiled.regex.as_str().to_string(),
+                kind: match def.kind {
+                    crate::steps::StepKind::Action => "action",
+                    crate::steps::StepKind::Assertion(_) => "assertion",
+                },
+                description: Some(
+                    describe(&format!("{:?}", def.id), def.description, overlay).to_string(),
+                ),
+            }
         })
         .collect()
 }
@@ -156,13 +163,13 @@ pub fn render(rows: &[StepRow], verbose: bool) -> String {
 
 /// A regex pattern rendered as a step template: anchors dropped, every capture
 /// group replaced by `<name>`, every other character left exactly as it is.
+/// Serves plugin rows only; builtins get their template from
+/// `expression::compile`.
 ///
 /// An unnamed group falls back to `<value1>`, `<value2>`, … by position, so a
-/// plugin pattern — or a builtin nobody has annotated — degrades instead of
-/// breaking the listing.
+/// plugin pattern without names degrades instead of breaking the listing.
 ///
-/// ponytail: no escaped parentheses, because no pattern in the step table or
-/// in any plugin manifest has one. One level of nesting (a named group inside
+/// ponytail: no escaped parentheses, because no plugin manifest has one. One level of nesting (a named group inside
 /// a `(?:…)?` suffix, e.g. the include-prefix clause) is handled by matching
 /// the CLOSING paren with a depth counter and recursing into a non-capturing
 /// group's body — see `Group::NonCapturing` below.
@@ -329,14 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_pattern_renders_without_leaking_regex() {
-        for def in crate::steps::BUILTIN_STEPS {
-            let rendered = template(def.pattern);
-            for leak in ["[^", "\\d", "?P<", "^", "$"] {
+    fn every_builtin_expression_renders_without_leaking_syntax() {
+        for row in builtin_rows(&BTreeMap::new()) {
+            for leak in ["{", "}", "[^", "\\d", "?P<", "^", "$"] {
                 assert!(
-                    !rendered.contains(leak),
-                    "{:?} renders as {rendered:?}, which still contains {leak:?}",
-                    def.id
+                    !row.template.contains(leak),
+                    "{:?} still contains {leak:?}",
+                    row.template
                 );
             }
         }
