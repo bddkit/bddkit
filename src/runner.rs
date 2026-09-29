@@ -350,10 +350,6 @@ fn run_include<'a>(
             }
         }
 
-        let included_base = resolved
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
         let background: Vec<ExpandedStep> = included
             .feature
             .background
@@ -369,9 +365,7 @@ fn run_include<'a>(
 
         let mut run_result: Result<(), String> = Ok(());
         for step in background.iter().chain(expanded.steps.iter()) {
-            if let Err(e) =
-                execute_step(world, reg, step, &included_base, generator, depth + 1).await
-            {
+            if let Err(e) = execute_step(world, reg, step, &resolved, generator, depth + 1).await {
                 run_result = Err(format!(
                     "{}:{} → {}:{}\n  {}\n{e}",
                     crate::feature::display_path(source),

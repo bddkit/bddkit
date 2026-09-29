@@ -2526,6 +2526,32 @@ fn include_of_a_one_scenario_file_exports_its_declared_variable() {
     );
 }
 
+/// A nested `I include` resolves its path against the file it is written in
+/// (issue #76): `lib.feature` sits in `includes/` and includes a sibling, so
+/// the runtime must agree with the validator on `includes/`, not its parent.
+#[test]
+fn a_nested_include_resolves_relative_to_the_intermediate_file() {
+    let dir = build_include_project(
+        "include-nested",
+        &[
+            (
+                "includes/lib.feature",
+                "tests/features/include/nested/includes/lib.feature",
+            ),
+            (
+                "features/caller.feature",
+                "tests/features/include/nested/features/caller.feature",
+            ),
+        ],
+    );
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(
+        code,
+        Some(0),
+        "--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
 /// `I include "<file>" with prefix "<p>"` (issue #52) renames every exported
 /// variable to `<p>_<name>` as it crosses back into the caller — the same
 /// target file is included twice here, once per prefix, and neither call's
