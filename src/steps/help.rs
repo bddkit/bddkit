@@ -169,10 +169,12 @@ pub fn render(rows: &[StepRow], verbose: bool) -> String {
 /// An unnamed group falls back to `<value1>`, `<value2>`, … by position, so a
 /// plugin pattern without names degrades instead of breaking the listing.
 ///
-/// ponytail: no escaped parentheses, because no plugin manifest has one. One level of nesting (a named group inside
-/// a `(?:…)?` suffix, e.g. the include-prefix clause) is handled by matching
-/// the CLOSING paren with a depth counter and recursing into a non-capturing
-/// group's body — see `Group::NonCapturing` below.
+/// A `(?:…)` body is templated recursively, so a named group nested in it
+/// renders as `<name>`; the CLOSING paren is found with a depth counter — see
+/// `Group::NonCapturing` below.
+///
+/// ponytail: escaped parentheses are not understood; upgrade path if a plugin
+/// pattern ever needs a literal `(`.
 pub fn template(pattern: &str) -> String {
     let body = pattern.trim_start_matches('^').trim_end_matches('$');
     let mut out = String::with_capacity(body.len());
@@ -211,11 +213,9 @@ pub fn template(pattern: &str) -> String {
             // `(?:…)` and `(?i)` capture nothing, so they take no argument and
             // must not consume a position — labelling the next real group
             // `<value2>` would misstate the dispatch order a plugin author
-            // reads this listing to learn. Its body can itself hold a real
-            // named group (`(?: with prefix "(?P<prefix>[^"]*)")?`), so it is
-            // templated recursively rather than emitted as literal text — the
-            // one nesting depth this deriver needs to handle, per the
-            // ponytail note above `template`.
+            // reads this listing to learn. Its body can itself hold a named
+            // group, so it is templated recursively rather than emitted as
+            // literal text.
             Group::NonCapturing(text) => out.push_str(&template(text)),
         }
         rest = &rest[start + end + 1..];
@@ -258,8 +258,8 @@ mod tests {
 
     #[test]
     fn an_unnamed_group_falls_back_to_its_position() {
-        // A plugin's pattern, or a builtin nobody has annotated yet: the
-        // listing must degrade, never break.
+        // A plugin's pattern without names: the listing must degrade, never
+        // break.
         assert_eq!(
             template(r#"^I upload "([^"]*)" to "([^"]*)"$"#),
             r#"I upload "<value1>" to "<value2>""#

@@ -28,3 +28,10 @@
     - I log in as "<<user>>" with password "s3cr3t"
     - the "Authorization" request header is "Bearer <<sessionId>>"
     - I create a post with title "<<title>>"
+
+# A Cucumber Expression: `post/article` is an alternation and `(main )` optional
+# text, in separate words because an alternation spans the whole word.
+- step: 'I note the post/article (main )title "{title}"'
+  exports: [notedTitle]
+  do:
+    - set variable "notedTitle" to "<<title>>"
