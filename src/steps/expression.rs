@@ -271,6 +271,10 @@ fn exact(text: &str) -> Vec<PatternToken> {
         .collect()
 }
 
+// ponytail: each optional doubles the variants and each alternation / typed
+// parameter multiplies them, so a template with ~20 of them means ~10^6
+// variants at startup; cap the count with a load error if real templates ever
+// approach that.
 fn cross(
     prefixes: Vec<Vec<PatternToken>>,
     suffixes: &[Vec<PatternToken>],

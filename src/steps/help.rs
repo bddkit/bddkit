@@ -53,14 +53,11 @@ pub struct StepRow {
 pub fn builtin_rows(overlay: &BTreeMap<String, String>) -> Vec<StepRow> {
     crate::steps::BUILTIN_STEPS
         .iter()
-        .map(|def| {
-            // `all_builtin_expressions_compile` pins that this cannot fail, and
-            // the registry refuses the same expression at startup.
-            let compiled = crate::steps::expression::compile(def.expression, "text")
-                .expect("builtin expressions compile; all_builtin_expressions_compile pins it");
+        .zip(crate::steps::COMPILED_BUILTINS.iter())
+        .map(|(def, compiled)| {
             StepRow {
                 group: def.group.to_string(),
-                template: compiled.template,
+                template: compiled.template.clone(),
                 // The regex that actually runs, as the field's doc says.
                 pattern: compiled.regex.as_str().to_string(),
                 kind: match def.kind {

@@ -742,6 +742,20 @@ impl PartialEq<StepId> for StepTarget {
     }
 }
 
+/// `BUILTIN_STEPS`, compiled once and index-aligned with it. The builtins are
+/// constants, so a failure here is a bug in the table, pinned by
+/// `all_builtin_expressions_compile`.
+pub static COMPILED_BUILTINS: std::sync::LazyLock<Vec<expression::Compiled>> =
+    std::sync::LazyLock::new(|| {
+        BUILTIN_STEPS
+            .iter()
+            .map(|def| {
+                expression::compile(def.expression, "text")
+                    .unwrap_or_else(|e| panic!("builtin step {:?}: {e}", def.expression))
+            })
+            .collect()
+    });
+
 /// A matched step: its target, raw captures and the entry's parameter types.
 pub type Found<'a> = (StepTarget, Vec<String>, &'a [expression::Param]);
 
@@ -783,15 +797,14 @@ impl Registry {
         plugin_groups: &[String],
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
-        for def in BUILTIN_STEPS {
-            let compiled = expression::compile(def.expression, "text")?;
+        for (def, compiled) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
             entries.push(Entry {
                 target: StepTarget::Builtin {
                     id: def.id,
                     kind: def.kind,
                 },
-                regex: compiled.regex,
-                params: compiled.params,
+                regex: compiled.regex.clone(),
+                params: compiled.params.clone(),
             });
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
@@ -907,27 +920,15 @@ impl Registry {
     }
 
     fn validate_macros(&self) -> Result<(), String> {
-        // Only a suite with macros has anything to compare a builtin against.
-        let builtins = if self.macros.is_empty() {
-            Vec::new()
-        } else {
-            BUILTIN_STEPS
-                .iter()
-                .map(|def| {
-                    expression::compile(def.expression, "text")
-                        .map(|c| (def.expression, c.variants))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
         for (left_index, left) in self.macros.iter().enumerate() {
-            for (builtin, builtin_variants) in &builtins {
-                if expression::conflicts(&left.compiled.variants, builtin_variants) {
+            for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
+                if expression::conflicts(&left.compiled.variants, &builtin.variants) {
                     return Err(format!(
                         "macro step {:?} from {}:{} conflicts with builtin step {:?}",
                         left.step,
                         left.source.display(),
                         left.line,
-                        builtin
+                        def.expression
                     ));
                 }
             }
@@ -1305,7 +1306,33 @@ mod tests {
 
     #[test]
     fn all_builtin_expressions_compile() {
+        assert_eq!(COMPILED_BUILTINS.len(), BUILTIN_STEPS.len());
         assert!(Registry::new().is_ok());
+    }
+
+    #[test]
+    fn no_two_distinct_builtin_steps_conflict() {
+        // The include twins share a StepId: one step, declared twice.
+        for (i, (a, ca)) in BUILTIN_STEPS
+            .iter()
+            .zip(COMPILED_BUILTINS.iter())
+            .enumerate()
+        {
+            for (b, cb) in BUILTIN_STEPS
+                .iter()
+                .zip(COMPILED_BUILTINS.iter())
+                .skip(i + 1)
+            {
+                if a.id != b.id {
+                    assert!(
+                        !expression::conflicts(&ca.variants, &cb.variants),
+                        "{:?} conflicts with {:?}",
+                        a.expression,
+                        b.expression
+                    );
+                }
+            }
+        }
     }
 
     #[test]
