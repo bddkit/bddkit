@@ -75,3 +75,8 @@ Feature: variables
     Then variable "note" should be equal to "first"
     When I remember the value "second" as a new note
     Then variable "note" should be equal to "second"
+
+  Scenario: a variable in a typed position
+    Given set variable "expected" to "200"
+    When I request "/ping"
+    Then the response code is <<expected>>

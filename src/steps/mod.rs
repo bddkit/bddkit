@@ -742,9 +742,21 @@ impl PartialEq<StepId> for StepTarget {
     }
 }
 
+/// A matched step: its target, raw captures and the entry's parameter types.
+pub type Found<'a> = (StepTarget, Vec<String>, &'a [expression::Param]);
+
+#[derive(Debug)]
+struct Entry {
+    target: StepTarget,
+    regex: Regex,
+    /// One per capture group of an entry declared as an expression. A plugin
+    /// or group-switch regex has none: its captures are never type-checked.
+    params: Vec<expression::Param>,
+}
+
 #[derive(Debug)]
 pub struct Registry {
-    entries: Vec<(StepTarget, Regex)>,
+    entries: Vec<Entry>,
     macros: Vec<MacroDef>,
 }
 
@@ -773,16 +785,21 @@ impl Registry {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
         for def in BUILTIN_STEPS {
             let compiled = expression::compile(def.expression, "text")?;
-            entries.push((
-                StepTarget::Builtin {
+            entries.push(Entry {
+                target: StepTarget::Builtin {
                     id: def.id,
                     kind: def.kind,
                 },
-                compiled.regex,
-            ));
+                regex: compiled.regex,
+                params: compiled.params,
+            });
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
-            entries.push((StepTarget::Macro(index), definition.compiled.regex.clone()));
+            entries.push(Entry {
+                target: StepTarget::Macro(index),
+                regex: definition.compiled.regex.clone(),
+                params: definition.compiled.params.clone(),
+            });
         }
         let mut registry = Self {
             entries,
@@ -800,15 +817,23 @@ impl Registry {
     /// Ambiguity is an error, not "first wins": a silently shadowed step
     /// is more expensive to debug than a failed start.
     pub fn find(&self, text: &str) -> Result<Option<(StepTarget, Vec<String>)>, String> {
-        let mut hits: Vec<(StepTarget, Vec<String>)> = Vec::new();
-        for (target, re) in &self.entries {
-            if let Some(c) = re.captures(text) {
+        Ok(self
+            .find_with_params(text)?
+            .map(|(target, caps, _)| (target, caps)))
+    }
+
+    /// `find`, plus the matched entry's parameter types in capture order —
+    /// what the runner checks interpolated values against.
+    pub fn find_with_params(&self, text: &str) -> Result<Option<Found<'_>>, String> {
+        let mut hits = Vec::new();
+        for entry in &self.entries {
+            if let Some(c) = entry.regex.captures(text) {
                 let caps = c
                     .iter()
                     .skip(1)
                     .map(|g| g.map(|m| m.as_str().to_string()).unwrap_or_default())
                     .collect();
-                hits.push((*target, caps));
+                hits.push((entry.target, caps, entry.params.as_slice()));
             }
         }
         match hits.len() {
@@ -816,7 +841,7 @@ impl Registry {
             1 => Ok(Some(hits.remove(0))),
             _ => Err(format!(
                 "step {text:?} matches several definitions: {:?}",
-                hits.iter().map(|(target, _)| target).collect::<Vec<_>>()
+                hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
             )),
         }
     }
@@ -842,14 +867,15 @@ impl Registry {
     ) -> Result<(), String> {
         let re = Regex::new(pattern)
             .map_err(|e| format!("invalid plugin step pattern {pattern:?}: {e}"))?;
-        self.entries.push((
-            StepTarget::Plugin {
+        self.entries.push(Entry {
+            target: StepTarget::Plugin {
                 lib,
                 step,
                 assertion,
             },
-            re,
-        ));
+            regex: re,
+            params: Vec::new(),
+        });
         Ok(())
     }
 
@@ -869,13 +895,14 @@ impl Registry {
         let pattern = format!(r#"^I use "([^"]*)" ({alternation})$"#);
         let re = Regex::new(&pattern)
             .map_err(|e| format!("invalid group-switch pattern {pattern:?}: {e}"))?;
-        self.entries.push((
-            StepTarget::Builtin {
+        self.entries.push(Entry {
+            target: StepTarget::Builtin {
                 id: StepId::UsePluginInstance,
                 kind: StepKind::Action,
             },
-            re,
-        ));
+            regex: re,
+            params: Vec::new(),
+        });
         Ok(())
     }
 
@@ -1279,6 +1306,45 @@ mod tests {
     #[test]
     fn all_builtin_expressions_compile() {
         assert!(Registry::new().is_ok());
+    }
+
+    #[test]
+    fn a_typed_position_accepts_a_whole_placeholder() {
+        let reg = reg();
+        let (target, caps, params) = reg
+            .find_with_params("the response code is <<code>>")
+            .unwrap()
+            .expect("matches");
+        assert!(target == StepId::ResponseCode);
+        assert_eq!(caps, ["<<code>>"]);
+        assert_eq!(params[0].name, "code");
+        assert!(params[0].check("abc").is_err());
+        assert!(reg.find(r#"I sleep "<<n>>" seconds"#).unwrap().is_some());
+        assert!(reg.find("the response code is abc").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_method_slot_is_type_checked() {
+        let reg = reg();
+        let (_, _, params) = reg
+            .find_with_params(r#"I request "/a" using HTTP <<m>>"#)
+            .unwrap()
+            .expect("matches");
+        let method = params.iter().find(|p| p.name == "method").expect("method");
+        assert!(method.check("FETCH").is_err());
+        assert!(method.check("PATCH").is_ok());
+    }
+
+    #[test]
+    fn a_plugin_step_carries_no_parameter_types() {
+        let mut reg = Registry::new().expect("registry");
+        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, false)
+            .expect("valid pattern");
+        let (_, _, params) = reg
+            .find_with_params(r#"I upload file "a""#)
+            .unwrap()
+            .expect("matches");
+        assert!(params.is_empty());
     }
 
     #[test]

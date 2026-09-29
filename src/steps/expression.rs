@@ -120,13 +120,6 @@ impl ParamType {
 pub struct Param {
     pub name: String,
     pub ty: &'static ParamType,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by Task 4 of #66: runner::prepare type check"
-        )
-    )]
     check: Option<Regex>,
 }
 
@@ -134,20 +127,24 @@ impl Param {
     /// The post-interpolation half of a typed parameter: the step matched a
     /// literal of the type or a whole `<<…>>` slot, and only the slot's value
     /// can still be wrong here.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by Task 4 of #66: runner::prepare type check"
-        )
-    )]
     pub fn check(&self, value: &str) -> Result<(), String> {
-        match &self.check {
-            Some(re) if !re.is_match(value) => Err(format!(
+        let Some(re) = &self.check else {
+            return Ok(());
+        };
+        // `<<null>>` is a SQL NULL, meant for `text` positions only.
+        if value == crate::vars::NULL_SENTINEL {
+            return Err(format!(
+                "parameter <{}> expects {}, got <<null>>",
+                self.name, self.ty.name
+            ));
+        }
+        if re.is_match(value) {
+            Ok(())
+        } else {
+            Err(format!(
                 "parameter <{}> expects {}, got {value:?}",
                 self.name, self.ty.name
-            )),
-            _ => Ok(()),
+            ))
         }
     }
 }
@@ -421,6 +418,19 @@ mod tests {
         let error = compiled.params[0].check("abc").unwrap_err();
         assert_eq!(error, r#"parameter <code> expects uint, got "abc""#);
         assert!(builtin(r#"x "{v}""#).params[0].check("anything").is_ok());
+    }
+
+    #[test]
+    fn null_fails_every_typed_check_and_passes_an_untyped_one() {
+        let null = crate::vars::NULL_SENTINEL;
+        for ty in ["word", "uint"] {
+            let compiled = builtin(&format!("x {{v:{ty}}}"));
+            assert_eq!(
+                compiled.params[0].check(null).unwrap_err(),
+                format!("parameter <v> expects {ty}, got <<null>>")
+            );
+        }
+        assert!(builtin(r#"x "{v}""#).params[0].check(null).is_ok());
     }
 
     #[test]
