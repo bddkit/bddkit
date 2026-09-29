@@ -117,8 +117,8 @@ fn execute_step<'a>(
                 let definition = reg.macro_def(index);
                 let args = prepare(step, caps, &world.vars, generator)?;
                 world.vars.push_frame();
-                for (name, value) in definition.params.iter().zip(args.caps) {
-                    world.vars.set(name, value);
+                for (param, value) in definition.compiled.params.iter().zip(args.caps) {
+                    world.vars.set(&param.name, value);
                 }
                 if world.debug {
                     eprintln!("macro {:?}", step.text);

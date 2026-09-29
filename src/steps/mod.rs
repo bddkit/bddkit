@@ -782,7 +782,7 @@ impl Registry {
             ));
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
-            entries.push((StepTarget::Macro(index), definition.regex.clone()));
+            entries.push((StepTarget::Macro(index), definition.compiled.regex.clone()));
         }
         let mut registry = Self {
             entries,
@@ -880,13 +880,6 @@ impl Registry {
     }
 
     fn validate_macros(&self) -> Result<(), String> {
-        // Macro templates are compiled here with the macro default type; Task 3
-        // of #66 moves that into `macros::compile` and stores the result.
-        let variants = self
-            .macros
-            .iter()
-            .map(|definition| expression::compile(&definition.step, "any").map(|c| c.variants))
-            .collect::<Result<Vec<_>, _>>()?;
         // Only a suite with macros has anything to compare a builtin against.
         let builtins = if self.macros.is_empty() {
             Vec::new()
@@ -901,7 +894,7 @@ impl Registry {
         };
         for (left_index, left) in self.macros.iter().enumerate() {
             for (builtin, builtin_variants) in &builtins {
-                if expression::conflicts(&variants[left_index], builtin_variants) {
+                if expression::conflicts(&left.compiled.variants, builtin_variants) {
                     return Err(format!(
                         "macro step {:?} from {}:{} conflicts with builtin step {:?}",
                         left.step,
@@ -911,8 +904,8 @@ impl Registry {
                     ));
                 }
             }
-            for (right_index, right) in self.macros.iter().enumerate().skip(left_index + 1) {
-                if expression::conflicts(&variants[left_index], &variants[right_index]) {
+            for right in self.macros.iter().skip(left_index + 1) {
+                if expression::conflicts(&left.compiled.variants, &right.compiled.variants) {
                     return Err(format!(
                         "macro step {:?} from {}:{} conflicts with {:?} from {}:{}",
                         left.step,

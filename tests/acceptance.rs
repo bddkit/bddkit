@@ -659,6 +659,48 @@ fn macro_cycle_fails_validation_with_exit_code_two() {
     assert!(stderr.contains("run not started"), "{stderr}");
 }
 
+/// `(`, `)` and `/` in a macro template became Cucumber Expression syntax
+/// (#66). A template written for the old literal meaning must fail LOUDLY:
+/// the caller's step text can no longer match, so validation stops the run.
+#[test]
+fn a_macro_template_with_literal_parentheses_no_longer_matches_its_old_text() {
+    let dir = std::env::temp_dir().join(format!("bddkit-macro-syntax-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/old.feature"),
+        "Feature: f\n  Scenario: s\n    When I do (setup) things\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: I do (setup) things\n  do: [Show all variables]\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
+            dir.join("features").display().to_string().replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "run",
+            "--config",
+            dir.join("cfg.yaml").to_str().expect("path is UTF-8"),
+        ])
+        .output()
+        .expect("failed to run bddkit");
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown step"), "{stderr}");
+    assert!(stderr.contains("run not started"), "{stderr}");
+}
+
 /// `Print response body as "<path>"` cannot work without structure: for
 /// text/plain this is an explicit error, not a silent degradation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

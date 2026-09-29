@@ -3,3 +3,9 @@
   do:
     - extract "user.id" from variable "<<source>>" as JSON as "uid" global
     - extract "(\d+)" from variable "<<source>>" as "digits" global
+
+# A Cucumber Expression template: optional text and an alternation (#66).
+- step: 'I remember the value/text "{value}" as a (new )note'
+  exports: [note]
+  do:
+    - set variable "note" to "<<value>>"

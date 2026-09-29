@@ -69,3 +69,9 @@ Feature: variables
     And I pull the user id out of variable "doc"
     And variable "uid" should be equal to "7"
     And variable "digits" should be equal to "7"
+
+  Scenario: a macro template with optional text and an alternation
+    When I remember the text "first" as a note
+    Then variable "note" should be equal to "first"
+    When I remember the value "second" as a new note
+    Then variable "note" should be equal to "second"

@@ -156,10 +156,6 @@ impl Param {
 pub struct Compiled {
     pub regex: Regex,
     /// In capture order: `params[i]` describes capture group `i + 1`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by Task 3 of #66: macro parameter binding")
-    )]
     pub params: Vec<Param>,
     pub variants: Vec<Vec<PatternToken>>,
     /// `{name:type}` → `<name>`, everything else verbatim.
@@ -464,6 +460,7 @@ mod tests {
             ("a {1x}", "needs a name"),
             ("a (b {c})", "optional may not contain a parameter"),
             ("a {b", "does not have a matching"),
+            ("a \\d", "Only the characters"),
         ] {
             let error = compile(expr, "text").unwrap_err();
             assert!(error.contains(needle), "{expr}: {error}");
