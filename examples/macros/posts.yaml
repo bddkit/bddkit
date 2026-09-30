@@ -35,3 +35,10 @@
   exports: [notedTitle]
   do:
     - set variable "notedTitle" to "<<title>>"
+
+# `{code:uint}` is a typed parameter: it accepts digits or a whole <<variable>>,
+# and a variable's value is checked against the type when the step runs.
+- step: 'the "{path}" page answers {code:uint}'
+  do:
+    - I request "<<path>>"
+    - the response code is <<code>>

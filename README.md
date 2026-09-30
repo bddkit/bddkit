@@ -72,14 +72,14 @@ cargo build --release
 run m4k2p9x7q3b1
   ✓ examples/features/methods.feature — scenarios: 8
   ✓ examples/features/json_matchers.feature — scenarios: 4
-  ✓ examples/features/variables.feature — scenarios: 5
+  ✓ examples/features/variables.feature — scenarios: 6
   ✓ examples/features/variable_assertions.feature — scenarios: 3
-  ✓ examples/features/macros.feature — scenarios: 7
+  ✓ examples/features/macros.feature — scenarios: 8
   ✓ examples/features/content_types.feature — scenarios: 4
   ✓ examples/features/eventual.feature — scenarios: 1
 
 run m4k2p9x7q3b1
-files: 7, scenarios: 32, failed: 0
+files: 7, scenarios: 34, failed: 0
 ```
 
 The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
@@ -377,9 +377,9 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | A runnable HTTP example | `examples/api.yaml`, `examples/features/` |
 | Every HTTP method, 404 included | `examples/features/methods.feature` |
 | JSON matchers and paths | `examples/features/json_matchers.feature` |
-| Variables: set, extract, reuse | `examples/features/variables.feature` |
+| Variables: set, extract, reuse, typed positions | `examples/features/variables.feature` |
 | Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
-| Macros, nesting, Scenario Outline | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
+| Macros, nesting, Scenario Outline, typed parameters | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
 | Non-JSON responses, form login | `examples/features/content_types.feature` |
 | Polling an assertion until it passes | `examples/features/eventual.feature` |
 | The mock API behind all of it | `examples/mocks/api-server.yaml` |

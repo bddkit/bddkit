@@ -36,3 +36,8 @@ Feature: domain steps declared in YAML
     Then variable "notedTitle" should be equal to "Hello"
     When I note the post main title "Again"
     Then variable "notedTitle" should be equal to "Again"
+
+  Scenario: a macro with a typed parameter, given a literal or a variable
+    Then the "/posts/1" page answers 200
+    Given set variable "missing" to "404"
+    Then the "/posts/999" page answers <<missing>>

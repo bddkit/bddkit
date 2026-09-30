@@ -59,3 +59,11 @@ Feature: variables — setting, extracting, reusing
     And the "Authorization" request header is "Bearer <<sessionId>>"
     When I request "/posts/1" using HTTP GET
     Then the response code is 200
+
+  Scenario: variables in the typed positions of built-in steps
+    # A typed position (an HTTP method, a status code) takes a literal of its
+    # type or a whole <<variable>>; the variable's value is checked at run time.
+    Given set variable "verb" to "PATCH"
+    And set variable "ok" to "200"
+    When I request "/posts/1" using HTTP <<verb>>
+    Then the response code is <<ok>>
