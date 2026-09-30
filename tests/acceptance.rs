@@ -322,6 +322,62 @@ async fn a_variable_of_the_wrong_type_fails_the_step() {
     );
 }
 
+/// The same check guards a macro's typed parameter: the value is refused
+/// before the macro body runs, and it fails the calling step (exit 1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
+    let base = common::spawn().await;
+    let dir = std::env::temp_dir().join(format!("bddkit-typed-macro-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/typed.feature"),
+        "Feature: f\n  Scenario: s\n    Given set variable \"code\" to \"abc\"\n    Then the \"/ping\" page answers <<code>>\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: 'the \"{path}\" page answers {code:uint}'\n  do:\n    - I request \"<<path>>\"\n    - the response code is <<code>>\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            dir.join("macros.yaml")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "run",
+            "--config",
+            dir.join("cfg.yaml").to_str().expect("path is UTF-8"),
+        ])
+        .output()
+        .expect("failed to run bddkit");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a failed step, not a failed validation"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(r#"parameter <code> expects uint, got "abc""#),
+        "{stdout}"
+    );
+    // Refused before the body: the macro's request was never sent.
+    assert!(!stdout.contains("GET "), "{stdout}");
+}
+
 /// `resources.api` may be absent entirely — legal for a scenario that makes
 /// no HTTP requests (symmetric to `resources.db`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

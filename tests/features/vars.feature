@@ -80,3 +80,8 @@ Feature: variables
     Given set variable "expected" to "200"
     When I request "/ping"
     Then the response code is <<expected>>
+
+  Scenario: a typed macro parameter, given a literal or a variable
+    Then the "/ping" page answers 200
+    Given set variable "ok" to "200"
+    Then the "/ping" page answers <<ok>>
