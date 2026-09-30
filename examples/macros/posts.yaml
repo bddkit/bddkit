@@ -28,3 +28,17 @@
     - I log in as "<<user>>" with password "s3cr3t"
     - the "Authorization" request header is "Bearer <<sessionId>>"
     - I create a post with title "<<title>>"
+
+# A Cucumber Expression: `post/article` is an alternation and `(main )` optional
+# text, in separate words because an alternation spans the whole word.
+- step: 'I note the post/article (main )title "{title}"'
+  exports: [notedTitle]
+  do:
+    - set variable "notedTitle" to "<<title>>"
+
+# `{code:uint}` is a typed parameter: it accepts digits or a whole <<variable>>,
+# and a variable's value is checked against the type when the step runs.
+- step: 'the "{path}" page answers {code:uint}'
+  do:
+    - I request "<<path>>"
+    - the response code is <<code>>

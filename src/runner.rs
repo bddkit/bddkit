@@ -20,6 +20,7 @@ use std::time::Instant;
 fn prepare(
     step: &ExpandedStep,
     caps: Vec<String>,
+    params: &[crate::steps::expression::Param],
     vars: &VarStack,
     generator: &Generator,
 ) -> Result<Args, String> {
@@ -29,6 +30,12 @@ fn prepare(
         .iter()
         .map(|c| interpolate(c, vars, generator))
         .collect::<Result<Vec<_>, _>>()?;
+    // A typed parameter matched either a literal of its type or a whole
+    // `<<…>>` slot. Only a slot's value can still be the wrong type, and this
+    // is the first point where that value exists (invariant 1).
+    for (param, value) in params.iter().zip(&caps) {
+        param.check(value)?;
+    }
     let docstring = step
         .docstring
         .as_ref()
@@ -63,7 +70,7 @@ fn execute_step<'a>(
     depth: usize,
 ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
-        let Some((target, caps)) = reg.find(&step.text)? else {
+        let Some((target, caps, params)) = reg.find_with_params(&step.text)? else {
             return Err("unknown step".into());
         };
         match target {
@@ -71,7 +78,7 @@ fn execute_step<'a>(
                 if matches!(id, StepId::Include | StepId::IncludeScenario) {
                     return run_include(world, reg, step, id, caps, source, generator, depth).await;
                 }
-                let args = prepare(step, caps, &world.vars, generator)?;
+                let args = prepare(step, caps, params, &world.vars, generator)?;
                 match kind {
                     StepKind::Action => dispatch(world, id, &args, 0)
                         .await
@@ -115,10 +122,10 @@ fn execute_step<'a>(
                 }
 
                 let definition = reg.macro_def(index);
-                let args = prepare(step, caps, &world.vars, generator)?;
+                let args = prepare(step, caps, params, &world.vars, generator)?;
                 world.vars.push_frame();
-                for (name, value) in definition.params.iter().zip(args.caps) {
-                    world.vars.set(name, value);
+                for (param, value) in definition.compiled.params.iter().zip(args.caps) {
+                    world.vars.set(&param.name, value);
                 }
                 if world.debug {
                     eprintln!("macro {:?}", step.text);
@@ -160,7 +167,7 @@ fn execute_step<'a>(
                 // Arguments cross the boundary already interpolated: a plugin
                 // never sees raw step text and never sees `<<variable>>`
                 // syntax (invariant 1, restated at the FFI boundary).
-                let args = prepare(step, caps, &world.vars, generator)?;
+                let args = prepare(step, caps, params, &world.vars, generator)?;
                 let Some(plugins) = world.plugins.plugins().cloned() else {
                     return Err("this step is served by a plugin, but no plugin is loaded".into());
                 };
@@ -299,10 +306,16 @@ fn run_include<'a>(
         }
 
         let path_literal = &caps[0];
+        // The prefix is the last capture of the `with prefix "…"` twin of each
+        // include step and absent from the other one (an optional may not hold
+        // a parameter, so the two are separate declarations).
         let (scenario_name, prefix_raw) = if id == StepId::IncludeScenario {
-            (Some(caps[1].as_str()), caps[2].as_str())
+            (
+                Some(caps[1].as_str()),
+                caps.get(2).map_or("", String::as_str),
+            )
         } else {
-            (None, caps[1].as_str())
+            (None, caps.get(1).map_or("", String::as_str))
         };
         let prefix = (!prefix_raw.is_empty()).then_some(prefix_raw);
 

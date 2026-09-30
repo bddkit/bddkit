@@ -69,3 +69,19 @@ Feature: variables
     And I pull the user id out of variable "doc"
     And variable "uid" should be equal to "7"
     And variable "digits" should be equal to "7"
+
+  Scenario: a macro template with optional text and an alternation
+    When I remember the text "first" as a note
+    Then variable "note" should be equal to "first"
+    When I remember the value "second" as a new note
+    Then variable "note" should be equal to "second"
+
+  Scenario: a variable in a typed position
+    Given set variable "expected" to "200"
+    When I request "/ping"
+    Then the response code is <<expected>>
+
+  Scenario: a typed macro parameter, given a literal or a variable
+    Then the "/ping" page answers 200
+    Given set variable "ok" to "200"
+    Then the "/ping" page answers <<ok>>

@@ -2,6 +2,7 @@ pub mod api;
 pub mod assert;
 pub mod db;
 pub mod debug;
+pub mod expression;
 pub mod help;
 mod markup;
 pub mod plugin;
@@ -13,8 +14,6 @@ use crate::options::{OptionsLayer, PollingOptionsLayer};
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
 use regex::Regex;
-use std::collections::{HashSet, VecDeque};
-use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepId {
@@ -129,7 +128,11 @@ pub struct StepDef {
     /// prints it under: `api`, `db`, `srp`, `vars`, `debug`, or `general` for
     /// the few steps that belong to no resource at all.
     pub group: &'static str,
-    pub pattern: &'static str,
+    /// A Cucumber Expression with bddkit's parameter extension: `{name}` is a
+    /// `text` parameter (`[^"]*`, written inside literal quotes), `{name:type}`
+    /// picks a type from `expression::TYPES`. The name is what `bddkit steps
+    /// list` prints as `<name>`; captures still reach `dispatch` by position.
+    pub expression: &'static str,
     /// One line, in English, stating the step's effect. English is the source
     /// language and it lives here, beside the pattern it describes;
     /// `locales/steps.<code>.yaml` carries translations of it.
@@ -140,13 +143,13 @@ pub struct StepDef {
 const fn action(
     id: StepId,
     group: &'static str,
-    pattern: &'static str,
+    expression: &'static str,
     description: &'static str,
 ) -> StepDef {
     StepDef {
         id,
         group,
-        pattern,
+        expression,
         description,
         kind: StepKind::Action,
     }
@@ -155,553 +158,564 @@ const fn action(
 const fn assertion(
     id: StepId,
     group: &'static str,
-    pattern: &'static str,
+    expression: &'static str,
     description: &'static str,
     source: OptionsSource,
 ) -> StepDef {
     StepDef {
         id,
         group,
-        pattern,
+        expression,
         description,
         kind: StepKind::Assertion(source),
     }
 }
 
-/// Capture groups are named, and the name is the parameter's whole
-/// documentation: `bddkit steps list` renders `(?P<path>[^"]*)` as `<path>`.
-/// The `regex` crate keeps a named group addressable by index too, so every
-/// dispatch arm below still captures by position.
+/// Every expression is compiled by `expression::compile` at startup; an
+/// optional part may not hold a parameter, which is why each `I include` step
+/// is declared twice, without and with `with prefix "{prefix}"`.
 pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::SetRequestHeader,
         "api",
-        r#"^the "(?P<name>[^"]*)" request header is "(?P<value>[^"]*)"$"#,
+        r#"the "{name}" request header is "{value}""#,
         "sets a header on the request being built, replacing any previous value",
     ),
     action(
         StepId::AddRequestHeader,
         "api",
-        r#"^I add "(?P<value>[^"]*)" to the "(?P<name>[^"]*)" request header$"#,
+        r#"I add "{value}" to the "{name}" request header"#,
         "appends another value to a request header, keeping what is already there",
     ),
     action(
         StepId::SetQueryParam,
         "api",
-        r#"^the query parameter "(?P<name>[^"]*)" is "(?P<value>[^"]*)"$"#,
+        r#"the query parameter "{name}" is "{value}""#,
         "sets a query string parameter on the request being built",
     ),
     action(
         StepId::SetRequestBody,
         "api",
-        r#"^the request body is:$"#,
+        "the request body is:",
         "sets the request body from the docstring below the step",
     ),
     action(
         StepId::EmptyRequestBody,
         "api",
-        r#"^the request body is empty$"#,
+        "the request body is empty",
         "clears the request body built so far",
     ),
     action(
         StepId::SetFormParams,
         "api",
-        r#"^the request form parameters are:$"#,
+        "the request form parameters are:",
         "sends the table below as form-encoded parameters instead of a body",
     ),
     action(
         StepId::RequestPathWithMethod,
         "api",
-        r#"^I request "(?P<path>[^"]*)" using HTTP (?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$"#,
+        r#"I request "{path}" using HTTP {method:method}"#,
         "performs the request against the current API with this method",
     ),
     action(
         StepId::RequestPath,
         "api",
-        r#"^I request "(?P<path>[^"]*)"$"#,
+        r#"I request "{path}""#,
         "performs a GET request against the current API",
     ),
     action(
         StepId::SignNextRequestWithHawk,
         "api",
-        r#"^I sign the next request with Hawk id "(?P<id>[^"]*)" and key "(?P<key>[^"]*)"$"#,
+        r#"I sign the next request with Hawk id "{id}" and key "{key}""#,
         "signs the next request with these Hawk credentials, and every replay of it",
     ),
     action(
         StepId::ExpectEventually,
         "general",
-        r#"^I expect the next assertion to pass eventually$"#,
+        "I expect the next assertion to pass eventually",
         "lets the next assertion retry with the configured polling options",
     ),
     action(
         StepId::ExpectWithinEvery,
         "general",
-        r#"^I expect the next assertion to pass within "(?P<seconds>\d+)" seconds, checking every "(?P<milliseconds>\d+)" milliseconds$"#,
+        r#"I expect the next assertion to pass within "{seconds:uint}" seconds, checking every "{milliseconds:uint}" milliseconds"#,
         "lets the next assertion retry for this long, at this interval",
     ),
     action(
         StepId::ExpectWithin,
         "general",
-        r#"^I expect the next assertion to pass within "(?P<seconds>\d+)" seconds$"#,
+        r#"I expect the next assertion to pass within "{seconds:uint}" seconds"#,
         "lets the next assertion retry for this long, at the configured interval",
     ),
     assertion(
         StepId::ResponseCode,
         "api",
-        r#"^the response code is (?P<code>\d+)$"#,
+        "the response code is {code:uint}",
         "asserts the HTTP status code of the last response",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyContainsJson,
         "api",
-        r#"^the response body contains JSON:$"#,
+        "the response body contains JSON:",
         "asserts the response body contains this JSON — object subsets pass, array order is ignored",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyEqualsJson,
         "api",
-        r#"^the response body equals JSON:$"#,
+        "the response body equals JSON:",
         "asserts the response body equals this JSON exactly, key for key and element for element",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseArrayLength,
         "api",
-        r#"^the response body is a JSON array of length (?P<length>\d+)$"#,
+        "the response body is a JSON array of length {length:uint}",
         "asserts the response body is a JSON array holding this many elements",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseHeader,
         "api",
-        r#"^the "(?P<name>[^"]*)" response header is "(?P<value>[^"]*)"$"#,
+        r#"the "{name}" response header is "{value}""#,
         "asserts a response header holds exactly this value",
         OptionsSource::Http,
     ),
     assertion(
         StepId::JsonNodeExists,
         "api",
-        r#"^the JSON node "(?P<path>[^"]*)" should exist$"#,
+        r#"the JSON node "{path}" should exist"#,
         "asserts the response body has a node at this JSON path",
         OptionsSource::Http,
     ),
     assertion(
         StepId::JsonNodeNotExists,
         "api",
-        r#"^the JSON node "(?P<path>[^"]*)" should not exist$"#,
+        r#"the JSON node "{path}" should not exist"#,
         "asserts the response body has no node at this JSON path — a null value still counts as existing",
         OptionsSource::Http,
     ),
     assertion(
         StepId::JsonNodeIsNull,
         "api",
-        r#"^the JSON node "(?P<path>[^"]*)" should be null$"#,
+        r#"the JSON node "{path}" should be null"#,
         "asserts the node at this JSON path exists and is JSON null",
         OptionsSource::Http,
     ),
     assertion(
         StepId::JsonNodeNotNull,
         "api",
-        r#"^the JSON node "(?P<path>[^"]*)" should not be null$"#,
+        r#"the JSON node "{path}" should not be null"#,
         "asserts the node at this JSON path exists and is not JSON null",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyNotContainsJson,
         "api",
-        r#"^the response body does not contain JSON:$"#,
+        "the response body does not contain JSON:",
         "asserts the response body does not contain this JSON — same subset/order-independent matching as `contains`, inverted",
         OptionsSource::Http,
     ),
     assertion(
         StepId::JsonNodeNotContainsSubstring,
         "api",
-        r#"^the JSON node "(?P<path>[^"]*)" should not contain "(?P<substring>[^"]*)"$"#,
+        r#"the JSON node "{path}" should not contain "{substring}""#,
         "asserts a string node does not contain this substring",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyEmpty,
         "api",
-        r#"^the response body should be empty$"#,
+        "the response body should be empty",
         "asserts the response body is empty",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyContains,
         "api",
-        r#"^the response body contains "(?P<text>[^"]*)"$"#,
+        r#"the response body contains "{text}""#,
         "asserts the raw response body contains this text — works for any content type",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyNotContains,
         "api",
-        r#"^the response body does not contain "(?P<text>[^"]*)"$"#,
+        r#"the response body does not contain "{text}""#,
         "asserts the raw response body does not contain this text",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyMatches,
         "api",
-        r#"^the response body matches "(?P<pattern>[^"]*)"$"#,
+        r#"the response body matches "{pattern}""#,
         "asserts the raw response body matches this regular expression",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyNotMatches,
         "api",
-        r#"^the response body does not match "(?P<pattern>[^"]*)"$"#,
+        r#"the response body does not match "{pattern}""#,
         "asserts the raw response body does not match this regular expression",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyHasElement,
         "api",
-        r#"^the response body has element "(?P<selector>[^"]*)"$"#,
+        r#"the response body has element "{selector}""#,
         "asserts an HTML (CSS selector) or XML (XPath) element matches in the response body",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyHasElementWithText,
         "api",
-        r#"^the response body has element "(?P<selector>[^"]*)" with text "(?P<text>[^"]*)"$"#,
+        r#"the response body has element "{selector}" with text "{text}""#,
         "asserts the matched elements' text, newline-joined if more than one, equals this value exactly",
         OptionsSource::Http,
     ),
     assertion(
         StepId::ResponseBodyNotHasElement,
         "api",
-        r#"^the response body does not have element "(?P<selector>[^"]*)"$"#,
+        r#"the response body does not have element "{selector}""#,
         "asserts no element matches this selector in the response body",
         OptionsSource::Http,
     ),
     action(
         StepId::SetVariableGlobal,
         "vars",
-        r#"^set variable "(?P<name>[^"]*)" to "(?P<value>[^"]*)" global$"#,
+        r#"set variable "{name}" to "{value}" global"#,
         "sets a variable every scenario of this feature file can read",
     ),
     action(
         StepId::SetVariable,
         "vars",
-        r#"^set variable "(?P<name>[^"]*)" to "(?P<value>[^"]*)"$"#,
+        r#"set variable "{name}" to "{value}""#,
         "sets a variable for the whole feature file",
     ),
     action(
         StepId::ExtractFromJsonGlobal,
         "vars",
-        r#"^extract "(?P<path>[^"]*)" from JSON as "(?P<name>[^"]*)" global$"#,
+        r#"extract "{path}" from JSON as "{name}" global"#,
         "reads a JSON path of the response into a variable the whole file can see",
     ),
     action(
         StepId::ExtractFromJson,
         "vars",
-        r#"^extract "(?P<path>[^"]*)" from JSON as "(?P<name>[^"]*)"$"#,
+        r#"extract "{path}" from JSON as "{name}""#,
         "reads a JSON path of the response into a variable",
     ),
     action(
         StepId::ExtractFromCookiesGlobal,
         "vars",
-        r#"^extract "(?P<cookie>[^"]*)" from cookies as "(?P<name>[^"]*)" global$"#,
+        r#"extract "{cookie}" from cookies as "{name}" global"#,
         "reads a response cookie into a variable the whole file can see",
     ),
     action(
         StepId::ExtractFromCookies,
         "vars",
-        r#"^extract "(?P<cookie>[^"]*)" from cookies as "(?P<name>[^"]*)"$"#,
+        r#"extract "{cookie}" from cookies as "{name}""#,
         "reads a response cookie into a variable",
     ),
     action(
         StepId::ExtractFromMarkup,
         "vars",
-        r#"^extract "(?P<selector>[^"]*)" from response body as "(?P<name>[^"]*)"$"#,
+        r#"extract "{selector}" from response body as "{name}""#,
         "reads the matched elements' text, newline-joined if more than one, into a variable",
     ),
     assertion(
         StepId::VariableNotEquals,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should not be equal to "(?P<value>[^"]*)"$"#,
+        r#"variable "{name}" should not be equal to "{value}""#,
         "asserts a variable differs from this value",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableEquals,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should be equal to "(?P<value>[^"]*)"$"#,
+        r#"variable "{name}" should be equal to "{value}""#,
         "asserts a variable holds exactly this value",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableContains,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should contain "(?P<text>[^"]*)"$"#,
+        r#"variable "{name}" should contain "{text}""#,
         "asserts a variable's text contains this substring",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableNotContains,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should not contain "(?P<text>[^"]*)"$"#,
+        r#"variable "{name}" should not contain "{text}""#,
         "asserts a variable's text does not contain this substring",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableMatches,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should match "(?P<pattern>[^"]*)"$"#,
+        r#"variable "{name}" should match "{pattern}""#,
         "asserts a variable's text matches this regular expression, unanchored",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableNotMatches,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should not match "(?P<pattern>[^"]*)"$"#,
+        r#"variable "{name}" should not match "{pattern}""#,
         "asserts a variable's text does not match this regular expression",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableEmpty,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should be empty$"#,
+        r#"variable "{name}" should be empty"#,
         "asserts a variable's text is empty or whitespace only",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableContainsJson,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should contain JSON:$"#,
+        r#"variable "{name}" should contain JSON:"#,
         "asserts a variable's text is JSON containing this JSON — same matching as `the response body contains JSON`",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableEqualsJson,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should equal JSON:$"#,
+        r#"variable "{name}" should equal JSON:"#,
         "asserts a variable's text is JSON exactly equal to this JSON",
         OptionsSource::Global,
     ),
     assertion(
         StepId::VariableNotContainsJson,
         "vars",
-        r#"^variable "(?P<name>[^"]*)" should not contain JSON:$"#,
+        r#"variable "{name}" should not contain JSON:"#,
         "asserts a variable's text is JSON that does not contain this JSON",
         OptionsSource::Global,
     ),
     action(
         StepId::ExtractJsonFromVariableGlobal,
         "vars",
-        r#"^extract "(?P<path>[^"]*)" from variable "(?P<variable>[^"]*)" as JSON as "(?P<name>[^"]*)" global$"#,
+        r#"extract "{path}" from variable "{variable}" as JSON as "{name}" global"#,
         "reads a JSON path of a variable's text into a variable the whole file can see",
     ),
     action(
         StepId::ExtractJsonFromVariable,
         "vars",
-        r#"^extract "(?P<path>[^"]*)" from variable "(?P<variable>[^"]*)" as JSON as "(?P<name>[^"]*)"$"#,
+        r#"extract "{path}" from variable "{variable}" as JSON as "{name}""#,
         "reads a JSON path of a variable's text into a variable",
     ),
     action(
         StepId::ExtractRegexFromVariableGlobal,
         "vars",
-        r#"^extract "(?P<pattern>[^"]*)" from variable "(?P<variable>[^"]*)" as "(?P<name>[^"]*)" global$"#,
+        r#"extract "{pattern}" from variable "{variable}" as "{name}" global"#,
         "reads the first capture group of a regex over a variable's text into a variable the whole file can see",
     ),
     action(
         StepId::ExtractRegexFromVariable,
         "vars",
-        r#"^extract "(?P<pattern>[^"]*)" from variable "(?P<variable>[^"]*)" as "(?P<name>[^"]*)"$"#,
+        r#"extract "{pattern}" from variable "{variable}" as "{name}""#,
         "reads the first capture group of a regex over a variable's text into a variable",
     ),
     action(
         StepId::EncryptWithAes,
         "vars",
-        r#"^I encrypt "(?P<value>[^"]*)" with AES using key "(?P<key>[^"]*)" as "(?P<name>[^"]*)"$"#,
+        r#"I encrypt "{value}" with AES using key "{key}" as "{name}""#,
         "encrypts a value with an AES key and stores the result in a variable",
     ),
     action(
         StepId::UseApi,
         "api",
-        r#"^I use "(?P<name>[^"]*)" api$"#,
+        r#"I use "{name}" api"#,
         "switches to another API resource and its default headers, until the scenario ends",
     ),
     action(
         StepId::UseConnection,
         "db",
-        r#"^I use "(?P<name>[^"]*)" connection$"#,
+        r#"I use "{name}" connection"#,
         "switches to another database connection, until the scenario ends",
     ),
     action(
         StepId::DebugOn,
         "debug",
-        r#"^I am in debug mode$"#,
+        "I am in debug mode",
         "prints the generated SQL, its binds and plugin exchanges to stderr",
     ),
     action(
         StepId::DebugOff,
         "debug",
-        r#"^I am not in debug mode$"#,
+        "I am not in debug mode",
         "stops the debug output turned on earlier in the scenario",
     ),
     action(
         StepId::HaveWhere,
         "db",
-        r#"^I have "(?P<table>[^"]*)" where:$"#,
+        r#"I have "{table}" where:"#,
         "inserts one row per line of the table below, its header naming the columns",
     ),
     action(
         StepId::HaveWith,
         "db",
-        r#"^I have "(?P<table>[^"]*)" with "(?P<pairs>[^"]*)"$"#,
+        r#"I have "{table}" with "{pairs}""#,
         "inserts one row, filling required columns the pairs omit from the table schema",
     ),
     action(
         StepId::HaveMulti,
         "db",
-        r#"^I have:$"#,
+        "I have:",
         "inserts rows into several tables, the first column of the table below naming each one",
     ),
     action(
         StepId::Update,
         "db",
-        r#"^I update "(?P<table>[^"]*)" with "(?P<pairs>[^"]*)" where "(?P<condition>[^"]*)"$"#,
+        r#"I update "{table}" with "{pairs}" where "{condition}""#,
         "updates matching rows and stores the affected count in updated_<table>",
     ),
     action(
         StepId::DeleteAll,
         "db",
-        r#"^I delete all "(?P<table>[^"]*)"$"#,
+        r#"I delete all "{table}""#,
         "wipes the whole table — no WHERE, and no awareness of files running in parallel",
     ),
     action(
         StepId::DeleteWhere,
         "db",
-        r#"^I delete "(?P<table>[^"]*)" where "(?P<condition>[^"]*)"$"#,
+        r#"I delete "{table}" where "{condition}""#,
         "deletes matching rows and stores the affected count in deleted_<table>",
     ),
     action(
         StepId::ExtractFromDb,
         "db",
-        r#"^I extract "(?P<column>[^"]*)" from "(?P<table>[^"]*)" with "(?P<condition>[^"]*)" as "(?P<name>[^"]*)"$"#,
+        r#"I extract "{column}" from "{table}" with "{condition}" as "{name}""#,
         "reads a column of the first matching row into a variable",
     ),
     assertion(
         StepId::ShouldNotHaveTable,
         "db",
-        r#"^I should not have "(?P<table>[^"]*)" with:$"#,
+        r#"I should not have "{table}" with:"#,
         "asserts no row matches any line of the table below",
         OptionsSource::Db,
     ),
     assertion(
         StepId::ShouldNotHaveWith,
         "db",
-        r#"^I should not have "(?P<table>[^"]*)" with "(?P<pairs>[^"]*)"$"#,
+        r#"I should not have "{table}" with "{pairs}""#,
         "asserts no row matches these column values",
         OptionsSource::Db,
     ),
     assertion(
         StepId::ShouldHaveTable,
         "db",
-        r#"^I should have "(?P<table>[^"]*)" with:$"#,
+        r#"I should have "{table}" with:"#,
         "asserts a row matches each line of the table below",
         OptionsSource::Db,
     ),
     assertion(
         StepId::ShouldHaveWith,
         "db",
-        r#"^I should have "(?P<table>[^"]*)" with "(?P<pairs>[^"]*)"$"#,
+        r#"I should have "{table}" with "{pairs}""#,
         "asserts at least one row matches these column values",
         OptionsSource::Db,
     ),
     action(
         StepId::CallProcedure,
         "db",
-        r#"^I call procedure "(?P<name>[^"]*)" with "(?P<arguments>[^"]*)"$"#,
+        r#"I call procedure "{name}" with "{arguments}""#,
         "calls a stored procedure with these arguments",
     ),
     action(
         StepId::CallFunction,
         "db",
-        r#"^I call function "(?P<name>[^"]*)" with "(?P<arguments>[^"]*)" as "(?P<variable>[^"]*)"$"#,
+        r#"I call function "{name}" with "{arguments}" as "{variable}""#,
         "calls a function and stores its return value in a variable",
     ),
     action(
         StepId::GetSequence,
         "db",
-        r#"^I get next value of sequence "(?P<name>[^"]*)" as "(?P<variable>[^"]*)"$"#,
+        r#"I get next value of sequence "{name}" as "{variable}""#,
         "advances a sequence and stores the new value in a variable",
     ),
     action(
         StepId::Sleep,
         "general",
-        r#"^I sleep "(?P<seconds>\d+)" seconds$"#,
+        r#"I sleep "{seconds:uint}" seconds"#,
         "pauses the scenario — a last resort, an eventual assertion is usually what you want",
     ),
     action(
         StepId::ShowAllVariables,
         "debug",
-        r#"^Show all variables$"#,
+        "Show all variables",
         "prints every variable in scope to stderr",
     ),
     action(
         StepId::ShowVariable,
         "debug",
-        r#"^Show "(?P<name>[^"]*)" variable$"#,
+        r#"Show "{name}" variable"#,
         "prints one variable to stderr, failing if it is not set",
     ),
     action(
         StepId::PrintResponseHeaders,
         "debug",
-        r#"^Print response headers$"#,
+        "Print response headers",
         "prints the headers of the last response to stderr",
     ),
     action(
         StepId::PrintResponseBody,
         "debug",
-        r#"^Print response body$"#,
+        "Print response body",
         "prints the body of the last response to stderr, highlighted",
     ),
     action(
         StepId::PrintResponseBodyAsPath,
         "debug",
-        r#"^Print response body as "(?P<path>[^"]*)"$"#,
+        r#"Print response body as "{path}""#,
         "prints one JSON path, XPath (XML) or CSS selector (HTML) selection of the last response to stderr",
     ),
     action(
         StepId::SrpVerifierWithSalt,
         "srp",
-        r#"^I generate an SRP verifier for "(?P<username>[^"]*)" with password "(?P<password>[^"]*)" and salt "(?P<salt>[^"]*)" as "(?P<prefix>[^"]*)"$"#,
+        r#"I generate an SRP verifier for "{username}" with password "{password}" and salt "{salt}" as "{prefix}""#,
         "computes an SRP verifier from this salt into <prefix>_salt and <prefix>_verifier",
     ),
     action(
         StepId::SrpVerifier,
         "srp",
-        r#"^I generate an SRP verifier for "(?P<username>[^"]*)" with password "(?P<password>[^"]*)" as "(?P<prefix>[^"]*)"$"#,
+        r#"I generate an SRP verifier for "{username}" with password "{password}" as "{prefix}""#,
         "computes an SRP verifier from a fresh salt into <prefix>_salt and <prefix>_verifier",
     ),
     action(
         StepId::SrpStartLogin,
         "srp",
-        r#"^I start an SRP login as "(?P<prefix>[^"]*)"$"#,
+        r#"I start an SRP login as "{prefix}""#,
         "starts an SRP login, storing the client values in <prefix>_a and <prefix>_A",
     ),
     action(
         StepId::SrpCompleteLogin,
         "srp",
-        r#"^I complete SRP login "(?P<prefix>[^"]*)" for "(?P<username>[^"]*)" with password "(?P<password>[^"]*)" salt "(?P<salt>[^"]*)" and "(?P<server_public>[^"]*)"$"#,
+        r#"I complete SRP login "{prefix}" for "{username}" with password "{password}" salt "{salt}" and "{server_public}""#,
         "answers the server challenge into <prefix>_M1, <prefix>_M2 and <prefix>_sessionKey",
     ),
     action(
         StepId::Include,
         "general",
-        r#"^I include "(?P<file>[^"]*)"(?: with prefix "(?P<prefix>[^"]*)")?(?: with:)?$"#,
+        r#"I include "{file}"( with:)"#,
+        "Runs the only scenario of another feature file inline, sharing HTTP/DB/plugin state.",
+    ),
+    action(
+        StepId::Include,
+        "general",
+        r#"I include "{file}" with prefix "{prefix}"( with:)"#,
         "Runs the only scenario of another feature file inline, sharing HTTP/DB/plugin state.",
     ),
     action(
         StepId::IncludeScenario,
         "general",
-        r#"^I include "(?P<file>[^"]*)" scenario "(?P<name>[^"]*)"(?: with prefix "(?P<prefix>[^"]*)")?(?: with:)?$"#,
+        r#"I include "{file}" scenario "{name}"( with:)"#,
+        "Runs one named scenario of another feature file inline, sharing HTTP/DB/plugin state.",
+    ),
+    action(
+        StepId::IncludeScenario,
+        "general",
+        r#"I include "{file}" scenario "{name}" with prefix "{prefix}"( with:)"#,
         "Runs one named scenario of another feature file inline, sharing HTTP/DB/plugin state.",
     ),
 ];
@@ -728,9 +742,35 @@ impl PartialEq<StepId> for StepTarget {
     }
 }
 
+/// `BUILTIN_STEPS`, compiled once and index-aligned with it. The builtins are
+/// constants, so a failure here is a bug in the table, pinned by
+/// `all_builtin_expressions_compile`.
+pub static COMPILED_BUILTINS: std::sync::LazyLock<Vec<expression::Compiled>> =
+    std::sync::LazyLock::new(|| {
+        BUILTIN_STEPS
+            .iter()
+            .map(|def| {
+                expression::compile(def.expression, "text")
+                    .unwrap_or_else(|e| panic!("builtin step {:?}: {e}", def.expression))
+            })
+            .collect()
+    });
+
+/// A matched step: its target, raw captures and the entry's parameter types.
+pub type Found<'a> = (StepTarget, Vec<String>, &'a [expression::Param]);
+
+#[derive(Debug)]
+struct Entry {
+    target: StepTarget,
+    regex: Regex,
+    /// One per capture group of an entry declared as an expression. A plugin
+    /// or group-switch regex has none: its captures are never type-checked.
+    params: Vec<expression::Param>,
+}
+
 #[derive(Debug)]
 pub struct Registry {
-    entries: Vec<(StepTarget, Regex)>,
+    entries: Vec<Entry>,
     macros: Vec<MacroDef>,
 }
 
@@ -757,19 +797,22 @@ impl Registry {
         plugin_groups: &[String],
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
-        for def in BUILTIN_STEPS {
-            let re = Regex::new(def.pattern)
-                .map_err(|e| format!("invalid step pattern {:?}: {e}", def.pattern))?;
-            entries.push((
-                StepTarget::Builtin {
+        for (def, compiled) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
+            entries.push(Entry {
+                target: StepTarget::Builtin {
                     id: def.id,
                     kind: def.kind,
                 },
-                re,
-            ));
+                regex: compiled.regex.clone(),
+                params: compiled.params.clone(),
+            });
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
-            entries.push((StepTarget::Macro(index), definition.regex.clone()));
+            entries.push(Entry {
+                target: StepTarget::Macro(index),
+                regex: definition.compiled.regex.clone(),
+                params: definition.compiled.params.clone(),
+            });
         }
         let mut registry = Self {
             entries,
@@ -787,15 +830,23 @@ impl Registry {
     /// Ambiguity is an error, not "first wins": a silently shadowed step
     /// is more expensive to debug than a failed start.
     pub fn find(&self, text: &str) -> Result<Option<(StepTarget, Vec<String>)>, String> {
-        let mut hits: Vec<(StepTarget, Vec<String>)> = Vec::new();
-        for (target, re) in &self.entries {
-            if let Some(c) = re.captures(text) {
+        Ok(self
+            .find_with_params(text)?
+            .map(|(target, caps, _)| (target, caps)))
+    }
+
+    /// `find`, plus the matched entry's parameter types in capture order —
+    /// what the runner checks interpolated values against.
+    pub fn find_with_params(&self, text: &str) -> Result<Option<Found<'_>>, String> {
+        let mut hits = Vec::new();
+        for entry in &self.entries {
+            if let Some(c) = entry.regex.captures(text) {
                 let caps = c
                     .iter()
                     .skip(1)
                     .map(|g| g.map(|m| m.as_str().to_string()).unwrap_or_default())
                     .collect();
-                hits.push((*target, caps));
+                hits.push((entry.target, caps, entry.params.as_slice()));
             }
         }
         match hits.len() {
@@ -803,7 +854,7 @@ impl Registry {
             1 => Ok(Some(hits.remove(0))),
             _ => Err(format!(
                 "step {text:?} matches several definitions: {:?}",
-                hits.iter().map(|(target, _)| target).collect::<Vec<_>>()
+                hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
             )),
         }
     }
@@ -819,7 +870,7 @@ impl Registry {
     /// regexes — `find` reports ambiguity per step and `validate::check` runs
     /// it over every selected step, which catches every collision that can
     /// actually fire. Upgrade path if a startup-time check is ever wanted:
-    /// extend the `patterns_overlap` token model in this file to raw regexes.
+    /// extend the token model in steps/expression.rs to raw regexes.
     pub fn add_plugin_step(
         &mut self,
         lib: usize,
@@ -829,14 +880,15 @@ impl Registry {
     ) -> Result<(), String> {
         let re = Regex::new(pattern)
             .map_err(|e| format!("invalid plugin step pattern {pattern:?}: {e}"))?;
-        self.entries.push((
-            StepTarget::Plugin {
+        self.entries.push(Entry {
+            target: StepTarget::Plugin {
                 lib,
                 step,
                 assertion,
             },
-            re,
-        ));
+            regex: re,
+            params: Vec::new(),
+        });
         Ok(())
     }
 
@@ -856,34 +908,32 @@ impl Registry {
         let pattern = format!(r#"^I use "([^"]*)" ({alternation})$"#);
         let re = Regex::new(&pattern)
             .map_err(|e| format!("invalid group-switch pattern {pattern:?}: {e}"))?;
-        self.entries.push((
-            StepTarget::Builtin {
+        self.entries.push(Entry {
+            target: StepTarget::Builtin {
                 id: StepId::UsePluginInstance,
                 kind: StepKind::Action,
             },
-            re,
-        ));
+            regex: re,
+            params: Vec::new(),
+        });
         Ok(())
     }
 
     fn validate_macros(&self) -> Result<(), String> {
         for (left_index, left) in self.macros.iter().enumerate() {
-            for builtin in BUILTIN_STEPS {
-                if builtin_patterns(builtin.pattern)
-                    .iter()
-                    .any(|pattern| patterns_overlap(&macro_pattern(&left.step), pattern))
-                {
+            for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
+                if expression::conflicts(&left.compiled.variants, &builtin.variants) {
                     return Err(format!(
                         "macro step {:?} from {}:{} conflicts with builtin step {:?}",
                         left.step,
                         left.source.display(),
                         left.line,
-                        builtin.pattern
+                        def.expression
                     ));
                 }
             }
             for right in self.macros.iter().skip(left_index + 1) {
-                if patterns_overlap(&macro_pattern(&left.step), &macro_pattern(&right.step)) {
+                if expression::conflicts(&left.compiled.variants, &right.compiled.variants) {
                     return Err(format!(
                         "macro step {:?} from {}:{} conflicts with {:?} from {}:{}",
                         left.step,
@@ -987,188 +1037,6 @@ fn macro_depth(index: usize, graph: &[Vec<usize>], memo: &mut [Option<usize>]) -
         .unwrap_or(0);
     memo[index] = Some(depth);
     depth
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CharClass {
-    Any,
-    NonQuote,
-    Digit,
-    Exact(char),
-}
-
-static DIGIT_CHAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d$").expect("constant digit regex"));
-
-#[derive(Clone, Copy, Debug)]
-enum PatternToken {
-    One(CharClass),
-    Star(CharClass),
-}
-
-static MACRO_PARAM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{[A-Za-z_][A-Za-z0-9_]*\}").expect("constant macro parameter regex")
-});
-
-fn macro_pattern(template: &str) -> Vec<PatternToken> {
-    let mut tokens = Vec::new();
-    let mut last = 0;
-    for parameter in MACRO_PARAM.find_iter(template) {
-        tokens.extend(
-            template[last..parameter.start()]
-                .chars()
-                .map(|char_| PatternToken::One(CharClass::Exact(char_))),
-        );
-        tokens.push(PatternToken::Star(CharClass::Any));
-        last = parameter.end();
-    }
-    tokens.extend(
-        template[last..]
-            .chars()
-            .map(|char_| PatternToken::One(CharClass::Exact(char_))),
-    );
-    tokens
-}
-
-static GROUP_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\?P?<[A-Za-z_][A-Za-z0-9_]*>").expect("constant group-name regex")
-});
-
-fn builtin_patterns(pattern: &str) -> Vec<Vec<PatternToken>> {
-    // A group name is display metadata for `bddkit steps list`, and the
-    // tokenizer below recognizes `([^"]*)`, `(\d+)`, the method alternation,
-    // the `(?: with prefix "...")?` include-prefix suffix and the
-    // `(?: with:)?` table suffix by their literal text. Any other
-    // parenthesized construct panics rather than degrading into literal
-    // characters — a silent degradation here would quietly stop a macro from
-    // conflicting with the builtin it shadows, and `every_builtin_pattern_is_fully_tokenizable`
-    // (below) exists precisely to turn that into a loud, CI-caught failure.
-    // Stripping the names first leaves the token stream exactly as it was
-    // before the table was annotated.
-    let pattern = &*GROUP_NAME.replace_all(pattern, "");
-    const METHODS: &str = "(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)";
-    const WITH_PREFIX_SUFFIX: &str = r#"(?: with prefix "([^"]*)")?"#;
-    const WITH_SUFFIX: &str = "(?: with:)?";
-    // Optional suffixes are independent (a pattern may carry both `with
-    // prefix "..."` and `with:`), so each recognized construct expands its
-    // own axis over whatever variants the previous ones produced — a plain
-    // `if`/`else if` chain would only ever expand the first construct found
-    // and silently degrade the other into the unrecognized-`(` panic below.
-    let mut variants: Vec<String> = vec![pattern.to_string()];
-    if variants.iter().any(|v| v.contains(METHODS)) {
-        variants = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-            .iter()
-            .map(|method| pattern.replace(METHODS, method))
-            .collect();
-    }
-    if variants.iter().any(|v| v.contains(WITH_PREFIX_SUFFIX)) {
-        variants = variants
-            .iter()
-            .flat_map(|v| {
-                [r#" with prefix "([^"]*)""#, ""]
-                    .iter()
-                    .map(move |suffix| v.replace(WITH_PREFIX_SUFFIX, suffix))
-            })
-            .collect();
-    }
-    if variants.iter().any(|v| v.contains(WITH_SUFFIX)) {
-        variants = variants
-            .iter()
-            .flat_map(|v| {
-                [" with:", ""]
-                    .iter()
-                    .map(move |suffix| v.replace(WITH_SUFFIX, suffix))
-            })
-            .collect();
-    }
-    variants
-        .iter()
-        .map(|variant| {
-            let source = variant.trim_start_matches('^').trim_end_matches('$');
-            let mut tokens = Vec::new();
-            let mut rest = source;
-            while !rest.is_empty() {
-                if let Some(tail) = rest.strip_prefix(r#"([^"]*)"#) {
-                    tokens.push(PatternToken::Star(CharClass::NonQuote));
-                    rest = tail;
-                } else if let Some(tail) = rest.strip_prefix(r"(\d+)") {
-                    tokens.push(PatternToken::One(CharClass::Digit));
-                    tokens.push(PatternToken::Star(CharClass::Digit));
-                    rest = tail;
-                } else {
-                    let char_ = rest.chars().next().expect("string is not empty");
-                    if char_ == '(' || char_ == ')' {
-                        panic!(
-                            "builtin_patterns: unrecognized regex grouping construct in \
-                             pattern {source:?} — remaining unparsed text is {rest:?}. This is \
-                             the CLAUDE.md-documented silent-degradation trap: an unrecognized \
-                             construct must never be treated as a literal character, or the \
-                             macro-conflict detector goes silently blind to this pattern. Extend \
-                             this function's recognized-construct list (mirroring how `([^\"]*)`, \
-                             `(\\d+)`, the METHODS alternation and `(?: with:)?` are each \
-                             recognized by literal text) before adding a pattern shaped like this."
-                        );
-                    }
-                    tokens.push(PatternToken::One(CharClass::Exact(char_)));
-                    rest = &rest[char_.len_utf8()..];
-                }
-            }
-            tokens
-        })
-        .collect()
-}
-
-fn patterns_overlap(left: &[PatternToken], right: &[PatternToken]) -> bool {
-    let mut queue = VecDeque::from([(0usize, 0usize)]);
-    let mut visited = HashSet::new();
-    while let Some((left_pos, right_pos)) = queue.pop_front() {
-        if !visited.insert((left_pos, right_pos)) {
-            continue;
-        }
-        if left_pos == left.len() && right_pos == right.len() {
-            return true;
-        }
-        if matches!(left.get(left_pos), Some(PatternToken::Star(_))) {
-            queue.push_back((left_pos + 1, right_pos));
-        }
-        if matches!(right.get(right_pos), Some(PatternToken::Star(_))) {
-            queue.push_back((left_pos, right_pos + 1));
-        }
-        let Some(left_token) = left.get(left_pos) else {
-            continue;
-        };
-        let Some(right_token) = right.get(right_pos) else {
-            continue;
-        };
-        let (left_class, left_next) = consumed(*left_token, left_pos);
-        let (right_class, right_next) = consumed(*right_token, right_pos);
-        if classes_overlap(left_class, right_class) {
-            queue.push_back((left_next, right_next));
-        }
-    }
-    false
-}
-
-fn consumed(token: PatternToken, position: usize) -> (CharClass, usize) {
-    match token {
-        PatternToken::One(class) => (class, position + 1),
-        PatternToken::Star(class) => (class, position),
-    }
-}
-
-fn classes_overlap(left: CharClass, right: CharClass) -> bool {
-    use CharClass::{Any, Digit, Exact, NonQuote};
-    match (left, right) {
-        (Any, _)
-        | (_, Any)
-        | (NonQuote, NonQuote)
-        | (NonQuote, Digit)
-        | (Digit, NonQuote)
-        | (Digit, Digit) => true,
-        (NonQuote, Exact(char_)) | (Exact(char_), NonQuote) => char_ != '"',
-        (Digit, Exact(char_)) | (Exact(char_), Digit) => DIGIT_CHAR.is_match(&char_.to_string()),
-        (Exact(left), Exact(right)) => left == right,
-    }
 }
 
 /// Step arguments after interpolation.
@@ -1437,8 +1305,73 @@ mod tests {
     }
 
     #[test]
-    fn all_builtin_patterns_compile() {
+    fn all_builtin_expressions_compile() {
+        assert_eq!(COMPILED_BUILTINS.len(), BUILTIN_STEPS.len());
         assert!(Registry::new().is_ok());
+    }
+
+    #[test]
+    fn no_two_distinct_builtin_steps_conflict() {
+        // The include twins share a StepId: one step, declared twice.
+        for (i, (a, ca)) in BUILTIN_STEPS
+            .iter()
+            .zip(COMPILED_BUILTINS.iter())
+            .enumerate()
+        {
+            for (b, cb) in BUILTIN_STEPS
+                .iter()
+                .zip(COMPILED_BUILTINS.iter())
+                .skip(i + 1)
+            {
+                if a.id != b.id {
+                    assert!(
+                        !expression::conflicts(&ca.variants, &cb.variants),
+                        "{:?} conflicts with {:?}",
+                        a.expression,
+                        b.expression
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_typed_position_accepts_a_whole_placeholder() {
+        let reg = reg();
+        let (target, caps, params) = reg
+            .find_with_params("the response code is <<code>>")
+            .unwrap()
+            .expect("matches");
+        assert!(target == StepId::ResponseCode);
+        assert_eq!(caps, ["<<code>>"]);
+        assert_eq!(params[0].name, "code");
+        assert!(params[0].check("abc").is_err());
+        assert!(reg.find(r#"I sleep "<<n>>" seconds"#).unwrap().is_some());
+        assert!(reg.find("the response code is abc").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_method_slot_is_type_checked() {
+        let reg = reg();
+        let (_, _, params) = reg
+            .find_with_params(r#"I request "/a" using HTTP <<m>>"#)
+            .unwrap()
+            .expect("matches");
+        let method = params.iter().find(|p| p.name == "method").expect("method");
+        assert!(method.check("FETCH").is_err());
+        assert!(method.check("PATCH").is_ok());
+    }
+
+    #[test]
+    fn a_plugin_step_carries_no_parameter_types() {
+        let mut reg = Registry::new().expect("registry");
+        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, false)
+            .expect("valid pattern");
+        let (_, _, params) = reg
+            .find_with_params(r#"I upload file "a""#)
+            .unwrap()
+            .expect("matches");
+        assert!(params.is_empty());
     }
 
     #[test]
@@ -1582,22 +1515,17 @@ mod tests {
 
     #[test]
     fn a_macro_conflicting_with_a_named_builtin_is_still_rejected() {
-        // `builtin_patterns` recognizes `([^"]*)` by its literal text, and an
-        // unrecognized construct degrades into literal characters rather than
-        // failing. Naming the group without normalizing it first would silently
-        // stop this collision from being seen at all.
-        //
-        // The macro is deliberately parameterless: a `{param}` becomes a
-        // wildcard that swallows even unrecognized literals, so it would report
-        // a conflict either way. Here the BUILTIN's capture is the side that has
-        // to expand, which it can only do once it is recognized as a capture.
+        // A parameterless macro against a builtin whose capture must expand:
+        // the builtin side of the conflict check is the one under test. The
+        // YAML writes `\/ping` because an unescaped `/` in a macro template is
+        // Cucumber alternation.
         let path = std::env::temp_dir().join(format!(
             "bddkit-steps-named-group-conflict-{}.yaml",
             std::process::id()
         ));
         std::fs::write(
             &path,
-            "- step: I request \"/ping\"\n  do: [Show all variables]\n",
+            "- step: I request \"\\/ping\"\n  do: [Show all variables]\n",
         )
         .expect("write macro file");
         let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
@@ -1609,11 +1537,8 @@ mod tests {
 
     #[test]
     fn a_macro_conflicting_with_include_is_still_rejected() {
-        // Regression: `(?: with:)?` was added to the Include/IncludeScenario
-        // patterns to support the Gherkin `with:` table suffix, but
-        // `builtin_patterns` didn't know that construct and silently degraded
-        // it to literal characters — which made a macro named exactly
-        // `I include "setup.feature"` load with no conflict warning.
+        // Regression (#50): the include steps end in an optional "( with:)";
+        // a macro equal to the bare step must still be seen as shadowing it.
         let path = std::env::temp_dir().join(format!(
             "bddkit-steps-include-conflict-{}.yaml",
             std::process::id()
@@ -1629,22 +1554,18 @@ mod tests {
         let error =
             Registry::with_macros(catalog).expect_err("the macro shadows the Include builtin");
         assert!(error.contains("conflicts with builtin"), "{error}");
-    }
 
-    #[test]
-    fn every_builtin_pattern_is_fully_tokenizable() {
-        // `builtin_patterns` is only ever called (in production) from inside
-        // `validate_macros`, which only runs when a suite actually declares
-        // macros. A pattern with a construct the tokenizer can't recognize
-        // would silently degrade to literal characters, defeating conflict
-        // detection, and no test would notice unless some macro fixture
-        // happened to exercise it. Calling it directly on every entry forces
-        // that failure to surface as a panic (`builtin_patterns`'s fallback
-        // branch panics on an unrecognized `(`/`)`) regardless of whether
-        // any suite loads macros.
-        for def in BUILTIN_STEPS {
-            let _ = builtin_patterns(def.pattern);
-        }
+        std::fs::write(
+            &path,
+            "- step: \"I include \\\"setup.feature\\\" with:\"\n  do: [Show all variables]\n",
+        )
+        .expect("write macro file");
+        let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
+        std::fs::remove_file(&path).ok();
+
+        let error = Registry::with_macros(catalog)
+            .expect_err("the macro shadows the Include builtin with a table");
+        assert!(error.contains("conflicts with builtin"), "{error}");
     }
 
     #[test]
@@ -1828,6 +1749,10 @@ mod tests {
             r#"I start an SRP login as "srp""#,
             r#"I complete SRP login "srp" for "u@example.test" with password "p" salt "ab" and "cd""#,
             r#"I sign the next request with Hawk id "session-1" and key "abc""#,
+            r#"I include "a.feature""#,
+            r#"I include "a.feature" with:"#,
+            r#"I include "a.feature" with prefix "p""#,
+            r#"I include "a.feature" scenario "s" with prefix "p" with:"#,
         ];
         let r = reg();
         for s in samples {
@@ -1939,10 +1864,7 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            caps,
-            vec!["flows/register.feature".to_string(), String::new()]
-        );
+        assert_eq!(caps, vec!["flows/register.feature".to_string()]);
     }
 
     #[test]
@@ -1964,7 +1886,6 @@ mod tests {
             vec![
                 "flows/admin.feature".to_string(),
                 "Activate a user".to_string(),
-                String::new(),
             ]
         );
     }
@@ -2029,9 +1950,6 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            caps,
-            vec!["flows/register.feature".to_string(), String::new()]
-        );
+        assert_eq!(caps, vec!["flows/register.feature".to_string()]);
     }
 }

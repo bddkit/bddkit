@@ -119,21 +119,30 @@ impl Default for VarStack {
 /// and the DB layer reads it back as NULL — a single point of substitution is kept.
 pub const NULL_SENTINEL: &str = "\u{0}__bddkit_null__\u{0}";
 
-static SLOT: LazyLock<regex::Regex> = LazyLock::new(|| {
-    // <<name>> or <<function(arguments)>>
-    regex::Regex::new(r"(?u)<<([^\W\d]\w*)(?:\(([^)]*)\))?>>").expect("constant regex")
-});
+/// One whole `<<name>>` or `<<function(arguments)>>` slot, with no capture
+/// group. It is the single definition of what a slot is: `SLOT` below is built
+/// from it, and `steps::expression` accepts it in a typed parameter, so the two
+/// can never disagree about what the runner will substitute.
+pub const PLACEHOLDER: &str = r"<<[^\W\d]\w*(?:\([^)]*\))?>>";
+
+static SLOT: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(PLACEHOLDER).expect("constant regex"));
 
 /// Substitutes `<<…>>`. Applied ONLY to arguments, doc strings, and table
 /// cells — never to the whole step text, or pre-run validation would be impossible.
 pub fn interpolate(input: &str, vars: &VarStack, generator: &Generator) -> Result<String, String> {
     let mut out = String::with_capacity(input.len());
     let mut last = 0usize;
-    for c in SLOT.captures_iter(input) {
-        let m = c.get(0).expect("group 0 always exists");
+    for m in SLOT.find_iter(input) {
         out.push_str(&input[last..m.start()]);
-        let name = c.get(1).expect("group 1 is required").as_str();
-        let args = c.get(2).map(|g| g.as_str());
+        // `PLACEHOLDER` has no groups, so the name and arguments are read off
+        // the match: a name is `\w` only, so the first `(` opens the arguments,
+        // and the slot then ends in `)>>`.
+        let inner = &m.as_str()[2..m.len() - 2];
+        let (name, args) = match inner.split_once('(') {
+            Some((name, rest)) => (name, Some(&rest[..rest.len() - 1])),
+            None => (inner, None),
+        };
         let value = match (name, args) {
             ("unique", a) => generator.next(parse_kind(a.unwrap_or(""))?),
             ("uuid", _) => uuid::Uuid::now_v7().to_string(),
@@ -395,6 +404,28 @@ mod tests {
         assert_eq!(
             interpolate("<<null>>", &s, &generator()).unwrap(),
             NULL_SENTINEL
+        );
+    }
+
+    #[test]
+    fn the_placeholder_is_one_whole_slot_without_capture_groups() {
+        let re = regex::Regex::new(&format!("^(?:{PLACEHOLDER})$")).expect("valid regex");
+        for slot in [
+            "<<code>>",
+            "<<unique()>>",
+            "<<unique(token)>>",
+            "<<run_id>>",
+            "<<имя>>",
+        ] {
+            assert!(re.is_match(slot), "{slot}");
+        }
+        for text in ["<<1x>>", "<<code>>0", "<code>", "<<a b>>"] {
+            assert!(!re.is_match(text), "{text}");
+        }
+        assert_eq!(
+            re.captures_len(),
+            1,
+            "a capture group would shift a step's positional captures"
         );
     }
 }

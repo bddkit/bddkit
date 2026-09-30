@@ -1,6 +1,6 @@
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -12,12 +12,13 @@ pub struct MacroCatalog {
 #[derive(Debug)]
 pub struct MacroDef {
     pub step: String,
-    pub params: Vec<String>,
+    /// The template parsed once, as a Cucumber Expression whose untyped
+    /// parameters are `any` (`.*?`, what a macro parameter always matched).
+    pub compiled: crate::steps::expression::Compiled,
     pub exports: Vec<String>,
     pub body: Vec<MacroStep>,
     pub source: PathBuf,
     pub line: usize,
-    pub regex: Regex,
 }
 
 #[derive(Debug, Clone)]
@@ -42,9 +43,6 @@ enum RawStep {
     Docstring(BTreeMap<String, String>),
 }
 
-static PARAM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("constant macro parameter regex")
-});
 static MACRO_START: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^([ \t]*)-\s*(?:\{\s*)?(?:step|"step"|'step')\s*:"#)
         .expect("constant macro-start regex")
@@ -124,26 +122,15 @@ fn collect(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 fn compile(raw: RawMacro, source: &Path, line: usize) -> Result<MacroDef, String> {
-    let mut params = Vec::new();
-    let mut seen = HashSet::new();
-    let mut pattern = String::from("^");
-    let mut last = 0;
-    for capture in PARAM.captures_iter(&raw.step) {
-        let whole = capture.get(0).expect("group 0 always exists");
-        let name = capture.get(1).expect("group 1 is required").as_str();
-        if !seen.insert(name.to_string()) {
-            return Err(format!(
-                "macro parameter {name:?} is declared more than once in {}:{line}",
-                source.display(),
-            ));
-        }
-        pattern.push_str(&regex::escape(&raw.step[last..whole.start()]));
-        pattern.push_str("(.*?)");
-        params.push(name.to_string());
-        last = whole.end();
-    }
-    pattern.push_str(&regex::escape(&raw.step[last..]));
-    pattern.push('$');
+    // Parameter names, duplicates and types are all checked by the one parser
+    // builtins go through, so a macro and a builtin cannot read the same
+    // template syntax two different ways.
+    let compiled = crate::steps::expression::compile(&raw.step, "any").map_err(|error| {
+        format!(
+            "invalid macro template in {}:{line}: {error}",
+            source.display()
+        )
+    })?;
 
     let body = raw
         .body
@@ -176,15 +163,8 @@ fn compile(raw: RawMacro, source: &Path, line: usize) -> Result<MacroDef, String
         .collect::<Result<Vec<_>, String>>()?;
 
     Ok(MacroDef {
-        regex: Regex::new(&pattern).map_err(|error| {
-            format!(
-                "invalid macro template {:?} in {}:{line}: {error}",
-                raw.step,
-                source.display()
-            )
-        })?,
         step: raw.step,
-        params,
+        compiled,
         exports: raw.exports,
         body,
         source: source.to_path_buf(),
@@ -249,13 +229,99 @@ mod tests {
         let catalog = MacroCatalog::load(&[path]).unwrap();
         let definition = &catalog.definitions[0];
         let captures = definition
+            .compiled
             .regex
             .captures(r#"I login as "a@b.net" with password "secret""#)
             .unwrap();
+        let names: Vec<&str> = definition
+            .compiled
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
 
-        assert_eq!(definition.params, ["email", "password"]);
+        assert_eq!(names, ["email", "password"]);
         assert_eq!(captures.get(1).unwrap().as_str(), "a@b.net");
         assert_eq!(captures.get(2).unwrap().as_str(), "secret");
+    }
+
+    #[test]
+    fn a_macro_template_is_a_cucumber_expression() {
+        let path = fixture(
+            "expression",
+            "- step: 'I note (the )post/article title \"{title}\"'\n  do: [Show all variables]\n",
+        );
+
+        let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap();
+
+        for (text, title) in [
+            (r#"I note the post title "a""#, "a"),
+            (r#"I note article title "b""#, "b"),
+        ] {
+            let (target, caps) = registry.find(text).unwrap().expect(text);
+            assert_eq!(target, StepTarget::Macro(0));
+            assert_eq!(caps, [title]);
+        }
+        // An alternation spans the whole whitespace-delimited word.
+        let text = r#"I note the article title "x""#;
+        assert!(registry.find(text).unwrap().is_none(), "{text}");
+    }
+
+    #[test]
+    fn a_typed_macro_parameter_narrows_what_matches() {
+        let path = fixture(
+            "typed",
+            "- step: 'I repeat it {times:uint} times'\n  do: [Show all variables]\n",
+        );
+
+        let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap();
+
+        assert!(registry.find("I repeat it 3 times").unwrap().is_some());
+        assert!(registry.find("I repeat it <<n>> times").unwrap().is_some());
+        assert!(registry.find("I repeat it many times").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_malformed_macro_template_is_refused_at_load() {
+        let path = fixture(
+            "malformed-template",
+            "- step: 'I call {broken'\n  do: [Show all variables]\n",
+        );
+
+        let error = MacroCatalog::load(std::slice::from_ref(&path)).unwrap_err();
+
+        assert!(error.contains("does not have a matching"), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains(":1"), "{error}");
+    }
+
+    #[test]
+    fn an_unescaped_slash_in_a_template_is_no_longer_a_literal() {
+        let path = fixture(
+            "slash",
+            "- step: 'I request \"/ping\"'\n  do: [Show all variables]\n",
+        );
+
+        let catalog = MacroCatalog::load(&[path]).unwrap();
+
+        assert!(
+            !catalog.definitions[0]
+                .compiled
+                .regex
+                .is_match(r#"I request "/ping""#)
+        );
+    }
+
+    #[test]
+    fn registry_rejects_a_conflict_through_an_alternation() {
+        let path = fixture(
+            "alternation-conflict",
+            "- step: 'the response code is 200/ok'\n  do: [Show all variables]\n",
+        );
+
+        let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();
+
+        assert!(error.contains("conflicts with builtin"), "{error}");
     }
 
     #[test]

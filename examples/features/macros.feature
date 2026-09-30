@@ -30,3 +30,14 @@ Feature: domain steps declared in YAML
       | first post  | 101         |
       | second post | 101         |
       | ünïcödé 🎉  | 101         |
+
+  Scenario: a macro template with an alternation and optional text
+    When I note the article title "Hello"
+    Then variable "notedTitle" should be equal to "Hello"
+    When I note the post main title "Again"
+    Then variable "notedTitle" should be equal to "Again"
+
+  Scenario: a macro with a typed parameter, given a literal or a variable
+    Then the "/posts/1" page answers 200
+    Given set variable "missing" to "404"
+    Then the "/posts/999" page answers <<missing>>

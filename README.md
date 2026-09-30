@@ -72,14 +72,14 @@ cargo build --release
 run m4k2p9x7q3b1
   ✓ examples/features/methods.feature — scenarios: 8
   ✓ examples/features/json_matchers.feature — scenarios: 4
-  ✓ examples/features/variables.feature — scenarios: 5
+  ✓ examples/features/variables.feature — scenarios: 6
   ✓ examples/features/variable_assertions.feature — scenarios: 3
-  ✓ examples/features/macros.feature — scenarios: 6
+  ✓ examples/features/macros.feature — scenarios: 8
   ✓ examples/features/content_types.feature — scenarios: 4
   ✓ examples/features/eventual.feature — scenarios: 1
 
 run m4k2p9x7q3b1
-files: 7, scenarios: 31, failed: 0
+files: 7, scenarios: 34, failed: 0
 ```
 
 The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
@@ -206,6 +206,16 @@ An include can nest up to 16 levels deep, checked at validation time; a cycle (f
 
 **Known limitations, deliberately out of scope:**
 - Calling every scenario in a file, or every Examples row of a Scenario Outline, in one include step — would require a new step form that has not yet been designed.
+
+### Writing a macro
+
+A macro file is a YAML list of `step:` templates with a `do:` body. A template is a [Cucumber Expression](https://cucumber.io/docs/cucumber/cucumber-expressions/): `(main )` is optional text, `post/article` an alternation, and `\(`, `\/`, `\{`, `\\` mean the character itself. Parameters use a bddkit extension, because Cucumber's own parameters have a type but no name: `{title}` is a named parameter that matches any text, `{n:uint}` restricts it to a type — `uint`, `int`, `float`, `word`, or `method` (an HTTP method). The body refers to a parameter as `<<title>>`.
+
+An alternation takes the whole word between spaces, optional parts included: `(the )post/article` means `(the )post` or `article`, not an optional `the` in front of either.
+
+A typed position also accepts a whole `<<variable>>`, and the variable's value is checked against the type when the step runs: `the response code is <<expected>>` works, and a value that is not a number fails that step. The same holds for the built-in steps' own typed positions (a status code, an array length, seconds and milliseconds, the HTTP method).
+
+A literal `(`, `)`, `/`, `\` or `{` in a template must be escaped. Unescaped, a malformed template (an unclosed `{`, an invalid escape, a `/` next to a parameter as in `"/users/{id}"`) is refused at load with an error naming the file and line, and a well-formed one that no longer reads as intended (`(setup)`, `a/b`) stops the run before the first request with an "unknown step" for every caller.
 
 ## What a resource's config takes
 
@@ -367,9 +377,9 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | A runnable HTTP example | `examples/api.yaml`, `examples/features/` |
 | Every HTTP method, 404 included | `examples/features/methods.feature` |
 | JSON matchers and paths | `examples/features/json_matchers.feature` |
-| Variables: set, extract, reuse | `examples/features/variables.feature` |
+| Variables: set, extract, reuse, typed positions | `examples/features/variables.feature` |
 | Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
-| Macros, nesting, Scenario Outline | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
+| Macros, nesting, Scenario Outline, typed parameters | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
 | Non-JSON responses, form login | `examples/features/content_types.feature` |
 | Polling an assertion until it passes | `examples/features/eventual.feature` |
 | The mock API behind all of it | `examples/mocks/api-server.yaml` |
