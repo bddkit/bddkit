@@ -3,6 +3,9 @@
 # the plugin manifest's own name, and `repo` must publish releases following
 # the convention in docs/plugin-authoring.md, section 7.
 plugin:
+  - name: appium
+    repo: bddkit/bddkit-appium
+    description: Drive native Android and Windows apps through Appium as a resource group
   - name: browser
     repo: bddkit/bddkit-browser
     description: Drive a real browser through WebDriver as a resource group
