@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/bddkit/bddkit/compare/v0.2.2...v0.3.0) - 2026-10-01
+
+### Added
+
+- accept a <<variable>> in a typed step position ([#66](https://github.com/bddkit/bddkit/pull/66))
+- [**breaking**] macro templates are Cucumber Expressions ([#66](https://github.com/bddkit/bddkit/pull/66))
+- declare builtin steps as Cucumber Expressions ([#66](https://github.com/bddkit/bddkit/pull/66))
+- clean up after an interrupted run (issue #62)
+- add curl/irm install scripts for GitHub Releases
+- warn when a global variable write has no visible effect (issue #51)
+
+### Fixed
+
+- resolve nested I include paths relative to the including file (issue #76)
+- abort the interrupt listener once a run finishes normally
+
+### Other
+
+- add appium to the plugin registry
+- demonstrate typed parameters and typed-position variables in examples ([#66](https://github.com/bddkit/bddkit/pull/66))
+- compile the builtin step table once ([#66](https://github.com/bddkit/bddkit/pull/66))
+- step declarations as Cucumber Expressions, typed variables ([#66](https://github.com/bddkit/bddkit/pull/66))
+- define a <<…>> slot once, as a group-free PLACEHOLDER
+
 ## [0.2.2](https://github.com/bddkit/bddkit/compare/v0.2.1...v0.2.2) - 2026-09-28
 
 ### Added
