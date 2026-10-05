@@ -104,9 +104,9 @@ jobs:
           # the x86_64 slice cross-compiles cleanly, and the Intel `macos-13` runners
           # are being retired — a job asking for one sits in the queue indefinitely.
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-pc-windows-msvc
             os: windows-latest
 
