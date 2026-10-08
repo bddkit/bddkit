@@ -17,7 +17,7 @@ The mocks live in `examples/mocks/api-server.yaml` and are seeded into Smocker a
 |---|---|
 | `features/methods.feature` | GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, `Location`/`Allow` headers, a 404 asserted like any other answer |
 | `features/json_matchers.feature` | `@variableType`, `@regExp`, `@arrayLength`, paths into arrays, `contains` vs `equals` |
-| `features/variables.feature` | `set variable`, extraction from JSON and cookies, reuse across steps and scenarios, `<<unique()>>`, a `<<variable>>` in a typed position (an HTTP method, a status code) |
+| `features/variables.feature` | `set variable`, extraction from JSON and cookies, reuse across steps and scenarios, `<<unique()>>`, a `<<variable>>` in a typed position (an HTTP method, a status code), `Show all variables` and `Print table:` |
 | `features/variable_assertions.feature` | substring, regex and JSON assertions over a variable, extraction from a variable by JSON path or regex, and a macro in `macros/users.yaml` that publishes its extracts with `global` |
 | `features/macros.feature` | YAML-declared steps from `macros/posts.yaml`, macro calling a macro, Scenario Outline, a Cucumber Expression template with an alternation and optional text, a typed parameter (`{code:uint}`) given a literal or a `<<variable>>` |
 | `features/content_types.feature` | HTML/XML/plain-text responses, a form login |

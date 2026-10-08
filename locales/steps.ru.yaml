@@ -65,6 +65,7 @@ ShowVariable: печатает в stderr одну переменную, пада
 PrintResponseHeaders: печатает в stderr заголовки последнего ответа
 PrintResponseBody: печатает в stderr тело последнего ответа с подсветкой
 PrintResponseBodyAsPath: печатает в stderr выборку из последнего ответа по JSON-пути или XPath
+PrintTable: печатает в stderr таблицу ниже, подставив переменные и выровняв столбцы
 SrpVerifierWithSalt: вычисляет SRP-верификатор с этой солью в <prefix>_salt и <prefix>_verifier
 SrpVerifier: вычисляет SRP-верификатор со свежей солью в <prefix>_salt и <prefix>_verifier
 SrpStartLogin: начинает SRP-вход, сохраняя клиентские значения в <prefix>_a и <prefix>_A

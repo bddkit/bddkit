@@ -99,6 +99,7 @@ pub enum StepId {
     PrintResponseHeaders,
     PrintResponseBody,
     PrintResponseBodyAsPath,
+    PrintTable,
     // SRP
     SrpVerifier,
     SrpVerifierWithSalt,
@@ -669,6 +670,12 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "debug",
         r#"Print response body as "{path}""#,
         "prints one JSON path, XPath (XML) or CSS selector (HTML) selection of the last response to stderr",
+    ),
+    action(
+        StepId::PrintTable,
+        "debug",
+        "Print table:",
+        "prints the table below to stderr with variables filled in and columns aligned",
     ),
     action(
         StepId::SrpVerifierWithSalt,
@@ -1244,6 +1251,7 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::PrintResponseHeaders => debug::print_headers(w),
         StepId::PrintResponseBody => debug::print_body(w),
         StepId::PrintResponseBodyAsPath => debug::print_body_as(w, a.cap(0)),
+        StepId::PrintTable => debug::print_table(a.table.as_ref()),
         StepId::SrpVerifier => srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)),
         StepId::SrpVerifierWithSalt => {
             srp::generate_verifier(w, a.cap(0), a.cap(1), Some(a.cap(2)), a.cap(3))
