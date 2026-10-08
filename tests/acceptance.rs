@@ -803,6 +803,47 @@ fn a_macro_template_with_literal_parentheses_no_longer_matches_its_old_text() {
     assert!(stderr.contains("run not started"), "{stderr}");
 }
 
+/// `Print table:` fills `<<variables>>` in every cell, the header row too,
+/// and aligns the columns on the values after that substitution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_table_aligns_interpolated_cells_on_stderr() {
+    let base = common::spawn().await;
+    let dir = std::env::temp_dir().join(format!("bddkit-print-table-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/table.feature"),
+        "Feature: f\n  Scenario: s\n    Given set variable \"id\" to \"ord-7f3a91\"\n    And set variable \"col\" to \"статус\"\n    Then Print table:\n      | order | <<col>> |\n      | <<id>> | оплачен |\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "run",
+            "--config",
+            dir.join("cfg.yaml").to_str().expect("path is UTF-8"),
+        ])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("| order      | статус  |\n| ord-7f3a91 | оплачен |\n"),
+        "{stderr}"
+    );
+}
+
 /// `Print response body as "<path>"` cannot work without structure: for
 /// text/plain this is an explicit error, not a silent degradation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

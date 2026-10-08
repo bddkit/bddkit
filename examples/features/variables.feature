@@ -48,6 +48,10 @@ Feature: variables — setting, extracting, reusing
     # suite never collides with data an earlier run left behind.
     And variable "echoed" should be equal to "<<title>>"
     And Show all variables
+    # Only the values you pick, side by side, columns aligned.
+    And Print table:
+      | sent      | echoed     |
+      | <<title>> | <<echoed>> |
 
   Scenario: a variable filled from a response header's cookie
     Given the request form parameters are:

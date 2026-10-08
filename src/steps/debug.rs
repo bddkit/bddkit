@@ -24,6 +24,32 @@ pub fn print_headers(w: &World) -> Result<(), String> {
     Ok(())
 }
 
+/// Rows as a `| a | b |` grid, each column padded to its longest cell.
+// ponytail: width is `chars().count()`, so East Asian wide glyphs and emoji
+// misalign; reach for `unicode-width` if a suite ever prints those.
+fn grid(rows: &[Vec<String>]) -> String {
+    let widths: Vec<usize> = (0..rows.first().map_or(0, Vec::len))
+        .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))
+        .collect();
+    rows.iter()
+        .map(|r| {
+            let cells: Vec<String> = r
+                .iter()
+                .zip(&widths)
+                .map(|(cell, &width)| format!("{cell:width$}"))
+                .collect();
+            format!("| {} |", cells.join(" | "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn print_table(table: Option<&Vec<Vec<String>>>) -> Result<(), String> {
+    let rows = table.ok_or("step `Print table:` requires a table")?;
+    eprintln!("{}", grid(rows));
+    Ok(())
+}
+
 /// Naive tag-by-tag line breaking for XML/HTML with nesting-based indentation.
 /// It does not really parse the syntax (a text node containing `<` would
 /// distort the result) — good enough for debug printing; a real
@@ -151,6 +177,19 @@ mod tests {
         ];
         let table = headers_table(&headers);
         assert_eq!(table, "x-trace      : abc\ncontent-type : application/json");
+    }
+
+    #[test]
+    fn grid_pads_every_column_to_its_longest_value_counted_in_chars() {
+        let rows = vec![
+            vec!["order".to_string(), "статус".to_string()],
+            vec!["ord-7f3a91".to_string(), "оплачен".to_string()],
+            vec!["ord-1".to_string(), "".to_string()],
+        ];
+        assert_eq!(
+            grid(&rows),
+            "| order      | статус  |\n| ord-7f3a91 | оплачен |\n| ord-1      |         |"
+        );
     }
 
     #[test]

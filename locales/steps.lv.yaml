@@ -65,6 +65,7 @@ ShowVariable: izvada uz stderr vienu mainīgo un kļūdu, ja tas nav iestatīts
 PrintResponseHeaders: izvada uz stderr pēdējās atbildes galvenes
 PrintResponseBody: izvada uz stderr pēdējās atbildes saturu ar iekrāsojumu
 PrintResponseBodyAsPath: izvada uz stderr pēdējās atbildes izvēli pēc JSON ceļa vai XPath
+PrintTable: izvada uz stderr zemāk esošo tabulu ar aizvietotiem mainīgajiem un izlīdzinātām kolonnām
 SrpVerifierWithSalt: aprēķina SRP verifikatoru ar šo sāli mainīgajos <prefix>_salt un <prefix>_verifier
 SrpVerifier: aprēķina SRP verifikatoru ar jaunu sāli mainīgajos <prefix>_salt un <prefix>_verifier
 SrpStartLogin: sāk SRP pieteikšanos, saglabājot klienta vērtības <prefix>_a un <prefix>_A

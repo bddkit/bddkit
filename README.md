@@ -188,6 +188,32 @@ Text reaches a variable from more places than the response body — `I extract` 
 
 A variable that is not set fails the step, and so does a JSON step over a variable whose text is not JSON — naming the variable and the parse error, not reporting a mismatch. Every variable assertion, `should be equal to` included, fails on its first mismatch even under `I expect the next assertion to pass …`: nothing runs between two attempts, so the value cannot change and polling it would only burn the timeout.
 
+### Seeing values while debugging
+
+The `debug` group prints to stderr and changes nothing in the scenario:
+
+| Step | Prints |
+|---|---|
+| `Show "<name>" variable` | one variable, failing if it is not set |
+| `Show all variables` | every variable in scope |
+| `Print table:` (data table) | the table as written, `<<variables>>` filled in every cell, the header row included, each column as wide as its longest value |
+| `Print response headers` / `Print response body` | the last response's headers, or its body highlighted |
+| `Print response body as "<path>"` | one JSON path, XPath or CSS selector selection of the last response |
+| `I am in debug mode` / `I am not in debug mode` | turns on/off the generated SQL with its binds and timing, and plugin exchanges |
+
+```gherkin
+And Print table:
+  | order       | status          | total          |
+  | <<orderId>> | <<orderStatus>> | <<orderTotal>> |
+```
+
+```
+| order      | status | total  |
+| ord-7f3a91 | paid   | 149.90 |
+```
+
+Under `concurrency` greater than 1 this output is not part of a file's atomic report, so two files' lines can interleave; run with `concurrency: 1` while debugging.
+
 ### Including other feature files
 
 Scenarios often follow the same setup steps, and duplicating them across files gets tedious. `I include "<file>"` pulls one scenario from another feature file and runs it inline, with access to the same HTTP state, database connection, and plugin instances — giving the caller a chance to reuse setup work and inspect what it left behind. Variables are isolated: the included scenario runs in a fresh `VarStack`, so the caller's globals are invisible inside it, and only variables declared via the `@exports` tag come back.
@@ -377,7 +403,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | A runnable HTTP example | `examples/api.yaml`, `examples/features/` |
 | Every HTTP method, 404 included | `examples/features/methods.feature` |
 | JSON matchers and paths | `examples/features/json_matchers.feature` |
-| Variables: set, extract, reuse, typed positions | `examples/features/variables.feature` |
+| Variables: set, extract, reuse, typed positions, printing them | `examples/features/variables.feature` |
 | Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
 | Macros, nesting, Scenario Outline, typed parameters | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
 | Non-JSON responses, form login | `examples/features/content_types.feature` |
