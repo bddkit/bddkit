@@ -34,6 +34,10 @@ struct Instance {
     /// file, and a test counts the lines to tell that apart from one drop per
     /// run. A truncating write would leave exactly one line either way.
     drop_log: Option<String>,
+    /// How long `bddkit_drop_instance` sleeps before it writes `drop_log`, so
+    /// a host test can hold the interrupt cleanup open long enough to race a
+    /// second signal against it.
+    drop_delay_ms: u64,
 }
 
 /// Deliberately called OUTSIDE `guard`, and safe there only because it
@@ -102,12 +106,13 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_validate_config(_request: *const c_char) -> *mut c_char {
-    // This instance requires nothing: `drop_log` is the only key it reads and
-    // it is optional. The one refusal is a test switch for the case no config
-    // can reach — the manifest's own `implicit_instance` body being rejected,
-    // which is a plugin bug the host must report at load. The variable is only
-    // ever READ here, and set by a host test on the child process it spawns
-    // (`Command::env`), never with `std::env::set_var` in the test process.
+    // This instance requires nothing: `drop_log` and `drop_delay_ms` are the
+    // only keys it reads and both are optional. The one refusal is a test
+    // switch for the case no config can reach — the manifest's own
+    // `implicit_instance` body being rejected, which is a plugin bug the host
+    // must report at load. The variable is only ever READ here, and set by a
+    // host test on the child process it spawns (`Command::env`), never with
+    // `std::env::set_var` in the test process.
     guard("envelope", || {
         if std::env::var_os("BDDKIT_WORKER_FIXTURE_REJECT_CONFIG").is_some() {
             return r#"{"ok":false,"error":"rejected by the fixture on request"}"#.to_string();
@@ -125,6 +130,7 @@ pub extern "C" fn bddkit_init_instance(request: *const c_char) -> *mut c_char {
             Err(e) => return serde_json::json!({"ok": false, "error": e.to_string()}).to_string(),
         };
         let drop_log = value["config"]["drop_log"].as_str().map(str::to_string);
+        let drop_delay_ms = value["config"]["drop_delay_ms"].as_u64().unwrap_or(0);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
         let mut guard = INSTANCES.lock().expect("instances");
         guard.get_or_insert_with(HashMap::new).insert(
@@ -132,6 +138,7 @@ pub extern "C" fn bddkit_init_instance(request: *const c_char) -> *mut c_char {
             Instance {
                 counter: 0,
                 drop_log,
+                drop_delay_ms,
             },
         );
         serde_json::json!({"ok": true, "handle": handle}).to_string()
@@ -209,10 +216,15 @@ pub extern "C" fn bddkit_reset_scenario(handle: u64) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_drop_instance(handle: u64) -> *mut c_char {
     guard("envelope", move || {
-        let mut guard = INSTANCES.lock().expect("instances");
-        if let Some(instance) = guard.get_or_insert_with(HashMap::new).remove(&handle)
+        let removed = INSTANCES
+            .lock()
+            .expect("instances")
+            .get_or_insert_with(HashMap::new)
+            .remove(&handle);
+        if let Some(instance) = removed
             && let Some(path) = instance.drop_log
         {
+            std::thread::sleep(std::time::Duration::from_millis(instance.drop_delay_ms));
             // Append, and on every drop: a test counts the lines to tell one
             // drop per file apart from one drop per run. `O_APPEND` makes a
             // short write atomic, so two workers dropping at once still leave

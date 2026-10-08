@@ -667,40 +667,47 @@ fn build_registry(
     })
 }
 
-/// Waits for the operator's "please stop" signal: Ctrl-C or a CI system's
-/// polite kill on Unix, Ctrl-C or Ctrl-Break on Windows.
+/// Waits for the operator's "please stop" signal — Ctrl-C, a CI system's
+/// polite kill or a closed terminal on Unix, Ctrl-C or Ctrl-Break on Windows —
+/// and returns its name and the exit code it maps to: 128 plus the signal
+/// number, the shell convention, so a cancelled CI job (SIGTERM, 143) is not
+/// read as an operator's Ctrl-C (SIGINT, 130).
 #[cfg(unix)]
-async fn wait_for_interrupt() {
+async fn wait_for_interrupt() -> (&'static str, i32) {
     use tokio::signal::unix::{SignalKind, signal};
     let mut sigint = signal(SignalKind::interrupt()).expect("install a SIGINT handler");
     let mut sigterm = signal(SignalKind::terminate()).expect("install a SIGTERM handler");
+    let mut sighup = signal(SignalKind::hangup()).expect("install a SIGHUP handler");
     tokio::select! {
-        _ = sigint.recv() => {},
-        _ = sigterm.recv() => {},
+        _ = sigint.recv() => ("SIGINT", 130),
+        _ = sigterm.recv() => ("SIGTERM", 143),
+        _ = sighup.recv() => ("SIGHUP", 129),
     }
 }
 
 #[cfg(windows)]
-async fn wait_for_interrupt() {
+async fn wait_for_interrupt() -> (&'static str, i32) {
     use tokio::signal::windows::{ctrl_break, ctrl_c};
     let mut ctrl_c = ctrl_c().expect("install a Ctrl-C handler");
     let mut ctrl_break = ctrl_break().expect("install a Ctrl-Break handler");
     tokio::select! {
-        _ = ctrl_c.recv() => {},
-        _ = ctrl_break.recv() => {},
+        _ = ctrl_c.recv() => ("Ctrl-C", 130),
+        _ = ctrl_break.recv() => ("Ctrl-Break", 130),
     }
 }
 
 /// Runs for the lifetime of the process, spawned alongside `run_all`. On the
 /// first interrupt it stops the run from starting new work and asks every
 /// plugin to release what it holds (`Plugins::shutdown` — the same sweep a
-/// normal run does after the pool drains), then exits 130. A second interrupt
-/// during that cleanup exits immediately instead of waiting for it: "stop
-/// now" as promised in issue #62. If no interrupt ever arrives, `run` exits
-/// normally first and this task is simply dropped.
+/// normal run does after the pool drains), then exits with that signal's
+/// code. A second interrupt during that cleanup exits immediately instead of
+/// waiting for it — "stop now" as promised in issue #62 — still with the
+/// FIRST signal's code, since that is the one that ended the run. If no
+/// interrupt ever arrives, `run` exits normally first and this task is simply
+/// dropped.
 async fn handle_interrupt(ctx: Arc<runner::RunContext>, plugins: Option<Arc<plugin::Plugins>>) {
-    wait_for_interrupt().await;
-    eprintln!("\ninterrupted: stopping new work, cleaning up plugins...");
+    let (name, code) = wait_for_interrupt().await;
+    eprintln!("\ninterrupted by {name}: stopping new work, cleaning up plugins...");
     ctx.force_stop();
 
     let cleanup = async {
@@ -713,11 +720,11 @@ async fn handle_interrupt(ctx: Arc<runner::RunContext>, plugins: Option<Arc<plug
     };
     tokio::select! {
         () = cleanup => {},
-        () = wait_for_interrupt() => {
-            eprintln!("\nsecond interrupt: exiting now, without waiting for cleanup");
+        (second, _) = wait_for_interrupt() => {
+            eprintln!("\nsecond interrupt ({second}): exiting now, without waiting for cleanup");
         }
     }
-    std::process::exit(130);
+    std::process::exit(code);
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
@@ -840,7 +847,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let results = runner::run_all(chains, ctx, cfg.concurrency).await;
     // A normal finish races a signal that arrives in the gap before the
     // shutdown below: aborted here, not just left to lose the race, so a
-    // late signal can neither flip this run's exit code to 130 nor call
+    // late signal can neither flip this run's exit code to 128+N nor call
     // Plugins::shutdown a second time concurrently with the one below.
     interrupt.abort();
 
