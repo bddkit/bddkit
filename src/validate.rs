@@ -279,7 +279,7 @@ fn check_include_recursive(
 /// path holding a `<<variable>>` can only be read once it is interpolated, so
 /// the step itself reports it then. A macro body is not walked here, so a
 /// literal path inside one is also caught only at the step.
-fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), String> {
+pub(crate) fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), String> {
     if file.contains("<<") {
         return Ok(());
     }

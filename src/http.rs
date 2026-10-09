@@ -522,12 +522,12 @@ fn multipart_form(recipe: &RequestRecipe) -> Result<reqwest::multipart::Form, Re
 /// What the failure dump shows of a multipart body: text parts as
 /// `name=value`, files as name, file name, type and size — never the bytes.
 fn describe_parts(recipe: &RequestRecipe) -> String {
+    // Files first and text values cut short: the dump keeps only the first
+    // 600 characters of a body, and the file lines are the ones that matter.
     recipe
-        .form
+        .files
         .iter()
-        .flatten()
-        .map(|(name, value)| format!("{name}={value}"))
-        .chain(recipe.files.iter().map(|f| {
+        .map(|f| {
             format!(
                 "{}: {} ({}, {} bytes)",
                 f.name,
@@ -535,7 +535,14 @@ fn describe_parts(recipe: &RequestRecipe) -> String {
                 f.mime,
                 f.bytes.len()
             )
-        }))
+        })
+        .chain(
+            recipe
+                .form
+                .iter()
+                .flatten()
+                .map(|(name, value)| format!("{name}={}", truncate(value, 100))),
+        )
         .collect::<Vec<_>>()
         .join("\n    ")
 }
@@ -1140,20 +1147,23 @@ pub(crate) mod tests {
     async fn the_recorded_request_lists_parts_and_never_the_file_bytes() {
         let (base, _server) = spawn_multipart_echo().await;
         let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
-        state.set_form(vec![("meta".into(), "hello".into())]);
+        // A text value longer than the dump's body limit must not push the
+        // file lines out of it.
+        let long = "m".repeat(2000);
+        state.set_form(vec![("meta".into(), long.clone())]);
         attach(&mut state, "content", "id_front.png", b"SECRETBYTES");
         state.send("/upload", "POST").await.expect("upload");
 
         // The stub echoes the upload back, so only the request half is checked.
-        let sent = state
-            .last()
-            .and_then(|e| e.req_body.clone())
-            .expect("recorded request");
-        assert!(sent.contains("meta=hello"), "{sent}");
+        let exchange = state.last().expect("exchange");
+        let shown = exchange.to_string();
+        let sent = shown.split("← ").next().expect("request half of the dump");
         assert!(
             sent.contains("content: id_front.png (image/png, 11 bytes)"),
             "{sent}"
         );
+        assert!(sent.contains("meta=mmm"), "{sent}");
+        assert!(!sent.contains(&long), "{sent}");
         assert!(!sent.contains("SECRETBYTES"), "{sent}");
     }
 
