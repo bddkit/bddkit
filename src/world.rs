@@ -1,3 +1,4 @@
+use crate::artifacts::Artifacts;
 use crate::db::DbHandle;
 use crate::http::{Apis, HttpState};
 use crate::options::{Options, OptionsLayer};
@@ -71,6 +72,9 @@ pub struct World {
     pub plugins: crate::plugin::PluginState,
     /// Per feature file, like `vars`: `reset_scenario` does not touch it.
     workspace: Workspace,
+    /// Where this run's evidence goes; shared by every file, so a path is
+    /// unique across workers.
+    pub artifacts: Arc<Artifacts>,
     /// Non-fatal notices raised by the step just executed, drained by the
     /// runner into that step's report entry. Never survives past one step.
     pub warnings: Vec<String>,
@@ -86,6 +90,7 @@ impl World {
         srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
+        artifacts: Arc<Artifacts>,
     ) -> Self {
         let workspace = Workspace::new(generator.run_id());
         Self {
@@ -99,6 +104,7 @@ impl World {
             pending_options: None,
             plugins: crate::plugin::PluginState::new(plugins),
             workspace,
+            artifacts,
             warnings: Vec::new(),
             trace: crate::events::Trace::off(),
         }
@@ -155,6 +161,7 @@ mod tests {
             None,
             None,
             Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         );
         w.debug = true;
         w.reset_scenario();
@@ -186,6 +193,7 @@ mod tests {
             None,
             None,
             Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         );
         w.plugins.set_defaults(
             [("echo".to_string(), "a".to_string())]
@@ -212,6 +220,7 @@ mod tests {
             Some(params),
             None,
             Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         );
         w.reset_scenario();
         assert!(

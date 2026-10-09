@@ -377,6 +377,7 @@ mod tests {
             None,
             None,
             crate::options::Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         );
         w.http.store_test_exchange(crate::http::Exchange {
             method: "GET".to_string(),

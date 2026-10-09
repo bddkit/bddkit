@@ -94,6 +94,7 @@ mod tests {
             })),
             None,
             crate::options::Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         )
     }
 

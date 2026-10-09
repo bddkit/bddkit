@@ -3,7 +3,7 @@
 //! does not have: whether the resources the config names actually answer.
 
 use crate::steps::{BUILTIN_STEPS, StepTarget};
-use crate::{config, db, dirs, feature, http, unique, validate};
+use crate::{config, db, dirs, feature, http, validate};
 use serde::Serialize;
 use std::path::Path;
 
@@ -273,9 +273,8 @@ pub async fn check(
         }
     }
 
-    let generator = unique::Generator::new();
     let mut plugins_failed = false;
-    let plugins = match crate::load_plugins(config_path, &cfg, &generator, dir_env) {
+    let plugins = match crate::load_plugins(config_path, &cfg, dir_env) {
         Ok(Some(plugins)) => {
             let detail = format!(
                 "{} step(s) over {} group(s)",

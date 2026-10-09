@@ -10,10 +10,8 @@ use abi::{DispatchResult, InitRequest, OptionsJson};
 use anyhow::{Context, Result, bail};
 use library::Library;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Group names the host serves itself. A plugin claiming one of these would
 /// shadow `resources.api` or `resources.db`, so it is refused at startup.
@@ -43,8 +41,6 @@ pub struct Plugins {
     /// across plugins, so the key must carry the library index. This is what
     /// `shutdown` sweeps, including handles a panicking file never dropped.
     registry: Mutex<BTreeMap<(usize, u64), (String, String)>>,
-    artifacts_root: PathBuf,
-    artifacts_counter: AtomicUsize,
 }
 
 /// Shared across worker tasks behind an `Arc`, so losing either half has to
@@ -158,8 +154,6 @@ impl Plugins {
             defaults,
             shared: Mutex::new(BTreeMap::new()),
             registry: Mutex::new(BTreeMap::new()),
-            artifacts_root: std::env::temp_dir(),
-            artifacts_counter: AtomicUsize::new(0),
         };
 
         // Eager, cheap, no connections opened: a typo in the config must exit 2
@@ -192,12 +186,6 @@ impl Plugins {
                 .map_err(|error| anyhow::anyhow!("{origin}: {error}"))?;
         }
         Ok(plugins)
-    }
-
-    /// Where per-dispatch artifact directories are rooted. Set once from the
-    /// run id so two runs never collide.
-    pub fn set_artifacts_root(&mut self, root: PathBuf) {
-        self.artifacts_root = root;
     }
 
     /// Adds the defaults the config resolved for its own groups. Extends
@@ -328,18 +316,6 @@ impl Plugins {
             .get(&(group.to_string(), instance.to_string()))
             .map(|spec| &spec.options)
             .ok_or_else(|| undeclared(group, instance))
-    }
-
-    /// A fresh directory path per dispatch, from a process-global counter:
-    /// two workers handed the same path would overwrite each other's evidence.
-    /// The host does not create it — a plugin that writes calls `create_dir_all`
-    /// first, and most steps never write anything.
-    pub fn next_artifacts_dir(&self) -> String {
-        let index = self.artifacts_counter.fetch_add(1, Ordering::Relaxed);
-        self.artifacts_root
-            .join(format!("{index:06}"))
-            .display()
-            .to_string()
     }
 
     /// The one blocking entry point. Everything FFI happens here, so the caller
@@ -835,7 +811,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 3);
+        assert_eq!(plugins.step_count(), 4);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
@@ -1361,18 +1337,11 @@ pub(crate) mod tests {
 
     #[test]
     fn each_dispatch_gets_its_own_artifacts_dir() {
-        let plugins = Plugins::load(
-            vec![entry()],
-            &[instance("a", Some("p-"))],
-            &["echo".into()],
-            1,
-            &Options::default(),
-        )
-        .expect("loads");
-        let first = plugins.next_artifacts_dir();
-        let second = plugins.next_artifacts_dir();
+        // The allocator is the run's, not the plugins': it works with none loaded.
+        let artifacts = crate::artifacts::Artifacts::new(None, "r1").expect("resolves");
         assert_ne!(
-            first, second,
+            artifacts.next_dir(),
+            artifacts.next_dir(),
             "two workers must never share an artifact path"
         );
     }

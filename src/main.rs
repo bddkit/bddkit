@@ -1,3 +1,4 @@
+mod artifacts;
 mod config;
 mod db;
 mod dirs;
@@ -300,9 +301,7 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
     {
         let path = &resolved.path;
         let cfg = config::load(path, None)?;
-        let generator = unique::Generator::new();
-        if let Some(plugins) = load_plugins(path, &cfg, &generator, &dirs::Env::from_process(None))?
-        {
+        if let Some(plugins) = load_plugins(path, &cfg, &dirs::Env::from_process(None))? {
             kinds.extend(resource::plugin_kinds(&plugins));
         }
     }
@@ -404,6 +403,10 @@ struct RunArgs {
     /// FIFO or /dev/fd/N [default: $BDDKIT_EVENTS]
     #[arg(long)]
     events: Option<PathBuf>,
+    /// Root for the evidence files plugins write [default: $BDDKIT_ARTIFACTS_DIR,
+    /// else <temp dir>/bddkit-<run id>]
+    #[arg(long = "artifacts-dir")]
+    artifacts_dir: Option<PathBuf>,
     #[command(flatten)]
     dir: DirArgs,
     #[command(flatten)]
@@ -520,9 +523,8 @@ fn list_steps(args: ListArgs) -> Result<i32> {
     {
         let path = &resolved.path;
         let cfg = config::load(path, None)?;
-        let generator = unique::Generator::new();
         let env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
-        if let Some(plugins) = load_plugins(path, &cfg, &generator, &env)? {
+        if let Some(plugins) = load_plugins(path, &cfg, &env)? {
             rows.extend(steps::help::plugin_rows(
                 plugins.described_steps(),
                 &plugins.group_names(),
@@ -599,7 +601,6 @@ async fn main() {
 fn load_plugins(
     config_path: &std::path::Path,
     cfg: &config::Config,
-    generator: &unique::Generator,
     env: &dirs::Env,
 ) -> Result<Option<Arc<plugin::Plugins>>> {
     let groups_in_config: Vec<String> = cfg.group_names().cloned().collect();
@@ -627,7 +628,6 @@ fn load_plugins(
         }
     }
     plugins.add_defaults(defaults);
-    plugins.set_artifacts_root(std::env::temp_dir().join(format!("bddkit-{}", generator.run_id())));
     if plugins.is_empty() {
         return Ok(None);
     }
@@ -808,10 +808,20 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
         .path;
     let cfg = config::load(&config_path, cli.env.as_deref())?;
-    // Before the plugins: the artifact root is derived from the run id.
     let generator = Arc::new(unique::Generator::new());
+    let artifacts = Arc::new(artifacts::Artifacts::new(
+        cli.artifacts_dir
+            .clone()
+            // An empty value is unset, as for `BDDKIT_EVENTS`.
+            .or_else(|| {
+                std::env::var_os("BDDKIT_ARTIFACTS_DIR")
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from)
+            }),
+        generator.run_id(),
+    )?);
     let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
-    let plugins = load_plugins(&config_path, &cfg, &generator, &env)?;
+    let plugins = load_plugins(&config_path, &cfg, &env)?;
 
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
@@ -916,6 +926,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
                 "started_at_unix_ms": std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
+                "artifacts_dir": artifacts.root().display().to_string(),
                 "concurrency": cfg.concurrency,
                 "files": chains.iter().map(|chain| chain.files.len()).sum::<usize>(),
             }),
@@ -931,6 +942,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
         srp,
         plugins.clone(),
         cfg.effective_options.clone(),
+        artifacts,
         cli.fail_fast,
     );
     ctx.events = events;
