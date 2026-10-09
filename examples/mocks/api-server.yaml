@@ -173,6 +173,45 @@
     body: >
       {"status": "ok", "user": "demo"}
 
+# --- File upload: only a multipart/form-data request is accepted ---------
+
+# The body matcher needs the text field and the file part to be there, so an
+# upload that drops either fails the example.
+- request:
+    method: POST
+    path: /documents
+    headers:
+      Content-Type:
+        matcher: ShouldStartWith
+        value: "multipart/form-data; boundary="
+    body:
+      matcher: ShouldMatch
+      value: '(?s)name="metadata".*filename="id_front\.png"'
+  response:
+    status: 201
+    headers:
+      Content-Type: application/json
+    body: >
+      {"status": "stored", "documentId": "doc-42"}
+
+# Two files under one part name.
+- request:
+    method: POST
+    path: /documents/batch
+    headers:
+      Content-Type:
+        matcher: ShouldStartWith
+        value: "multipart/form-data; boundary="
+    body:
+      matcher: ShouldMatch
+      value: '(?s)filename="id_front\.png".*filename="notes\.txt"'
+  response:
+    status: 201
+    headers:
+      Content-Type: application/json
+    body: >
+      {"stored": 2}
+
 # --- Dynamic: echo back what was posted ---------------------------------
 
 - request:

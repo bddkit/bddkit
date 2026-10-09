@@ -24,6 +24,7 @@ pub enum StepId {
     SetRequestBody,
     EmptyRequestBody,
     SetFormParams,
+    AttachFile,
     RequestPath,
     RequestPathWithMethod,
     UseApi,
@@ -211,6 +212,12 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "api",
         "the request form parameters are:",
         "sends the table below as form-encoded parameters instead of a body",
+    ),
+    action(
+        StepId::AttachFile,
+        "api",
+        r#"I attach the file "{file}" to the request as "{name}""#,
+        "attaches a file, path relative to this feature file, as a multipart/form-data part",
     ),
     action(
         StepId::RequestPathWithMethod,
@@ -958,6 +965,27 @@ impl Registry {
         for (index, definition) in self.macros.iter().enumerate() {
             for step in &definition.body {
                 match self.find(&step.text)? {
+                    Some((
+                        StepTarget::Builtin {
+                            id: StepId::AttachFile,
+                            ..
+                        },
+                        caps,
+                    )) => {
+                        // Relative to the macro's own file, as at run time.
+                        let base = definition
+                            .source
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."));
+                        crate::validate::check_attached_file(&caps[0], base).map_err(|e| {
+                            format!(
+                                "{e}, in macro {:?} from {}:{}",
+                                definition.step,
+                                definition.source.display(),
+                                definition.line,
+                            )
+                        })?;
+                    }
                     Some((StepTarget::Builtin { .. }, _)) => {}
                     Some((StepTarget::Plugin { .. }, _)) => {}
                     Some((StepTarget::Macro(_), _)) if step.docstring.is_some() => {
@@ -1054,7 +1082,7 @@ pub struct Args {
 }
 
 impl Args {
-    fn cap(&self, i: usize) -> &str {
+    pub(crate) fn cap(&self, i: usize) -> &str {
         self.caps.get(i).map(String::as_str).unwrap_or("")
     }
 }
@@ -1262,6 +1290,9 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         }
         StepId::Include | StepId::IncludeScenario => {
             unreachable!("execute_step intercepts Include/IncludeScenario before calling dispatch")
+        }
+        StepId::AttachFile => {
+            unreachable!("execute_step intercepts AttachFile before calling dispatch")
         }
     };
     result.map_err(AttemptError::Fatal)
@@ -1574,6 +1605,38 @@ mod tests {
         let error = Registry::with_macros(catalog)
             .expect_err("the macro shadows the Include builtin with a table");
         assert!(error.contains("conflicts with builtin"), "{error}");
+    }
+
+    #[test]
+    fn a_macro_body_attaching_a_missing_literal_file_is_refused_at_startup() {
+        let dir =
+            std::env::temp_dir().join(format!("bddkit-steps-macro-attach-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("present.bin"), b"x").expect("write fixture");
+        let path = dir.join("m.yaml");
+        let load = |file: &str| {
+            std::fs::write(
+                &path,
+                format!(
+                    "- step: I send the document\n  do: [\"I attach the file \\\"{file}\\\" to the request as \\\"c\\\"\"]\n"
+                ),
+            )
+            .expect("write macro file");
+            Registry::with_macros(
+                MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads"),
+            )
+        };
+
+        let error = load("gone.bin").expect_err("a missing literal file is refused");
+        assert!(error.contains("gone.bin"), "{error}");
+        assert!(
+            load("present.bin").is_ok(),
+            "resolved beside the macro file"
+        );
+        assert!(
+            load("<<name>>.bin").is_ok(),
+            "a variable is left to the step"
+        );
     }
 
     #[test]

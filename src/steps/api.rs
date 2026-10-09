@@ -42,6 +42,27 @@ pub fn set_form(w: &mut World, table: Option<&Vec<Vec<String>>>) -> Result<(), S
     Ok(())
 }
 
+/// `base_dir` is the directory of the file the step is written in (the macro
+/// file for a macro body), the same anchor `I include` uses. The file is read
+/// here, not at send time, so a missing one fails at the step and a retried
+/// assertion replays the content the step saw.
+pub fn attach_file(
+    w: &mut World,
+    base_dir: &std::path::Path,
+    file: &str,
+    part: &str,
+) -> Result<(), String> {
+    let path = crate::include::join(file, base_dir);
+    let bytes = std::fs::read(&path).map_err(|e| {
+        format!(
+            "I attach the file {file:?}: cannot read {}: {e}",
+            crate::feature::display_path(&path)
+        )
+    })?;
+    w.http.attach_file(part, &path, bytes);
+    Ok(())
+}
+
 pub async fn request(w: &mut World, path: &str, method: &str) -> Result<(), String> {
     w.http.send(path, method).await
 }

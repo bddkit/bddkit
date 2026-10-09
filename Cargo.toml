@@ -32,7 +32,7 @@ gherkin = "0.16"
 hmac = "0.12"
 libloading = "0.8"
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "test-util"] }
-reqwest = { version = "0.13", features = ["json", "form"] }
+reqwest = { version = "0.13", features = ["json", "form", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml_ng = "0.10"
@@ -41,6 +41,7 @@ cucumber-expressions = { version = "0.5", features = ["into-regex"] }
 clap = { version = "4.6", features = ["derive"] }
 uuid = { version = "1.24", features = ["v7"] }
 url = "2"
+mime_guess = "2"
 anyhow = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "any", "postgres", "mysql"] }
 sxd-document = "0.3.2"

@@ -75,11 +75,11 @@ run m4k2p9x7q3b1
   ✓ examples/features/variables.feature — scenarios: 6
   ✓ examples/features/variable_assertions.feature — scenarios: 3
   ✓ examples/features/macros.feature — scenarios: 8
-  ✓ examples/features/content_types.feature — scenarios: 4
+  ✓ examples/features/content_types.feature — scenarios: 6
   ✓ examples/features/eventual.feature — scenarios: 1
 
 run m4k2p9x7q3b1
-files: 7, scenarios: 34, failed: 0
+files: 7, scenarios: 36, failed: 0
 ```
 
 The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
@@ -170,6 +170,20 @@ api:
 ```
 
 `--json` emits the same listing machine-readably, with the raw pattern included. `[--config <path>]` also loads that suite's plugins, so their steps appear under their own groups — resolved the same way as `run`'s, including the `bddkit.yaml`/`bddkit.yml` default, so inside a suite directory this shows that suite's steps with no flag at all; `--no-config` skips that and always answers with builtins only, which also sidesteps a broken default config. Descriptions follow `--lang`, else `$BDDKIT_LANG`, else English; `ru` and `lv` ship with the binary, and an untranslated step falls back to English rather than to a blank line.
+
+### Uploading a file
+
+`I attach the file "<path>" to the request as "<name>"` adds a file part to the request being built; with the form-parameters step the request goes out as `multipart/form-data`, the parameters as its text parts. With no attachment, form parameters stay URL-encoded.
+
+```gherkin
+Given the request form parameters are:
+  | name     | value                                   |
+  | metadata | {"idDocType":"ID_CARD","country":"DEU"} |
+And I attach the file "fixtures/id_front.png" to the request as "content"
+When I request "/applicants/<<applicantId>>/documents" using HTTP POST
+```
+
+The path is relative to the feature file the step is written in — the rule `I include` uses — and `<<variables>>` work in the path and the part name. Attach more than once to send several files, under one part name or several. The part's content type comes from the file extension, `application/octet-stream` when unknown. The multipart `Content-Type` replaces any set by `default_headers` or a header step. A literal path that does not exist is reported by `bddkit doctor` and stops `bddkit run` before the first request (exit 2); a path holding a `<<variable>>` fails at the step. The file is read when the step runs, so a retried assertion replays the same content, and a failure dump lists each part's name, file name, type and size, never its bytes. Hawk signing of a multipart request is refused. The whole file is held in memory.
 
 ### Asserting over a variable
 
@@ -406,7 +420,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | Variables: set, extract, reuse, typed positions, printing them | `examples/features/variables.feature` |
 | Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
 | Macros, nesting, Scenario Outline, typed parameters | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
-| Non-JSON responses, form login | `examples/features/content_types.feature` |
+| Non-JSON responses, form login, file upload | `examples/features/content_types.feature` |
 | Polling an assertion until it passes | `examples/features/eventual.feature` |
 | The mock API behind all of it | `examples/mocks/api-server.yaml` |
 | Every DB step, worked through | `examples/db-features/db.feature` |
