@@ -3366,3 +3366,1065 @@ async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup()
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("fixtures/gone.png"), "{stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// `run --events`
+// ---------------------------------------------------------------------------
+
+/// A project under a fresh directory, returning the config path. `features`
+/// are `(file name, content)` pairs; `macros` is one YAML file, if any. With a
+/// `base` the config declares one API; without, none.
+fn write_events_project(
+    name: &str,
+    base: &str,
+    features: &[(&str, &str)],
+    macros: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-events-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    for (file, content) in features {
+        std::fs::write(dir.join("features").join(file), content).expect("write feature");
+    }
+    let mut config = format!("paths: [{}]\n", path_text(&dir.join("features")));
+    if let Some(macros) = macros {
+        std::fs::create_dir_all(dir.join("macros")).expect("mkdir");
+        std::fs::write(dir.join("macros/m.yaml"), macros).expect("write macros");
+        config.push_str(&format!(
+            "macro_paths: [{}]\n",
+            path_text(&dir.join("macros"))
+        ));
+    }
+    if base.is_empty() {
+        config.push_str("resources:\n  api: {}\n");
+    } else {
+        config.push_str(&format!(
+            "resources:\n  api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"
+        ));
+    }
+    let cfg = dir.join("cfg.yaml");
+    std::fs::write(&cfg, config).expect("write config");
+    cfg
+}
+
+fn path_text(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+fn read_stream(path: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .expect("the stream exists")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line:?}")))
+        .collect()
+}
+
+/// `bddkit run --config <cfg> --events <dir>/events.ndjson <extra…>`, and the
+/// stream it wrote.
+fn run_with_events(
+    cfg: &std::path::Path,
+    extra: &[&str],
+) -> (std::process::Output, Vec<Value>, std::path::PathBuf) {
+    let events = cfg.with_file_name("events.ndjson");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(cfg)
+        .arg("--events")
+        .arg(&events)
+        .args(extra)
+        .output()
+        .expect("run bddkit");
+    let stream = read_stream(&events);
+    (out, stream, events)
+}
+
+fn of_type<'a>(stream: &'a [Value], kind: &str) -> Vec<&'a Value> {
+    stream.iter().filter(|e| e["type"] == kind).collect()
+}
+
+#[test]
+fn an_events_path_is_truncated_before_the_config_is_read() {
+    let cfg = write_events_project("broken", "", &[], None);
+    std::fs::write(
+        &cfg,
+        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n",
+    )
+    .expect("write config");
+    std::fs::write(
+        cfg.with_file_name("events.ndjson"),
+        "{\"type\":\"yesterday\"}\n",
+    )
+    .expect("stale stream");
+
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stream.is_empty(), "{stream:?}");
+}
+
+#[test]
+fn a_refused_run_leaves_an_empty_events_file() {
+    let cfg = write_events_project(
+        "refused",
+        "",
+        &[(
+            "a.feature",
+            "Feature: a\n  Scenario: s\n    Given a step nobody defined\n",
+        )],
+        None,
+    );
+    std::fs::write(
+        cfg.with_file_name("events.ndjson"),
+        "{\"type\":\"yesterday\"}\n",
+    )
+    .expect("stale stream");
+
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stream.is_empty(), "{stream:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_line_of_the_stream_is_one_json_object_with_a_rising_seq() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-lines");
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+
+    assert!(stream.len() > 6, "{stream:?}");
+    for (index, event) in stream.iter().enumerate() {
+        assert!(event.is_object(), "{event}");
+        assert_eq!(event["seq"], index, "{event}");
+        assert!(event["type"].is_string(), "{event}");
+        if index > 0 {
+            assert!(
+                event["t"].as_u64() >= stream[index - 1]["t"].as_u64(),
+                "t goes back: {event}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stream_opens_with_run_started_and_closes_with_run_finished() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-ends");
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let first = &stream[0];
+    assert_eq!(first["type"], "run_started");
+    assert_eq!(first["schema"], 1);
+    assert_eq!(first["bddkit"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(first["files"], 1);
+    assert!(first["started_at_unix_ms"].as_u64().unwrap_or(0) > 1_700_000_000_000);
+    let run_id = first["run_id"].as_str().expect("run_id");
+    assert!(stdout.contains(&format!("run {run_id}")), "{stdout}");
+
+    let last = stream.last().expect("lines");
+    assert_eq!(last["type"], "run_finished");
+    assert_eq!(last["exit"], 1, "one scenario of the project fails");
+    assert_eq!(last.get("signal"), None);
+    assert_eq!(of_type(&stream, "run_finished").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_files_running_together_interleave_in_the_stream() {
+    // The barrier opens only when both requests are in flight, so both
+    // `step_started` lines must precede both `step_finished` ones — which a
+    // stream buffered until its file ends could never show.
+    let base = common::spawn_barrier(2).await;
+    let dir = std::env::temp_dir().join(format!("bddkit-events-barrier-{}", std::process::id()));
+    let cfg = write_parallel_fixture(&dir, &base, 2, "");
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let barrier = |kind: &str| -> Vec<u64> {
+        of_type(&stream, kind)
+            .into_iter()
+            .filter(|e| {
+                e["step"] == 1 // the request; step 0 sets a variable
+            })
+            .map(|e| e["seq"].as_u64().expect("seq"))
+            .collect()
+    };
+    let (started, finished) = (barrier("step_started"), barrier("step_finished"));
+    assert_eq!((started.len(), finished.len()), (2, 2), "{stream:?}");
+    assert!(
+        started.iter().max() < finished.iter().min(),
+        "the second file started its request only after the first one finished: {stream:?}"
+    );
+    let files: std::collections::HashSet<_> = of_type(&stream, "file_started")
+        .iter()
+        .map(|e| e["file"].as_str().expect("file").to_string())
+        .collect();
+    assert_eq!(files.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steps_after_a_failure_are_reported_as_skipped() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-skipped");
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+
+    let second: Vec<_> = stream.iter().filter(|e| e["scenario"] == 1).collect();
+    let kinds: Vec<_> = second
+        .iter()
+        .map(|e| (e["type"].as_str().unwrap_or(""), e["step"].as_u64()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("scenario_started", None),
+            ("step_started", Some(0)),
+            ("step_finished", Some(0)),
+            ("step_started", Some(1)),
+            ("step_finished", Some(1)),
+            ("step_started", Some(2)),
+            ("step_finished", Some(2)),
+            ("step_skipped", Some(3)),
+            ("scenario_finished", None),
+        ]
+    );
+    assert_eq!(second[6]["status"], "failed");
+    assert_eq!(second[7]["text"], "the response code is 200");
+    assert_eq!(second[8]["status"], "failed");
+}
+
+#[test]
+fn outline_rows_get_distinct_example_ordinals() {
+    let cfg = write_events_project(
+        "outline",
+        "",
+        &[(
+            "o.feature",
+            "Feature: o\n  Scenario: plain\n    Given set variable \"x\" to \"1\"\n\n  Scenario Outline: rows\n    Given set variable \"x\" to \"<n>\"\n\n    Examples:\n      | n |\n      | 1 |\n      | 2 |\n\n    Examples:\n      | n |\n      | 3 |\n",
+        )],
+        None,
+    );
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    assert_eq!(out.status.code(), Some(0));
+    let started = of_type(&stream, "scenario_started");
+    assert_eq!(started.len(), 4);
+    assert_eq!(started[0].get("example"), None, "a plain scenario has none");
+    let rows: Vec<_> = started[1..]
+        .iter()
+        .map(|e| {
+            (
+                e["scenario"].as_u64(),
+                e["example"].as_u64(),
+                e["line"].as_u64(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (Some(1), Some(0), Some(5)),
+            (Some(2), Some(1), Some(5)),
+            (Some(3), Some(2), Some(5))
+        ]
+    );
+}
+
+#[test]
+fn a_macro_body_step_is_an_event_with_its_caller_as_parent() {
+    let cfg = write_events_project(
+        "macro",
+        "",
+        &[(
+            "m.feature",
+            "Feature: m\n  Scenario: s\n    Given I remember two things\n",
+        )],
+        Some(
+            "# a comment, so the definition is not on line 1\n\n- step: 'I remember two things'\n  do:\n    - set variable \"a\" to \"1\"\n    - set variable \"b\" to \"2\"\n",
+        ),
+    );
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    assert_eq!(out.status.code(), Some(0));
+    let started = of_type(&stream, "step_started");
+    assert_eq!(started.len(), 3, "{stream:?}");
+    assert_eq!(
+        (started[0]["step"].as_u64(), started[0].get("parent")),
+        (Some(0), None)
+    );
+    for (position, child) in started[1..].iter().enumerate() {
+        assert_eq!(child["step"], position + 1);
+        assert_eq!(child["parent"], 0);
+        assert_eq!(child["index"], position);
+        assert_eq!(child["keyword"], "");
+        assert_eq!(child["line"], 3, "the definition's line: {child}");
+        assert!(
+            child["source"]
+                .as_str()
+                .expect("source")
+                .ends_with("macros/m.yaml")
+        );
+    }
+    // The caller closes after its body.
+    let finished: Vec<_> = of_type(&stream, "step_finished")
+        .iter()
+        .map(|e| e["step"].as_u64())
+        .collect();
+    assert_eq!(finished, [Some(1), Some(2), Some(0)]);
+}
+
+#[test]
+fn an_included_step_is_an_event_with_its_own_source_and_line() {
+    let dir = build_include_project(
+        "events-include",
+        &[
+            (
+                "features/target.feature",
+                "tests/features/include/target.feature",
+            ),
+            (
+                "features/caller.feature",
+                "tests/features/include/caller.feature",
+            ),
+        ],
+    );
+    let events = dir.join("events.ndjson");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml", "--events"])
+        .arg(&events)
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // caller.feature sorts before target.feature, and runs as its own file.
+    let stream = read_stream(&events);
+    let caller = of_type(&stream, "step_started")
+        .into_iter()
+        .filter(|e| {
+            e["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with("caller.feature"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        caller.len(),
+        3,
+        "include, the included step, the assertion: {caller:?}"
+    );
+    let included = caller[1];
+    assert_eq!(included["parent"], 0);
+    assert_eq!(included["line"], 4, "its own line in the included file");
+    assert!(
+        included["source"]
+            .as_str()
+            .expect("source")
+            .ends_with("target.feature")
+    );
+    assert_eq!(included["text"], "set variable \"userId\" to \"abc123\"");
+    assert_eq!(caller[2].get("parent"), None, "back at the top level");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stream_and_the_junit_report_agree_on_every_total() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-totals");
+    std::fs::write(
+        cfg.with_file_name("features/second.feature"),
+        "Feature: second\n  Scenario: one\n    When I request \"/ping\"\n    Then the response code is 404\n\n  Scenario: two\n    When I request \"/ping\"\n",
+    )
+    .expect("second feature");
+    let junit = cfg.with_file_name("junit.xml");
+    let (_, stream, _) = run_with_events(&cfg, &["--junit", junit.to_str().expect("UTF-8")]);
+
+    let xml = std::fs::read_to_string(&junit).expect("junit");
+    let package = sxd_document::parser::parse(&xml).expect("junit parses");
+    let value = |xpath: &str| {
+        sxd_xpath::evaluate_xpath(&package.as_document(), xpath)
+            .expect("xpath")
+            .string()
+    };
+    let last = stream.last().expect("lines");
+    assert_eq!(last["files"].to_string(), value("count(//testsuite)"));
+    assert_eq!(last["scenarios"].to_string(), value("count(//testcase)"));
+    assert_eq!(last["failed"].to_string(), value("count(//failure)"));
+    assert_eq!(
+        (
+            last["files"].as_u64(),
+            last["scenarios"].as_u64(),
+            last["failed"].as_u64()
+        ),
+        (Some(2), Some(4), Some(2))
+    );
+    for suite in of_type(&stream, "file_finished") {
+        let file = suite["file"].as_str().expect("file");
+        let name = file.rsplit('/').next().expect("name");
+        assert_eq!(
+            suite["failed"].to_string(),
+            value(&format!(
+                "string(//testsuite[contains(@name,'{name}')]/@failures)"
+            )),
+            "{suite}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_without_events_prints_the_same_console_output() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-console");
+    let events = cfg.with_file_name("events.ndjson");
+    let normalised = |out: &std::process::Output| {
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let run_id = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("run "))
+            .expect("the run id line")
+            .to_string();
+        (stdout.replace(&run_id, "<run>"), out.status.code())
+    };
+    let plain = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .output()
+        .expect("run bddkit");
+    let streamed = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&events)
+        .output()
+        .expect("run bddkit");
+
+    assert_eq!(normalised(&plain), normalised(&streamed));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_null_sentinel_in_a_failure_is_written_as_the_null_slot() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-null");
+    let (_, stream, events) = run_with_events(&cfg, &[]);
+
+    let failure = of_type(&stream, "scenario_finished")
+        .into_iter()
+        .find_map(|e| e["failure"].as_str())
+        .expect("the failing scenario carries its failure");
+    assert!(failure.contains("<<null>>"), "{failure}");
+    let raw = std::fs::read(&events).expect("read");
+    assert!(!raw.contains(&0), "no NUL byte reaches the stream");
+    assert!(
+        !String::from_utf8_lossy(&raw).contains("\\u0000"),
+        "nor its JSON escape"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_events_path_can_come_from_the_environment_and_the_flag_wins() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-env");
+    let from_env = cfg.with_file_name("from-env.ndjson");
+    let from_flag = cfg.with_file_name("from-flag.ndjson");
+
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .env("BDDKIT_EVENTS", &from_env)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(read_stream(&from_env)[0]["type"], "run_started");
+
+    let _ = std::fs::remove_file(&from_env);
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&from_flag)
+        .env("BDDKIT_EVENTS", &from_env)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(read_stream(&from_flag)[0]["type"], "run_started");
+    assert!(
+        !from_env.exists(),
+        "the flag wins; the variable is not opened"
+    );
+
+    // A templated `BDDKIT_EVENTS=` is "off", not a path to fail on.
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .env("BDDKIT_EVENTS", "")
+        .output()
+        .expect("run bddkit");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The reader opens first and blocks until the run opens its end; end-of-file
+/// would come early if the path were opened, closed and opened again.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_can_be_written_to_a_fifo() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-fifo");
+    let fifo = cfg.with_file_name("events.fifo");
+    mkfifo(&fifo);
+
+    let reader = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || std::fs::read_to_string(fifo).expect("read the fifo"))
+    };
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&fifo)
+        .output()
+        .expect("run bddkit");
+    let text = reader.join().expect("reader");
+
+    assert_eq!(out.status.code(), Some(1));
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+        .collect();
+    assert_eq!(lines[0]["type"], "run_started");
+    assert_eq!(lines.last().expect("lines")["type"], "run_finished");
+}
+
+/// `/dev/full` opens for writing and fails every write with ENOSPC.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stream_that_cannot_be_written_turns_the_exit_code_to_two() {
+    let cfg = write_events_project(
+        "full",
+        "",
+        &[(
+            "a.feature",
+            "Feature: a\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        )],
+        None,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .args(["--events", "/dev/full"])
+        .output()
+        .expect("run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stdout}\n{stderr}");
+    assert!(stderr.contains("cannot write the events file"), "{stderr}");
+    assert!(
+        stdout.contains("failed: 0"),
+        "the run itself completed: {stdout}"
+    );
+}
+
+/// A run held in a `sleep` is interrupted once its first step is on disk.
+/// Whatever the files in flight emit after the signal, the last line of the
+/// stream is the terminator, and there is exactly one.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_run_ends_its_stream_with_the_signal() {
+    for (signal, code, name) in [
+        ("INT", 130, "SIGINT"),
+        ("TERM", 143, "SIGTERM"),
+        ("HUP", 129, "SIGHUP"),
+    ] {
+        let feature = "Feature: held\n  Scenario: s\n    Given I sleep \"10\" seconds\n";
+        let cfg = write_events_project(
+            &format!("signal-{signal}"),
+            "",
+            &[("a.feature", feature), ("b.feature", feature)],
+            None,
+        );
+        let events = cfg.with_file_name("events.ndjson");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["run", "--config"])
+            .arg(&cfg)
+            .arg("--events")
+            .arg(&events)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn bddkit");
+
+        // Both files are inside their sleep when the signal lands.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::fs::read_to_string(&events)
+            .map_or(0, |text| text.matches("step_started").count())
+            < 2
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the steps never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let sent = Command::new("kill")
+            .args([&format!("-{signal}"), &child.id().to_string()])
+            .status()
+            .expect("kill");
+        assert!(sent.success());
+        let status = child.wait().expect("wait");
+
+        assert_eq!(status.code(), Some(code), "{name}");
+        let stream = read_stream(&events);
+        let last = stream.last().expect("lines");
+        assert_eq!(last["type"], "run_finished", "{name}: {stream:?}");
+        assert_eq!(last["signal"], name);
+        assert_eq!(last["exit"], code);
+        assert_eq!(of_type(&stream, "run_finished").len(), 1, "{name}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_reports_the_events_path() {
+    let base = common::spawn().await;
+    let cfg = write_doctor_project(
+        "doctor-events",
+        &base,
+        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let events = cfg.with_file_name("out/events.ndjson");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&events)
+        .output()
+        .expect("run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("reports"), "{stdout}");
+    assert!(stdout.contains("events.ndjson"), "{stdout}");
+    assert_eq!(std::fs::read_to_string(&events).expect("created"), "");
+
+    // A path that cannot be created is a failed row, exit 1.
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(cfg.join("events.ndjson"))
+        .output()
+        .expect("run bddkit");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("✗ reports"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// Opening a FIFO for writing blocks until a reader shows up, and there is
+/// none: a doctor that opened it would hang here.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_leaves_an_events_path_that_is_not_a_regular_file_unopened() {
+    let base = common::spawn().await;
+    let cfg = write_doctor_project(
+        "doctor-events-fifo",
+        &base,
+        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let fifo = cfg.with_file_name("events.fifo");
+    mkfifo(&fifo);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&fifo)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn bddkit");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while child.try_wait().expect("poll").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("doctor is blocked opening the FIFO");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().expect("output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("left unopened"), "{stdout}");
+}
+
+fn mkfifo(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    assert!(
+        Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
+}
+
+/// `run` would exit 2 on a directory, so `doctor` must not call it fine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_refuses_an_events_path_that_is_a_directory() {
+    let base = common::spawn().await;
+    let cfg = write_doctor_project(
+        "doctor-events-dir",
+        &base,
+        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let dir = cfg.with_file_name("a-directory");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&dir)
+        .output()
+        .expect("run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("✗ reports"), "{stdout}");
+}
+
+/// A reader that holds the FIFO open and never reads stalls the writer once the
+/// pipe's buffer is full. The run still completes — the channel is unbounded —
+/// but its last step, waiting for the writer, must not make it unkillable.
+#[cfg(unix)]
+#[test]
+fn a_second_signal_stops_a_run_whose_stream_reader_has_stalled() {
+    use std::io::BufRead;
+
+    let steps = "    Given set variable \"x\" to \"1\"\n".repeat(400);
+    let cfg = write_events_project(
+        "stalled",
+        "",
+        &[("a.feature", &format!("Feature: a\n  Scenario: s\n{steps}"))],
+        None,
+    );
+    let fifo = cfg.with_file_name("events.fifo");
+    mkfifo(&fifo);
+    // `exec` keeps the pid: killing the child kills the sleep itself.
+    let mut reader = Command::new("sh")
+        .args(["-c", "exec sleep 120 < \"$0\""])
+        .arg(&fifo)
+        .spawn()
+        .expect("spawn the stalled reader");
+    let mut run = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&fifo)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn bddkit");
+
+    // The summary is printed before the stream is closed: the run is now in
+    // the tail that waits for the writer.
+    let stdout = run.stdout.take().expect("stdout");
+    let summary = std::io::BufReader::new(stdout)
+        .lines()
+        .map_while(Result::ok)
+        .any(|line| line.starts_with("files:"));
+    assert!(summary, "the run never printed its summary");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        run.try_wait().expect("poll").is_none(),
+        "the stream is over 64 KiB, so the writer is stalled and the run waits for it"
+    );
+
+    // A first signal only says "still writing": the queued lines are not
+    // thrown away on one Ctrl-C.
+    let pid = run.id().to_string();
+    let signal = |name: &str| {
+        let sent = Command::new("kill")
+            .args([name, &pid])
+            .status()
+            .expect("kill");
+        assert!(sent.success());
+    };
+    signal("-TERM");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        run.try_wait().expect("poll").is_none(),
+        "one signal must not drop the stream still being written"
+    );
+    // A second one is "stop now", with the first one's code.
+    signal("-INT");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = run.try_wait().expect("poll") {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = run.kill();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let _ = reader.kill();
+    let _ = reader.wait();
+    let _ = run.wait();
+
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(143),
+        "a second signal must stop a run that is only waiting for its stream"
+    );
+}
+
+/// The handlers are registered before `run <id>` is printed, so a signal sent
+/// the moment that line is readable is queued even if the handler task has not
+/// been polled yet — it must end the stream with the signal, never leave it
+/// holding `run_started` alone. A race cannot be forced, so this repeats it:
+/// before the handlers were registered up front, a SIGTERM landing in that
+/// window killed the process outright.
+#[cfg(unix)]
+#[test]
+fn a_signal_right_after_the_run_id_still_terminates_the_stream() {
+    use std::io::BufRead;
+
+    let cfg = write_events_project(
+        "early-signal",
+        "",
+        &[(
+            "a.feature",
+            "Feature: a\n  Scenario: s\n    Given I sleep \"10\" seconds\n",
+        )],
+        None,
+    );
+    let events = cfg.with_file_name("events.ndjson");
+    for attempt in 0..3 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["run", "--config"])
+            .arg(&cfg)
+            .arg("--events")
+            .arg(&events)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn bddkit");
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("stdout"))
+            .read_line(&mut first)
+            .expect("the run id line");
+        assert!(first.starts_with("run "), "{first:?}");
+        let sent = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .expect("kill");
+        assert!(sent.success());
+        let status = child.wait().expect("wait");
+
+        assert_eq!(status.code(), Some(143), "attempt {attempt}");
+        let stream = read_stream(&events);
+        let last = stream.last().expect("a stream");
+        assert_eq!(
+            last["type"], "run_finished",
+            "attempt {attempt}: {stream:?}"
+        );
+        assert_eq!(last["signal"], "SIGTERM", "attempt {attempt}");
+    }
+}
+
+/// `files` feature files of `scenarios` scenarios of `steps` steps each, none
+/// of which touches the network: the cost is the runner and the stream.
+fn load_features(files: usize, scenarios: usize, steps: usize) -> Vec<(String, String)> {
+    let body = "    Given set variable \"x\" to \"1\"\n".repeat(steps);
+    (0..files)
+        .map(|file| {
+            let mut text = format!("Feature: load {file}\n");
+            for scenario in 0..scenarios {
+                text.push_str(&format!("  Scenario: s{scenario}\n{body}"));
+            }
+            (format!("f{file:04}.feature"), text)
+        })
+        .collect()
+}
+
+/// Four workers, not the default eight: a load test must not take the CPU the
+/// timing-sensitive tests running beside it are counting on.
+fn write_load_project(name: &str, features: &[(String, String)]) -> std::path::PathBuf {
+    let pairs: Vec<(&str, &str)> = features
+        .iter()
+        .map(|(file, text)| (file.as_str(), text.as_str()))
+        .collect();
+    let cfg = write_events_project(name, "", &pairs, None);
+    let mut config = std::fs::read_to_string(&cfg).expect("read config");
+    config.push_str("concurrency: 4\n");
+    std::fs::write(&cfg, config).expect("write config");
+    cfg
+}
+
+/// What holds for any stream, even one cut short: every line parsed (the
+/// reader did that), `seq` has no gap and `t` never goes back.
+fn assert_stream_is_ordered(stream: &[Value]) {
+    for (index, event) in stream.iter().enumerate() {
+        assert_eq!(event["seq"], index, "a gap or a repeat in seq: {event}");
+        if index > 0 {
+            assert!(
+                event["t"].as_u64() >= stream[index - 1]["t"].as_u64(),
+                "t goes back: {event}"
+            );
+        }
+    }
+}
+
+/// A stream that ended: the only `run_finished` is the last line.
+fn assert_stream_is_sound(stream: &[Value]) {
+    assert_stream_is_ordered(stream);
+    assert_eq!(of_type(stream, "run_finished").len(), 1);
+    assert_eq!(stream.last().expect("lines")["type"], "run_finished");
+}
+
+/// 40 files x 2 scenarios x 20 steps, four at a time: enough volume for the
+/// ordering to mean something, a fraction of a second to run. That the files
+/// really overlap is the barrier test's job, which proves it without timing.
+#[test]
+fn a_wide_run_streams_every_event_in_order() {
+    let (files, scenarios, steps) = (40, 2, 20);
+    let cfg = write_load_project("load", &load_features(files, scenarios, steps));
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert_stream_is_sound(&stream);
+    assert!(
+        stdout.contains(&format!(
+            "files: {files}, scenarios: {}, failed: 0",
+            files * scenarios
+        )),
+        "{stdout}"
+    );
+    let last = stream.last().expect("lines");
+    assert_eq!(
+        (
+            last["files"].as_u64(),
+            last["scenarios"].as_u64(),
+            last["failed"].as_u64()
+        ),
+        (
+            Some(files as u64),
+            Some((files * scenarios) as u64),
+            Some(0)
+        )
+    );
+    let total_steps = files * scenarios * steps;
+    assert_eq!(of_type(&stream, "step_started").len(), total_steps);
+    assert_eq!(of_type(&stream, "step_finished").len(), total_steps);
+
+    // One file's lines are in causal order, whatever the others were doing.
+    let mut by_file: std::collections::HashMap<&str, Vec<&Value>> =
+        std::collections::HashMap::new();
+    for event in &stream {
+        if let Some(file) = event["file"].as_str() {
+            by_file.entry(file).or_default().push(event);
+        }
+    }
+    assert_eq!(by_file.len(), files);
+    for (file, events) in &by_file {
+        assert_eq!(events[0]["type"], "file_started", "{file}");
+        assert_eq!(
+            events.last().expect("events")["type"],
+            "file_finished",
+            "{file}"
+        );
+        let (mut in_scenario, mut open) = (false, 0_i32);
+        for event in events {
+            match event["type"].as_str().expect("type") {
+                "scenario_started" => {
+                    assert!(!in_scenario, "{file}: a scenario inside a scenario");
+                    in_scenario = true;
+                }
+                "step_started" => {
+                    assert!(in_scenario, "{file}: a step outside a scenario");
+                    open += 1;
+                }
+                "step_finished" => {
+                    assert!(open > 0, "{file}: a step closed twice");
+                    open -= 1;
+                }
+                "scenario_finished" => {
+                    assert!(in_scenario && open == 0, "{file}: closed with a step open");
+                    in_scenario = false;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// An anchor file holds the run in a sleep, so when the first busy file has
+/// finished the signal always finds the handler first to the claim and other
+/// files still emitting. Nothing here depends on how fast the machine is.
+#[cfg(unix)]
+#[test]
+fn interrupting_a_busy_run_leaves_a_terminated_stream() {
+    let mut features = load_features(40, 1, 50);
+    features.push((
+        "anchor.feature".into(),
+        "@priority(1)\nFeature: anchor\n  Scenario: hold\n    Given I sleep \"10\" seconds\n"
+            .into(),
+    ));
+    let cfg = write_load_project("load-signal", &features);
+    let events = cfg.with_file_name("events.ndjson");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&events)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn bddkit");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !std::fs::read_to_string(&events).is_ok_and(|text| text.contains("file_finished")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no file ever finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let sent = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(sent.success());
+    let status = child.wait().expect("wait");
+
+    assert_eq!(status.code(), Some(143));
+    let stream = read_stream(&events);
+    assert_stream_is_sound(&stream);
+    let last = stream.last().expect("lines");
+    assert_eq!(
+        (last["signal"].as_str(), last["exit"].as_u64()),
+        (Some("SIGTERM"), Some(143))
+    );
+    assert_eq!(
+        last["files"].as_u64(),
+        Some(of_type(&stream, "file_finished").len() as u64),
+        "the totals are those of the files written before the terminator"
+    );
+    assert!(
+        of_type(&stream, "file_started").len() > of_type(&stream, "file_finished").len(),
+        "the anchor was still in flight"
+    );
+}

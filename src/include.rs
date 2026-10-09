@@ -170,6 +170,7 @@ pub fn build_scenario(
             Ok(ExpandedScenario {
                 name: sc.name.clone(),
                 line: sc.position.line,
+                example: None,
                 steps,
             })
         }

@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod dirs;
 mod doctor;
+mod events;
 mod feature;
 mod hawk;
 mod http;
@@ -343,6 +344,10 @@ struct DoctorArgs {
     /// Machine-readable output
     #[arg(long)]
     json: bool,
+    /// Check that a `run --events` path can be written; a path that exists and
+    /// is not a regular file (a FIFO, /dev/fd/N) is not opened
+    #[arg(long)]
+    events: Option<PathBuf>,
     #[command(flatten)]
     dir: DirArgs,
     #[command(flatten)]
@@ -360,6 +365,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         args.live,
         &dir_env,
         &args.reports.paths(),
+        args.events.as_deref(),
     )
     .await;
     if args.json {
@@ -394,6 +400,10 @@ struct RunArgs {
     /// Stop dispatching new files after the first failure
     #[arg(long = "fail-fast")]
     fail_fast: bool,
+    /// Write one JSON object per line here while the run happens: a file, a
+    /// FIFO or /dev/fd/N [default: $BDDKIT_EVENTS]
+    #[arg(long)]
+    events: Option<PathBuf>,
     #[command(flatten)]
     dir: DirArgs,
     #[command(flatten)]
@@ -667,46 +677,86 @@ fn build_registry(
     })
 }
 
-/// Waits for the operator's "please stop" signal — Ctrl-C, a CI system's
-/// polite kill or a closed terminal on Unix, Ctrl-C or Ctrl-Break on Windows —
-/// and returns its name and the exit code it maps to: 128 plus the signal
-/// number, the shell convention, so a cancelled CI job (SIGTERM, 143) is not
-/// read as an operator's Ctrl-C (SIGINT, 130).
+/// The operator's "please stop" signals — Ctrl-C, a CI system's polite kill or
+/// a closed terminal on Unix, Ctrl-C or Ctrl-Break on Windows. Registered by
+/// `install`, which is synchronous on purpose: until it has run the OS default
+/// applies and a signal kills the process outright, with no cleanup and no
+/// `run_finished`. A signal that arrives after `install` is queued and comes
+/// out of the next `wait`, however late the task that waits gets to run.
 #[cfg(unix)]
-async fn wait_for_interrupt() -> (&'static str, i32) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut sigint = signal(SignalKind::interrupt()).expect("install a SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("install a SIGTERM handler");
-    let mut sighup = signal(SignalKind::hangup()).expect("install a SIGHUP handler");
-    tokio::select! {
-        _ = sigint.recv() => ("SIGINT", 130),
-        _ = sigterm.recv() => ("SIGTERM", 143),
-        _ = sighup.recv() => ("SIGHUP", 129),
+struct Interrupts {
+    sigint: tokio::signal::unix::Signal,
+    sigterm: tokio::signal::unix::Signal,
+    sighup: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl Interrupts {
+    fn install() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        Self {
+            sigint: signal(SignalKind::interrupt()).expect("install a SIGINT handler"),
+            sigterm: signal(SignalKind::terminate()).expect("install a SIGTERM handler"),
+            sighup: signal(SignalKind::hangup()).expect("install a SIGHUP handler"),
+        }
+    }
+
+    /// The signal's name and the exit code it maps to: 128 plus the signal
+    /// number, the shell convention, so a cancelled CI job (SIGTERM, 143) is
+    /// not read as an operator's Ctrl-C (SIGINT, 130).
+    async fn wait(&mut self) -> (&'static str, i32) {
+        tokio::select! {
+            _ = self.sigint.recv() => ("SIGINT", 130),
+            _ = self.sigterm.recv() => ("SIGTERM", 143),
+            _ = self.sighup.recv() => ("SIGHUP", 129),
+        }
     }
 }
 
 #[cfg(windows)]
-async fn wait_for_interrupt() -> (&'static str, i32) {
-    use tokio::signal::windows::{ctrl_break, ctrl_c};
-    let mut ctrl_c = ctrl_c().expect("install a Ctrl-C handler");
-    let mut ctrl_break = ctrl_break().expect("install a Ctrl-Break handler");
-    tokio::select! {
-        _ = ctrl_c.recv() => ("Ctrl-C", 130),
-        _ = ctrl_break.recv() => ("Ctrl-Break", 130),
+struct Interrupts {
+    ctrl_c: tokio::signal::windows::CtrlC,
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+}
+
+#[cfg(windows)]
+impl Interrupts {
+    fn install() -> Self {
+        use tokio::signal::windows::{ctrl_break, ctrl_c};
+        Self {
+            ctrl_c: ctrl_c().expect("install a Ctrl-C handler"),
+            ctrl_break: ctrl_break().expect("install a Ctrl-Break handler"),
+        }
+    }
+
+    async fn wait(&mut self) -> (&'static str, i32) {
+        tokio::select! {
+            _ = self.ctrl_c.recv() => ("Ctrl-C", 130),
+            _ = self.ctrl_break.recv() => ("Ctrl-Break", 130),
+        }
     }
 }
 
 /// Runs for the lifetime of the process, spawned alongside `run_all`. On the
-/// first interrupt it stops the run from starting new work and asks every
-/// plugin to release what it holds (`Plugins::shutdown` — the same sweep a
-/// normal run does after the pool drains), then exits with that signal's
-/// code. A second interrupt during that cleanup exits immediately instead of
-/// waiting for it — "stop now" as promised in issue #62 — still with the
-/// FIRST signal's code, since that is the one that ended the run. If no
-/// interrupt ever arrives, `run` exits normally first and this task is simply
-/// dropped.
-async fn handle_interrupt(ctx: Arc<runner::RunContext>, plugins: Option<Arc<plugin::Plugins>>) {
-    let (name, code) = wait_for_interrupt().await;
+/// first interrupt it takes the run's ending (`RunContext::claim_end`), stops
+/// it from starting new work and asks every plugin to release what it holds
+/// (`Plugins::shutdown` — the same sweep a normal run does after the pool
+/// drains), then ends the event stream with the signal and exits with that
+/// signal's code. A second interrupt during that tail exits immediately instead
+/// of waiting for it — "stop now" as promised in issue #62 — still with the
+/// FIRST signal's code, since that is the one that ended the run. If the run
+/// finished first, the claim is already gone and the signal is left alone: the
+/// run exits with its own code and its own last line. If no interrupt ever
+/// arrives, `run` exits normally first and this task is simply dropped.
+async fn handle_interrupt(
+    ctx: Arc<runner::RunContext>,
+    plugins: Option<Arc<plugin::Plugins>>,
+    mut interrupts: Interrupts,
+) {
+    let (name, code) = interrupts.wait().await;
+    if !ctx.claim_end() {
+        return;
+    }
     eprintln!("\ninterrupted by {name}: stopping new work, cleaning up plugins...");
     ctx.force_stop();
 
@@ -717,10 +767,19 @@ async fn handle_interrupt(ctx: Arc<runner::RunContext>, plugins: Option<Arc<plug
             let _ = tokio::task::spawn_blocking(move || plugins.shutdown()).await;
         }
         eprintln!("cleanup finished");
+        if let Some(events) = ctx.events.clone() {
+            // Files still in flight keep emitting; the writer drops whatever
+            // arrives after this line. A write error cannot change the code.
+            let signal = name.to_uppercase().replace('-', "_");
+            let _ = tokio::task::spawn_blocking(move || {
+                events.finish(serde_json::json!({"exit": code, "signal": signal}))
+            })
+            .await;
+        }
     };
     tokio::select! {
         () = cleanup => {},
-        (second, _) = wait_for_interrupt() => {
+        (second, _) = interrupts.wait() => {
             eprintln!("\nsecond interrupt ({second}): exiting now, without waiting for cleanup");
         }
     }
@@ -732,6 +791,19 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .paths()
         .into_iter()
         .try_for_each(report::prepare)?;
+    // Opened once, here, and held: see `events::open`. Nothing is written to
+    // it until the run has started, so every refusal below leaves it empty.
+    let events_file = cli
+        .events
+        .clone()
+        // An empty value is unset: a templated `BDDKIT_EVENTS=` means "off".
+        .or_else(|| {
+            std::env::var_os("BDDKIT_EVENTS")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+        .map(|path| events::open(&path))
+        .transpose()?;
     let config_path = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
         .path;
@@ -829,8 +901,27 @@ async fn run(cli: RunArgs) -> Result<i32> {
         None => None,
     };
 
+    // Before anything is announced, and before the handler task is first
+    // polled: see `Interrupts`.
+    let interrupts = Interrupts::install();
     println!("run {}", generator.run_id());
-    let ctx = Arc::new(runner::RunContext::new(
+    let events = events_file.map(events::Events::start);
+    if let Some(events) = &events {
+        events.emit(
+            "run_started",
+            serde_json::json!({
+                "schema": 1,
+                "bddkit": env!("CARGO_PKG_VERSION"),
+                "run_id": generator.run_id(),
+                "started_at_unix_ms": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
+                "concurrency": cfg.concurrency,
+                "files": chains.iter().map(|chain| chain.files.len()).sum::<usize>(),
+            }),
+        );
+    }
+    let mut ctx = runner::RunContext::new(
         reg,
         apis,
         generator.clone(),
@@ -841,15 +932,27 @@ async fn run(cli: RunArgs) -> Result<i32> {
         plugins.clone(),
         cfg.effective_options.clone(),
         cli.fail_fast,
-    ));
+    );
+    ctx.events = events;
+    let ctx = Arc::new(ctx);
 
-    let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone()));
-    let results = runner::run_all(chains, ctx, cfg.concurrency).await;
+    let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone(), interrupts));
+    let results = runner::run_all(chains, ctx.clone(), cfg.concurrency).await;
     // A normal finish races a signal that arrives in the gap before the
-    // shutdown below: aborted here, not just left to lose the race, so a
-    // late signal can neither flip this run's exit code to 128+N nor call
-    // Plugins::shutdown a second time concurrently with the one below.
-    interrupt.abort();
+    // shutdown below. The claim settles it: a handler that already took it
+    // owns the plugin shutdown, the last line of the stream and the exit, and
+    // this task waits for it to end the process; otherwise the handler is
+    // aborted, so a late signal can neither flip this run's exit code to
+    // 128+N nor call Plugins::shutdown a second time concurrently with the
+    // one below.
+    // For the tail below, registered before the handler can be aborted so that
+    // no signal falls between the two.
+    let mut tail_interrupts = Interrupts::install();
+    if ctx.claim_end() {
+        interrupt.abort();
+    } else {
+        let _ = interrupt.await;
+    }
 
     // After the pool has drained, including a failed or --fail-fast run: an
     // instance that outlives the run is a bug the host must not permit. The
@@ -858,12 +961,38 @@ async fn run(cli: RunArgs) -> Result<i32> {
         plugins.shutdown();
     }
 
-    let code = report::print_summary(&results, generator.run_id());
+    let mut code = report::print_summary(&results, generator.run_id());
     // The one deliberate exception to "2 = before the first request": a
     // report silently lost behind a green code is the worse outcome.
     if let Err(error) = cli.reports.write(&results) {
         eprintln!("error: {error:#}");
-        return Ok(2);
+        code = 2;
+    }
+    // After the reports, so `exit` is the code the process really returns —
+    // and the same exception covers a stream that could not be written.
+    if let Some(events) = ctx.events.clone() {
+        let mut flush =
+            tokio::task::spawn_blocking(move || events.finish(serde_json::json!({"exit": code})));
+        // The same two-signal rule as the handler's: the run is over and its
+        // code is settled, so a first signal only says «still writing» and the
+        // queued lines are not thrown away; a second one exits at once, with
+        // the first one's code and the stream cut short. Without the second
+        // way out a reader that stopped reading would make the process
+        // unkillable but for SIGKILL.
+        let stream = tokio::select! {
+            stream = &mut flush => stream,
+            (name, first) = tail_interrupts.wait() => {
+                eprintln!("\n{name}: still writing the event stream; signal again to exit now");
+                tokio::select! {
+                    stream = flush => stream,
+                    _ = tail_interrupts.wait() => std::process::exit(first),
+                }
+            }
+        };
+        if let Ok(Err(error)) = stream {
+            eprintln!("error: cannot write the events file: {error}");
+            code = 2;
+        }
     }
     Ok(code)
 }

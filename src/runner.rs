@@ -1,3 +1,4 @@
+use crate::events::{Events, Origin, Trace};
 use crate::feature::{ExpandedStep, LoadedFeature, expand_outlines};
 use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
@@ -61,6 +62,9 @@ fn prepare(
     })
 }
 
+/// Every step at every depth goes through here, so the event stream sees the
+/// ones inside a macro or an include too. The reports do not: they show the
+/// caller as one step.
 fn execute_step<'a>(
     world: &'a mut World,
     reg: &'a Registry,
@@ -68,224 +72,251 @@ fn execute_step<'a>(
     source: &'a std::path::Path,
     generator: &'a Generator,
     depth: usize,
+    origin: Origin,
 ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
-        let Some((target, caps, params)) = reg.find_with_params(&step.text)? else {
-            return Err("unknown step".into());
-        };
-        match target {
-            StepTarget::Builtin { id, kind } => {
-                if matches!(id, StepId::Include | StepId::IncludeScenario) {
-                    return run_include(world, reg, step, id, caps, source, generator, depth).await;
-                }
-                let args = prepare(step, caps, params, &world.vars, generator)?;
-                if id == StepId::AttachFile {
-                    // Needs the directory of the file the step is written in,
-                    // which `dispatch` does not carry — same reason as Include.
-                    let base_dir = source.parent().unwrap_or(std::path::Path::new("."));
-                    return crate::steps::api::attach_file(
-                        world,
-                        base_dir,
-                        args.cap(0),
-                        args.cap(1),
-                    );
-                }
-                match kind {
-                    StepKind::Action => dispatch(world, id, &args, 0)
-                        .await
-                        .map_err(AttemptError::into_message),
-                    StepKind::Assertion(source_kind) => {
-                        let Some(layer) = world.take_options() else {
-                            return dispatch(world, id, &args, 0)
-                                .await
-                                .map_err(AttemptError::into_message);
-                        };
-                        let base = match source_kind {
-                            OptionsSource::Global => world.options.clone(),
-                            OptionsSource::Http => world.http.options_for_last_response()?.clone(),
-                            OptionsSource::Db => world.db.options()?.clone(),
-                        };
-                        let effective = base.apply(&layer)?;
-                        let mut polling = Polling::new(&step.text, &effective.polling);
-                        let mut attempt = 0;
-                        loop {
-                            match dispatch(world, id, &args, attempt).await {
-                                Ok(()) => return Ok(()),
-                                Err(AttemptError::Fatal(error)) => return Err(error),
-                                Err(AttemptError::NotYet(error)) => {
-                                    polling.after_not_yet(&error).await?;
-                                    attempt += 1;
-                                }
-                            }
-                        }
-                    }
-                }
+        let started = Instant::now();
+        let warned = world.warnings.len();
+        world
+            .trace
+            .step_started(&step.keyword, &step.text, origin, source);
+        let result = run_step(world, reg, step, source, generator, depth).await;
+        world
+            .trace
+            .step_finished(result.is_ok(), started.elapsed(), &world.warnings[warned..]);
+        result
+    })
+}
+
+async fn run_step(
+    world: &mut World,
+    reg: &Registry,
+    step: &ExpandedStep,
+    source: &std::path::Path,
+    generator: &Generator,
+    depth: usize,
+) -> Result<(), String> {
+    let Some((target, caps, params)) = reg.find_with_params(&step.text)? else {
+        return Err("unknown step".into());
+    };
+    match target {
+        StepTarget::Builtin { id, kind } => {
+            if matches!(id, StepId::Include | StepId::IncludeScenario) {
+                return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
-            StepTarget::Macro(index) => {
-                if step.docstring.is_some() {
-                    return Err("a macro call does not support a docstring".into());
-                }
-                if step.table.is_some() {
-                    return Err("a macro call does not support a table".into());
-                }
-                if depth >= 16 {
-                    return Err("macro nesting exceeds 16".into());
-                }
-
-                let definition = reg.macro_def(index);
-                let args = prepare(step, caps, params, &world.vars, generator)?;
-                world.vars.push_frame();
-                for (param, value) in definition.compiled.params.iter().zip(args.caps) {
-                    world.vars.set(&param.name, value);
-                }
-                if world.debug {
-                    eprintln!("macro {:?}", step.text);
-                }
-
-                // A macro body resolves ITS OWN includes relative to the
-                // macro's own source file, never the caller's — the same
-                // rule the spec states for `I include`.
-                let macro_source = definition.source.clone();
-                for body_step in &definition.body {
-                    let expanded = ExpandedStep {
-                        keyword: String::new(),
-                        text: body_step.text.clone(),
-                        line: step.line,
-                        docstring: body_step.docstring.clone(),
-                        table: None,
-                    };
-                    if let Err(error) =
-                        execute_step(world, reg, &expanded, &macro_source, generator, depth + 1)
-                            .await
-                    {
-                        world.vars.pop_frame(&[])?;
-                        return Err(format!("  {}\n{error}", body_step.text));
-                    }
-                }
-                let exported = world.vars.pop_frame(&definition.exports)?;
-                if world.debug {
-                    for (k, v) in &exported {
-                        eprintln!("  export {k} = {}", debug_display(v));
-                    }
-                }
-                Ok(())
+            let args = prepare(step, caps, params, &world.vars, generator)?;
+            if id == StepId::AttachFile {
+                // Needs the directory of the file the step is written in,
+                // which `dispatch` does not carry — same reason as Include.
+                let base_dir = source.parent().unwrap_or(std::path::Path::new("."));
+                return crate::steps::api::attach_file(world, base_dir, args.cap(0), args.cap(1));
             }
-            StepTarget::Plugin {
-                lib,
-                step: step_index,
-                assertion,
-            } => {
-                // Arguments cross the boundary already interpolated: a plugin
-                // never sees raw step text and never sees `<<variable>>`
-                // syntax (invariant 1, restated at the FFI boundary).
-                let args = prepare(step, caps, params, &world.vars, generator)?;
-                let Some(plugins) = world.plugins.plugins().cloned() else {
-                    return Err("this step is served by a plugin, but no plugin is loaded".into());
-                };
-                let group = plugins.group_of_step(lib, step_index).to_string();
-                let instance = world.plugins.current(&group)?.to_string();
-                let base = plugins.options_for(&group, &instance)?.clone();
-
-                // Only an assertion consumes an armed eventual-assertion
-                // modifier; an action leaves it for the assertion that follows.
-                let layer = if assertion {
-                    world.take_options()
-                } else {
-                    None
-                };
-                let effective = match &layer {
-                    Some(layer) => base.apply(layer)?,
-                    None => base,
-                };
-                let mut polling = layer
-                    .as_ref()
-                    .map(|_| Polling::new(&step.text, &effective.polling));
-                // A `per_worker` instance belongs to this file, so this file
-                // both creates and drops it; a `shared` one is only borrowed.
-                let per_worker = plugins.is_per_worker(lib);
-
-                // Resolved once per plugin step rather than per attempt: the
-                // path is constant for the file, and `Workspace` caches the
-                // `create_dir_all` after the first call.
-                let workspace_dir = world.workspace_dir()?.display().to_string();
-
-                loop {
-                    let request = serde_json::to_string(&DispatchRequest {
-                        args: &args.caps,
-                        docstring: args.docstring.as_ref(),
-                        table: args.table.as_ref(),
-                        artifacts_dir: plugins.next_artifacts_dir(),
-                        workspace_dir: workspace_dir.clone(),
-                        debug: world.debug,
-                        options: OptionsJson::from(&effective),
-                    })
-                    .map_err(|error| format!("failed to encode the plugin request: {error}"))?;
-
-                    // The FFI call is synchronous and may block for seconds;
-                    // spawn_blocking keeps it off the executor. Passing the
-                    // host's tokio Handle across the boundary instead would
-                    // pin plugin and host to one tokio version.
-                    let plugins_for_call = plugins.clone();
-                    let (call_group, call_instance) = (group.clone(), instance.clone());
-                    // The handle this file already holds, if any. Passing it in
-                    // keeps the dispatch to one blocking hop: resolving it out
-                    // here and then dispatching would cost two on the first
-                    // plugin step of every file.
-                    // Filtered by library, not just group: a handle is unique
-                    // within one plugin, never across two. `Plugins::load`
-                    // refuses two plugins claiming one group, so this cannot
-                    // differ today — the filter keeps it true locally.
-                    let cached = world
-                        .plugins
-                        .handle_for(&group, &instance)
-                        .filter(|(l, _)| *l == lib)
-                        .map(|(_, h)| h);
-                    let (handle, result) = tokio::task::spawn_blocking(move || {
-                        plugins_for_call.call_step(
-                            &call_group,
-                            &call_instance,
-                            lib,
-                            step_index,
-                            &request,
-                            cached,
-                        )
-                    })
+            match kind {
+                StepKind::Action => dispatch(world, id, &args, 0)
                     .await
-                    .map_err(|error| format!("the plugin dispatch task failed: {error}"))??;
-                    world
-                        .plugins
-                        .record(&group, &instance, lib, handle, per_worker);
-
-                    match result.status {
-                        Status::Passed => {
-                            // Variables are published only on success: an
-                            // intermediate observation must not leak into the
-                            // scenario.
-                            for (name, value) in result.vars {
-                                world.vars.set(&name, value);
+                    .map_err(AttemptError::into_message),
+                StepKind::Assertion(source_kind) => {
+                    let Some(layer) = world.take_options() else {
+                        return dispatch(world, id, &args, 0)
+                            .await
+                            .map_err(AttemptError::into_message);
+                    };
+                    let base = match source_kind {
+                        OptionsSource::Global => world.options.clone(),
+                        OptionsSource::Http => world.http.options_for_last_response()?.clone(),
+                        OptionsSource::Db => world.db.options()?.clone(),
+                    };
+                    let effective = base.apply(&layer)?;
+                    let mut polling = Polling::new(&step.text, &effective.polling);
+                    let mut attempt = 0;
+                    loop {
+                        match dispatch(world, id, &args, attempt).await {
+                            Ok(()) => return Ok(()),
+                            Err(AttemptError::Fatal(error)) => return Err(error),
+                            Err(AttemptError::NotYet(error)) => {
+                                polling.after_not_yet(&error).await?;
+                                attempt += 1;
                             }
-                            return Ok(());
                         }
-                        Status::Fatal => return Err(result.render_failure()),
-                        Status::NotYet if !assertion => {
-                            return Err(format!(
-                                "a plugin action answered not_yet, which only an assertion may do: {}",
-                                result.render_failure()
-                            ));
-                        }
-                        Status::NotYet => match &mut polling {
-                            // Without an armed modifier there is no second
-                            // attempt, so not_yet is simply a failure.
-                            None => return Err(result.render_failure()),
-                            Some(polling) => {
-                                polling.after_not_yet(&result.render_failure()).await?
-                            }
-                        },
                     }
                 }
             }
         }
-    })
+        StepTarget::Macro(index) => {
+            if step.docstring.is_some() {
+                return Err("a macro call does not support a docstring".into());
+            }
+            if step.table.is_some() {
+                return Err("a macro call does not support a table".into());
+            }
+            if depth >= 16 {
+                return Err("macro nesting exceeds 16".into());
+            }
+
+            let definition = reg.macro_def(index);
+            let args = prepare(step, caps, params, &world.vars, generator)?;
+            world.vars.push_frame();
+            for (param, value) in definition.compiled.params.iter().zip(args.caps) {
+                world.vars.set(&param.name, value);
+            }
+            if world.debug {
+                eprintln!("macro {:?}", step.text);
+            }
+
+            // A macro body resolves ITS OWN includes relative to the
+            // macro's own source file, never the caller's — the same
+            // rule the spec states for `I include`.
+            let macro_source = definition.source.clone();
+            for (index, body_step) in definition.body.iter().enumerate() {
+                let expanded = ExpandedStep {
+                    keyword: String::new(),
+                    text: body_step.text.clone(),
+                    line: step.line,
+                    docstring: body_step.docstring.clone(),
+                    table: None,
+                };
+                // The definition's line and the step's position in the body:
+                // `MacroStep` has no line of its own.
+                let origin = Origin {
+                    line: definition.line,
+                    index: Some(index),
+                };
+                if let Err(error) = execute_step(
+                    world,
+                    reg,
+                    &expanded,
+                    &macro_source,
+                    generator,
+                    depth + 1,
+                    origin,
+                )
+                .await
+                {
+                    world.vars.pop_frame(&[])?;
+                    return Err(format!("  {}\n{error}", body_step.text));
+                }
+            }
+            let exported = world.vars.pop_frame(&definition.exports)?;
+            if world.debug {
+                for (k, v) in &exported {
+                    eprintln!("  export {k} = {}", debug_display(v));
+                }
+            }
+            Ok(())
+        }
+        StepTarget::Plugin {
+            lib,
+            step: step_index,
+            assertion,
+        } => {
+            // Arguments cross the boundary already interpolated: a plugin
+            // never sees raw step text and never sees `<<variable>>`
+            // syntax (invariant 1, restated at the FFI boundary).
+            let args = prepare(step, caps, params, &world.vars, generator)?;
+            let Some(plugins) = world.plugins.plugins().cloned() else {
+                return Err("this step is served by a plugin, but no plugin is loaded".into());
+            };
+            let group = plugins.group_of_step(lib, step_index).to_string();
+            let instance = world.plugins.current(&group)?.to_string();
+            let base = plugins.options_for(&group, &instance)?.clone();
+
+            // Only an assertion consumes an armed eventual-assertion
+            // modifier; an action leaves it for the assertion that follows.
+            let layer = if assertion {
+                world.take_options()
+            } else {
+                None
+            };
+            let effective = match &layer {
+                Some(layer) => base.apply(layer)?,
+                None => base,
+            };
+            let mut polling = layer
+                .as_ref()
+                .map(|_| Polling::new(&step.text, &effective.polling));
+            // A `per_worker` instance belongs to this file, so this file
+            // both creates and drops it; a `shared` one is only borrowed.
+            let per_worker = plugins.is_per_worker(lib);
+
+            // Resolved once per plugin step rather than per attempt: the
+            // path is constant for the file, and `Workspace` caches the
+            // `create_dir_all` after the first call.
+            let workspace_dir = world.workspace_dir()?.display().to_string();
+
+            loop {
+                let request = serde_json::to_string(&DispatchRequest {
+                    args: &args.caps,
+                    docstring: args.docstring.as_ref(),
+                    table: args.table.as_ref(),
+                    artifacts_dir: plugins.next_artifacts_dir(),
+                    workspace_dir: workspace_dir.clone(),
+                    debug: world.debug,
+                    options: OptionsJson::from(&effective),
+                })
+                .map_err(|error| format!("failed to encode the plugin request: {error}"))?;
+
+                // The FFI call is synchronous and may block for seconds;
+                // spawn_blocking keeps it off the executor. Passing the
+                // host's tokio Handle across the boundary instead would
+                // pin plugin and host to one tokio version.
+                let plugins_for_call = plugins.clone();
+                let (call_group, call_instance) = (group.clone(), instance.clone());
+                // The handle this file already holds, if any. Passing it in
+                // keeps the dispatch to one blocking hop: resolving it out
+                // here and then dispatching would cost two on the first
+                // plugin step of every file.
+                // Filtered by library, not just group: a handle is unique
+                // within one plugin, never across two. `Plugins::load`
+                // refuses two plugins claiming one group, so this cannot
+                // differ today — the filter keeps it true locally.
+                let cached = world
+                    .plugins
+                    .handle_for(&group, &instance)
+                    .filter(|(l, _)| *l == lib)
+                    .map(|(_, h)| h);
+                let (handle, result) = tokio::task::spawn_blocking(move || {
+                    plugins_for_call.call_step(
+                        &call_group,
+                        &call_instance,
+                        lib,
+                        step_index,
+                        &request,
+                        cached,
+                    )
+                })
+                .await
+                .map_err(|error| format!("the plugin dispatch task failed: {error}"))??;
+                world
+                    .plugins
+                    .record(&group, &instance, lib, handle, per_worker);
+
+                match result.status {
+                    Status::Passed => {
+                        // Variables are published only on success: an
+                        // intermediate observation must not leak into the
+                        // scenario.
+                        for (name, value) in result.vars {
+                            world.vars.set(&name, value);
+                        }
+                        return Ok(());
+                    }
+                    Status::Fatal => return Err(result.render_failure()),
+                    Status::NotYet if !assertion => {
+                        return Err(format!(
+                            "a plugin action answered not_yet, which only an assertion may do: {}",
+                            result.render_failure()
+                        ));
+                    }
+                    Status::NotYet => match &mut polling {
+                        // Without an armed modifier there is no second
+                        // attempt, so not_yet is simply a failure.
+                        None => return Err(result.render_failure()),
+                        Some(polling) => polling.after_not_yet(&result.render_failure()).await?,
+                    },
+                }
+            }
+        }
+    }
 }
 
 /// Runs `I include "<file>"` / `I include "<file>" scenario "<name>"`. The
@@ -389,7 +420,13 @@ fn run_include<'a>(
 
         let mut run_result: Result<(), String> = Ok(());
         for step in background.iter().chain(expanded.steps.iter()) {
-            if let Err(e) = execute_step(world, reg, step, &resolved, generator, depth + 1).await {
+            let origin = Origin {
+                line: step.line,
+                index: None,
+            };
+            if let Err(e) =
+                execute_step(world, reg, step, &resolved, generator, depth + 1, origin).await
+            {
                 run_result = Err(format!(
                     "{}:{} → {}:{}\n  {}\n{e}",
                     crate::feature::display_path(source),
@@ -478,8 +515,11 @@ pub struct RunContext {
     pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
     pub options: Options,
+    /// `--events`; `None` costs each emit site one branch.
+    pub events: Option<Events>,
     fail_fast: bool,
     stop: std::sync::atomic::AtomicBool,
+    ending: std::sync::atomic::AtomicBool,
 }
 
 impl RunContext {
@@ -508,9 +548,19 @@ impl RunContext {
             srp,
             plugins,
             options,
+            events: None,
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
+            ending: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// First caller wins, once per run. The interrupt handler takes it when its
+    /// signal arrives and `run` takes it when the pool has drained; whoever
+    /// loses leaves the exit — the exit code, the plugin shutdown and the last
+    /// line of the event stream — to the winner, so the three always agree.
+    pub fn claim_end(&self) -> bool {
+        !self.ending.swap(true, Ordering::SeqCst)
     }
 
     /// Arms the stop — only when `--fail-fast` is enabled. Without the flag a
@@ -551,6 +601,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         ctx.plugins.clone(),
         ctx.options.clone(),
     );
+    world.trace = Trace::new(ctx.events.clone(), &lf.path, &lf.feature.name);
     let mut scenarios = Vec::new();
 
     let background: Vec<ExpandedStep> = lf
@@ -602,16 +653,24 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 }
             };
 
+            world.trace.scenario_started(&ex.name, ex.line, ex.example);
             let started = Instant::now();
             let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
             for step in background.iter().chain(ex.steps.iter()) {
                 let step_started = Instant::now();
                 // Everything after a failure is skipped, not run: the report
                 // lists every step of the scenario either way.
+                let origin = Origin {
+                    line: step.line,
+                    index: None,
+                };
                 let status = if failure.is_some() {
+                    world
+                        .trace
+                        .step_skipped(&step.keyword, &step.text, step.line);
                     StepStatus::Skipped
                 } else if let Err(e) =
-                    execute_step(&mut world, &ctx.reg, step, &lf.path, &generator, 0).await
+                    execute_step(&mut world, &ctx.reg, step, &lf.path, &generator, 0, origin).await
                 {
                     let mut msg = format!("  {}\n{e}", step.text);
                     if let Some(ex) = world.http.last() {
@@ -631,12 +690,14 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     warnings: std::mem::take(&mut world.warnings),
                 });
             }
+            let duration = started.elapsed();
+            world.trace.scenario_finished(failure.as_deref(), duration);
             scenarios.push(ScenarioResult {
                 name: ex.name,
                 line: ex.line,
                 failure,
                 steps,
-                duration: started.elapsed(),
+                duration,
             });
         }
     }
@@ -773,10 +834,24 @@ pub async fn run_all(
                         break;
                     }
                     let task = tokio::spawn(run_file(lf.clone(), ctx.clone()));
-                    let result = match task.await {
-                        Ok(r) => r,
-                        Err(error) => panicked_file(lf, &error),
+                    let (result, panicked) = match task.await {
+                        Ok(r) => (r, false),
+                        Err(error) => (panicked_file(lf, &error), true),
                     };
+                    // Here, not in `run_file`, so a file that panicked is closed
+                    // in the stream too — and any scenario or step it left open
+                    // with it.
+                    if let Some(events) = &ctx.events {
+                        events.emit(
+                            "file_finished",
+                            serde_json::json!({
+                                "file": crate::feature::display_path(&result.path),
+                                "scenarios": result.scenarios.len(),
+                                "failed": result.failed(),
+                                "panicked": panicked,
+                            }),
+                        );
+                    }
                     if result.failed() > 0 {
                         ctx.request_stop();
                     }
@@ -908,7 +983,11 @@ mod tests {
         };
         let generator = world.generator.clone();
         let source = std::path::Path::new("test.feature");
-        execute_step(world, reg, &step, source, &generator, 0).await
+        let origin = Origin {
+            line: 1,
+            index: None,
+        };
+        execute_step(world, reg, &step, source, &generator, 0, origin).await
     }
 
     #[tokio::test]
@@ -1732,6 +1811,58 @@ Feature: eventual assertion
             "{:?}",
             result.scenarios[0].failure
         );
+    }
+
+    /// The subprocess tests have no way to panic a file — the fixtures guard
+    /// every export and no host step panics on input — so this drives
+    /// `run_all` directly. A row shorter than its header is what the parser
+    /// guarantees never to produce and what `substitute` indexes without a
+    /// check, which makes `expand_outlines` panic inside `run_file`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_file_is_still_closed_in_the_stream() {
+        let path = std::env::temp_dir().join(format!("bddkit-panic-stream-{}", std::process::id()));
+        let events = Events::start(crate::events::open(&path).expect("open"));
+        let mut feature = crate::feature::parse_str(
+            "Feature: f\n  Scenario Outline: o\n    Then the response code is <a>\n    Examples:\n      | a |\n      | 200 |\n",
+        )
+        .expect("gherkin parses");
+        feature.scenarios[0].examples[0]
+            .table
+            .as_mut()
+            .expect("an examples table")
+            .rows
+            .push(Vec::new());
+        let lf = Arc::new(LoadedFeature {
+            path: PathBuf::from("bad.feature"),
+            feature,
+        });
+        let mut ctx = Arc::into_inner(context(Registry::new().expect("builtin steps register")))
+            .expect("one owner");
+        ctx.events = Some(events.clone());
+        let ctx = Arc::new(ctx);
+
+        let results = run_all(build_chains(vec![lf]).expect("no tags"), ctx, 1).await;
+        events
+            .finish(serde_json::json!({"exit": 1}))
+            .expect("finish");
+
+        assert_eq!(results[0].failed(), 1);
+        let text = std::fs::read_to_string(&path).expect("the stream is written");
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+            .collect();
+        let types: Vec<_> = lines
+            .iter()
+            .map(|l| l["type"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(types, ["file_started", "file_finished", "run_finished"]);
+        assert_eq!(lines[1]["panicked"], true);
+        assert_eq!(
+            (&lines[1]["scenarios"], &lines[1]["failed"]),
+            (&1.into(), &1.into())
+        );
+        assert_eq!(lines[2]["files"], 1, "{text}");
     }
 
     #[test]

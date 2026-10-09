@@ -143,6 +143,7 @@ pub async fn check(
     live: bool,
     dir_env: &dirs::Env,
     report_paths: &[&Path],
+    events_path: Option<&Path>,
 ) -> Report {
     let resolved = config::resolve_config_path(explicit_config);
     let mut report = Report {
@@ -165,8 +166,24 @@ pub async fn check(
     // and the same create-or-truncate it does before resolving or reading the
     // config — so even a config that cannot be found leaves the same empty
     // report files behind in both commands. Without them nothing is touched.
-    for path in report_paths {
+    for (path, stream) in report_paths
+        .iter()
+        .map(|path| (*path, false))
+        .chain(events_path.map(|path| (path, true)))
+    {
         let target = path.display().to_string();
+        // Opening a FIFO would hand its reader an end-of-file, and `run` opens
+        // it exactly once; `metadata` follows the symlink a /dev/fd/N is. A
+        // directory is not a stream either: `run` refuses it, so it falls through.
+        if stream && std::fs::metadata(path).is_ok_and(|meta| !meta.is_file() && !meta.is_dir()) {
+            report.push(
+                "reports",
+                Some(&target),
+                Status::Ok,
+                "exists and is not a regular file, left unopened",
+            );
+            continue;
+        }
         match crate::report::prepare(path) {
             Ok(()) => report.push("reports", Some(&target), Status::Ok, "created, empty"),
             Err(error) => report.push(
