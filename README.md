@@ -75,11 +75,11 @@ run m4k2p9x7q3b1
   ✓ examples/features/variables.feature — scenarios: 6
   ✓ examples/features/variable_assertions.feature — scenarios: 3
   ✓ examples/features/macros.feature — scenarios: 8
-  ✓ examples/features/content_types.feature — scenarios: 5
+  ✓ examples/features/content_types.feature — scenarios: 6
   ✓ examples/features/eventual.feature — scenarios: 1
 
 run m4k2p9x7q3b1
-files: 7, scenarios: 35, failed: 0
+files: 7, scenarios: 36, failed: 0
 ```
 
 The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
