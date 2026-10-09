@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/bddkit/bddkit/compare/v0.2.2...v0.3.0) - 2026-10-09
+
+### Added
+
+- add run --artifacts-dir, one relocatable root for evidence files (bddkit/bddkit#88)
+- add run --events, a line-delimited stream of run lifecycle events (bddkit/bddkit#86)
+- add I attach the file step for multipart/form-data uploads (bddkit/bddkit#93)
+- [**breaking**] exit 143 on SIGTERM and 129 on SIGHUP (bddkit/bddkit#85)
+- add Print table: debug step with aligned columns (bddkit/bddkit#92)
+- accept a <<variable>> in a typed step position ([#66](https://github.com/bddkit/bddkit/pull/66))
+- [**breaking**] macro templates are Cucumber Expressions ([#66](https://github.com/bddkit/bddkit/pull/66))
+- declare builtin steps as Cucumber Expressions ([#66](https://github.com/bddkit/bddkit/pull/66))
+- clean up after an interrupted run (issue #62)
+- add curl/irm install scripts for GitHub Releases
+- warn when a global variable write has no visible effect (issue #51)
+
+### Fixed
+
+- hand install.sh off to install.ps1 on Windows and download with curl.exe (bddkit/bddkit#81)
+- keep file parts in the multipart dump and check attached files in macro bodies (bddkit/bddkit#93)
+- resolve nested I include paths relative to the including file (issue #76)
+- abort the interrupt listener once a run finishes normally
+
+### Other
+
+- demonstrate file upload in examples with a variable path, extraction and several files (bddkit/bddkit#93)
+- add appium to the plugin registry
+- demonstrate typed parameters and typed-position variables in examples ([#66](https://github.com/bddkit/bddkit/pull/66))
+- compile the builtin step table once ([#66](https://github.com/bddkit/bddkit/pull/66))
+- step declarations as Cucumber Expressions, typed variables ([#66](https://github.com/bddkit/bddkit/pull/66))
+- define a <<…>> slot once, as a group-free PLACEHOLDER
+
 ## [0.2.2](https://github.com/bddkit/bddkit/compare/v0.2.1...v0.2.2) - 2026-09-28
 
 ### Added
