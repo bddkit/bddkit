@@ -8,16 +8,27 @@ $Repo = "bddkit/bddkit"
 $Target = "x86_64-pc-windows-msvc" # the only Windows target the release workflow builds
 $BinDir = if ($env:BDDKIT_INSTALL_DIR) { $env:BDDKIT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "bddkit\bin" }
 
+# curl.exe ships with Windows 10+ and behaves the same on Windows PowerShell 5.1
+# and PowerShell 7; Invoke-WebRequest does not (no -SkipHttpErrorCheck on 5.1, and
+# a 302 with -MaximumRedirection 0 throws there). Note the .exe: `curl` alone is
+# an alias for Invoke-WebRequest.
+function Get-File($Url, $Out) {
+    curl.exe -fsSL -o $Out $Url
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Download failed: $Url"
+        exit 1
+    }
+}
+
 Write-Host "> Resolving latest release..."
 # GitHub's /releases/latest page 302s to /releases/tag/<tag>; the tag is the
 # last path segment. No GitHub API call, no rate limit, no token.
-$response = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -MaximumRedirection 0 -SkipHttpErrorCheck
-$location = $response.Headers.Location
-if (-not $location) {
+$Final = curl.exe -fsSL -o NUL -w "%{url_effective}" "https://github.com/$Repo/releases/latest"
+$Tag = if ($LASTEXITCODE -eq 0 -and $Final) { ($Final -split "/")[-1] }
+if (-not $Tag -or $Tag -eq "latest") {
     Write-Error "Could not resolve the latest release tag."
     exit 1
 }
-$Tag = ($location -split "/")[-1]
 
 $Name = "bddkit-$Tag-$Target"
 $BaseUrl = "https://github.com/$Repo/releases/download/$Tag"
@@ -27,8 +38,8 @@ Write-Host "> Installing bddkit $Tag ($Target) to $BinDir"
 $Archive = Join-Path $env:TEMP "$Name.zip"
 $Checksum = Join-Path $env:TEMP "$Name.zip.sha256"
 
-Invoke-WebRequest -Uri "$BaseUrl/$Name.zip" -OutFile $Archive
-Invoke-WebRequest -Uri "$BaseUrl/$Name.zip.sha256" -OutFile $Checksum
+Get-File "$BaseUrl/$Name.zip" $Archive
+Get-File "$BaseUrl/$Name.zip.sha256" $Checksum
 
 $expected = (Get-Content $Checksum).Split(" ")[0].Trim().ToLower()
 $actual = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
