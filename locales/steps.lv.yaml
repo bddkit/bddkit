@@ -8,6 +8,7 @@ SetQueryParam: iestata vaicājuma virknes parametru
 SetRequestBody: iestata pieprasījuma saturu no teksta bloka zem soļa
 EmptyRequestBody: notīra līdz šim sagatavoto pieprasījuma saturu
 SetFormParams: nosūta zemāk esošo tabulu kā formas parametrus satura vietā
+AttachFile: pievieno failu (ceļš no šī feature faila) kā multipart/form-data daļu
 RequestPathWithMethod: izpilda pieprasījumu pret pašreizējo API ar norādīto metodi
 RequestPath: izpilda GET pieprasījumu pret pašreizējo API
 SignNextRequestWithHawk: paraksta nākamo pieprasījumu ar šiem Hawk akreditācijas datiem un katru tā atkārtojumu

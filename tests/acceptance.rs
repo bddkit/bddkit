@@ -3249,3 +3249,120 @@ fn steps_list_includes_both_include_steps() {
         "steps list should contain 'I include': {text}"
     );
 }
+
+/// Answers what an upload endpoint would care about: was it multipart, and
+/// did the file and the text field arrive.
+async fn spawn_upload_stub() -> String {
+    let app = Router::new().route(
+        "/upload",
+        post(
+            |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+                let content_type = headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let text = String::from_utf8_lossy(&body);
+                Json(json!({
+                    "multipart": content_type.starts_with("multipart/form-data; boundary="),
+                    "has_file": text.contains("filename=\"id_front.png\"") && text.contains("PNGDATA"),
+                    "has_field": text.contains("name=\"kind\"") && text.contains("ID_CARD"),
+                }))
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upload stub");
+    let address = listener.local_addr().expect("upload stub address");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve upload stub");
+    });
+    format!("http://{address}/")
+}
+
+const UPLOAD_FEATURE: &str = r#"Feature: upload
+  Scenario: a file and a field go out as multipart
+    Given the request form parameters are:
+      | name | value   |
+      | kind | ID_CARD |
+    And I attach the file "fixtures/id_front.png" to the request as "content"
+    When I request "/upload" using HTTP POST
+    Then the response body contains JSON:
+      """
+      {"multipart": true, "has_file": true, "has_field": true}
+      """
+"#;
+
+fn write_upload_fixture(cfg: &std::path::Path) {
+    let fixtures = cfg.parent().expect("config dir").join("features/fixtures");
+    std::fs::create_dir_all(&fixtures).expect("mkdir fixtures");
+    std::fs::write(fixtures.join("id_front.png"), b"PNGDATA").expect("write fixture");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_is_uploaded_as_multipart_with_its_form_fields() {
+    let base = spawn_upload_stub().await;
+    let cfg = write_doctor_project("upload-ok", &base, UPLOAD_FEATURE, "");
+    write_upload_fixture(&cfg);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_missing_literal_attachment_stops_the_run_before_any_request_with_exit_two() {
+    let cfg = write_doctor_project("upload-missing", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("fixtures/id_front.png"), "{stderr}");
+}
+
+#[test]
+fn doctor_reports_a_missing_literal_attachment() {
+    let cfg = write_doctor_project("upload-doctor", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("no such file"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup() {
+    let base = spawn_upload_stub().await;
+    let feature = r#"Feature: upload
+  Scenario: the path is only known at run time
+    Given set variable "file" to "fixtures/gone.png"
+    And I attach the file "<<file>>" to the request as "content"
+"#;
+    let cfg = write_doctor_project("upload-var-missing", &base, feature, "");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("fixtures/gone.png"), "{stdout}");
+}

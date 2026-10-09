@@ -24,6 +24,7 @@ pub enum StepId {
     SetRequestBody,
     EmptyRequestBody,
     SetFormParams,
+    AttachFile,
     RequestPath,
     RequestPathWithMethod,
     UseApi,
@@ -211,6 +212,12 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "api",
         "the request form parameters are:",
         "sends the table below as form-encoded parameters instead of a body",
+    ),
+    action(
+        StepId::AttachFile,
+        "api",
+        r#"I attach the file "{file}" to the request as "{name}""#,
+        "attaches a file, path relative to this feature file, as a multipart/form-data part",
     ),
     action(
         StepId::RequestPathWithMethod,
@@ -1054,7 +1061,7 @@ pub struct Args {
 }
 
 impl Args {
-    fn cap(&self, i: usize) -> &str {
+    pub(crate) fn cap(&self, i: usize) -> &str {
         self.caps.get(i).map(String::as_str).unwrap_or("")
     }
 }
@@ -1262,6 +1269,9 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         }
         StepId::Include | StepId::IncludeScenario => {
             unreachable!("execute_step intercepts Include/IncludeScenario before calling dispatch")
+        }
+        StepId::AttachFile => {
+            unreachable!("execute_step intercepts AttachFile before calling dispatch")
         }
     };
     result.map_err(AttemptError::Fatal)

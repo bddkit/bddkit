@@ -79,6 +79,17 @@ fn execute_step<'a>(
                     return run_include(world, reg, step, id, caps, source, generator, depth).await;
                 }
                 let args = prepare(step, caps, params, &world.vars, generator)?;
+                if id == StepId::AttachFile {
+                    // Needs the directory of the file the step is written in,
+                    // which `dispatch` does not carry — same reason as Include.
+                    let base_dir = source.parent().unwrap_or(std::path::Path::new("."));
+                    return crate::steps::api::attach_file(
+                        world,
+                        base_dir,
+                        args.cap(0),
+                        args.cap(1),
+                    );
+                }
                 match kind {
                     StepKind::Action => dispatch(world, id, &args, 0)
                         .await

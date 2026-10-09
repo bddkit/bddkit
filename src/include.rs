@@ -24,16 +24,23 @@ pub fn check_literal(path_literal: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A step's file path against the directory of the file the step is written
+/// in; an absolute path is used as-is. Shared by `I include` and
+/// `I attach the file`, so the two cannot disagree about "relative to".
+pub fn join(path: &str, base_dir: &Path) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base_dir.join(candidate)
+    }
+}
+
 /// Resolves an include's file literal relative to `base_dir` (the directory
 /// of the `.feature` file, or the macro YAML file, the step is written in).
 /// Absolute literals are used as-is.
 pub fn resolve(path_literal: &str, base_dir: &Path) -> Result<PathBuf, String> {
-    let candidate = Path::new(path_literal);
-    let resolved = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        base_dir.join(candidate)
-    };
+    let resolved = join(path_literal, base_dir);
     if !resolved.is_file() {
         return Err(format!(
             "I include {path_literal:?}: no such file ({})",

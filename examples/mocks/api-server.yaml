@@ -173,6 +173,22 @@
     body: >
       {"status": "ok", "user": "demo"}
 
+# --- File upload: only a multipart/form-data request is accepted ---------
+
+- request:
+    method: POST
+    path: /documents
+    headers:
+      Content-Type:
+        matcher: ShouldStartWith
+        value: "multipart/form-data; boundary="
+  response:
+    status: 201
+    headers:
+      Content-Type: application/json
+    body: >
+      {"status": "stored"}
+
 # --- Dynamic: echo back what was posted ---------------------------------
 
 - request:

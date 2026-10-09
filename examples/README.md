@@ -20,7 +20,7 @@ The mocks live in `examples/mocks/api-server.yaml` and are seeded into Smocker a
 | `features/variables.feature` | `set variable`, extraction from JSON and cookies, reuse across steps and scenarios, `<<unique()>>`, a `<<variable>>` in a typed position (an HTTP method, a status code), `Show all variables` and `Print table:` |
 | `features/variable_assertions.feature` | substring, regex and JSON assertions over a variable, extraction from a variable by JSON path or regex, and a macro in `macros/users.yaml` that publishes its extracts with `global` |
 | `features/macros.feature` | YAML-declared steps from `macros/posts.yaml`, macro calling a macro, Scenario Outline, a Cucumber Expression template with an alternation and optional text, a typed parameter (`{code:uint}`) given a literal or a `<<variable>>` |
-| `features/content_types.feature` | HTML/XML/plain-text responses, a form login |
+| `features/content_types.feature` | HTML/XML/plain-text responses, a form login, a multipart file upload (`fixtures/id_front.png`) |
 | `features/eventual.feature` | An assertion polled until it passes |
 | `features/include_setup.feature` + `features/include_caller.feature` | `I include "<file>" scenario "<name>"`, a Scenario Outline included with a `with:` table, `@exports` isolation — an unexported variable set inside the included scenario does not exist in the caller — and `with prefix "<p>"`, including the same flow twice without the second call's exports overwriting the first's. Neither file makes an HTTP request, so this pair also runs with no Smocker container: `./target/release/bddkit run --config examples/api.yaml examples/features/include_setup.feature examples/features/include_caller.feature` |
 

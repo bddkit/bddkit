@@ -8,6 +8,7 @@ SetQueryParam: устанавливает параметр строки запр
 SetRequestBody: задаёт тело запроса из докстринга под шагом
 EmptyRequestBody: очищает собранное тело запроса
 SetFormParams: отправляет таблицу ниже как form-параметры вместо тела
+AttachFile: прикладывает файл (путь от этого feature-файла) как часть multipart/form-data
 RequestPathWithMethod: выполняет запрос к текущему API указанным методом
 RequestPath: выполняет GET-запрос к текущему API
 SignNextRequestWithHawk: подписывает следующий запрос этими учётными данными Hawk и каждый его повтор

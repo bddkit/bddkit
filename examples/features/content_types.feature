@@ -30,3 +30,18 @@ Feature: responses that are not JSON
       """
     And extract "session" from cookies as "sessionId"
     And variable "sessionId" should be equal to "s3cr3t-session"
+
+  # The path is relative to this feature file. The mock only answers a request
+  # whose Content-Type is multipart/form-data, so a regression to a
+  # url-encoded body fails here instead of passing.
+  Scenario: a file and a text field are uploaded as multipart/form-data
+    Given the request form parameters are:
+      | name     | value                                   |
+      | metadata | {"idDocType":"ID_CARD","country":"DEU"} |
+    And I attach the file "fixtures/id_front.png" to the request as "content"
+    When I request "/documents" using HTTP POST
+    Then the response code is 201
+    And the response body contains JSON:
+      """
+      {"status": "stored"}
+      """

@@ -19,6 +19,16 @@ pub struct Exchange {
     pub body: String,
 }
 
+/// One attached file, read into memory when the step ran so a retried
+/// assertion replays the upload with the content it first sent.
+#[derive(Clone)]
+struct FilePart {
+    name: String,
+    file_name: String,
+    mime: String,
+    bytes: Arc<[u8]>,
+}
+
 #[derive(Clone)]
 struct RequestRecipe {
     api: String,
@@ -28,6 +38,7 @@ struct RequestRecipe {
     headers: Vec<(String, String)>,
     body: Option<String>,
     form: Option<Vec<(String, String)>>,
+    files: Vec<FilePart>,
     signer: Option<hawk::Credentials>,
 }
 
@@ -194,6 +205,7 @@ pub struct HttpState {
     query: Vec<(String, String)>,
     body: Option<String>,
     form: Option<Vec<(String, String)>>,
+    files: Vec<FilePart>,
     last: Option<Exchange>,
     replay: Option<RequestRecipe>,
     /// Hawk credentials for the next initial send. A successful request keeps
@@ -211,6 +223,7 @@ impl HttpState {
             query: Vec::new(),
             body: None,
             form: None,
+            files: Vec::new(),
             last: None,
             replay: None,
             signer: None,
@@ -244,6 +257,7 @@ impl HttpState {
         self.query.clear();
         self.body = None;
         self.form = None;
+        self.files.clear();
         self.signer = None;
     }
 
@@ -280,16 +294,37 @@ impl HttpState {
     pub fn set_body(&mut self, body: String) {
         self.body = Some(body);
         self.form = None;
+        self.files.clear();
     }
 
     pub fn clear_body(&mut self) {
         self.body = None;
         self.form = None;
+        self.files.clear();
     }
 
     pub fn set_form(&mut self, pairs: Vec<(String, String)>) {
         self.form = Some(pairs);
         self.body = None;
+    }
+
+    /// Adds a file part; any attachment turns the request into
+    /// `multipart/form-data`, with the form parameters as its text parts. The
+    /// part's file name is the path's last segment and its type comes from the
+    /// extension (`application/octet-stream` when unknown).
+    pub fn attach_file(&mut self, part: &str, path: &std::path::Path, bytes: Vec<u8>) {
+        self.body = None;
+        self.files.push(FilePart {
+            name: part.to_string(),
+            file_name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            mime: mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .to_string(),
+            bytes: bytes.into(),
+        });
     }
 
     pub fn last(&self) -> Option<&Exchange> {
@@ -319,6 +354,7 @@ impl HttpState {
             headers: self.headers.clone(),
             body: self.body.clone(),
             form: self.form.clone(),
+            files: self.files.clone(),
             signer: self.signer.take(),
         };
         let exchange = self
@@ -359,7 +395,10 @@ impl HttpState {
 
         // Built before headers: a pending Hawk signer needs the exact bytes
         // being sent to hash the payload.
-        let sent_body = if let Some(form) = &recipe.form {
+        let multipart = !recipe.files.is_empty();
+        let sent_body = if multipart {
+            Some(describe_parts(recipe))
+        } else if let Some(form) = &recipe.form {
             Some(
                 form.iter()
                     .map(|(k, v)| format!("{k}={v}"))
@@ -372,6 +411,12 @@ impl HttpState {
 
         let mut request_headers = recipe.headers.clone();
         if let Some(credentials) = &recipe.signer {
+            if multipart {
+                return Err(ReplayError::Fatal(
+                    "Hawk signing supports raw request bodies only, not multipart bodies"
+                        .to_string(),
+                ));
+            }
             if recipe.form.is_some() {
                 return Err(ReplayError::Fatal(
                     "Hawk signing supports raw request bodies only, not form bodies".to_string(),
@@ -391,11 +436,28 @@ impl HttpState {
             .map_err(ReplayError::Fatal)?;
         }
 
+        // The multipart Content-Type carries the boundary, so it replaces
+        // whatever `default_headers` or a header step set rather than joining it.
+        let multipart_form = multipart.then(|| multipart_form(recipe)).transpose()?;
+        if multipart_form.is_some() {
+            request_headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
+        }
+
         let mut req = api.client.request(method.clone(), url.clone());
         for (k, v) in &request_headers {
             req = req.header(k, v);
         }
-        if let Some(form) = &recipe.form {
+        // `reqwest` adds the multipart Content-Type itself; it is recorded
+        // here only so a failure dump shows what was sent.
+        if let Some(form) = &multipart_form {
+            request_headers.push((
+                "Content-Type".to_string(),
+                format!("multipart/form-data; boundary={}", form.boundary()),
+            ));
+        }
+        if let Some(form) = multipart_form {
+            req = req.multipart(form);
+        } else if let Some(form) = &recipe.form {
             req = req.form(form);
         } else if let Some(b) = &recipe.body {
             req = req.body(b.clone());
@@ -435,6 +497,47 @@ impl HttpState {
             body,
         })
     }
+}
+
+/// A fresh `multipart::Form` per attempt: a form is consumed by the request
+/// that carries it, so a replay rebuilds it from the recipe.
+fn multipart_form(recipe: &RequestRecipe) -> Result<reqwest::multipart::Form, ReplayError> {
+    use reqwest::multipart::{Form, Part};
+    let mut form = Form::new();
+    for (name, value) in recipe.form.iter().flatten() {
+        form = form.text(name.clone(), value.clone());
+    }
+    for file in &recipe.files {
+        let part = Part::bytes(file.bytes.to_vec())
+            .file_name(file.file_name.clone())
+            .mime_str(&file.mime)
+            .map_err(|e| {
+                ReplayError::Fatal(format!("invalid content type {:?}: {e}", file.mime))
+            })?;
+        form = form.part(file.name.clone(), part);
+    }
+    Ok(form)
+}
+
+/// What the failure dump shows of a multipart body: text parts as
+/// `name=value`, files as name, file name, type and size — never the bytes.
+fn describe_parts(recipe: &RequestRecipe) -> String {
+    recipe
+        .form
+        .iter()
+        .flatten()
+        .map(|(name, value)| format!("{name}={value}"))
+        .chain(recipe.files.iter().map(|f| {
+            format!(
+                "{}: {} ({}, {} bytes)",
+                f.name,
+                f.file_name,
+                f.mime,
+                f.bytes.len()
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("\n    ")
 }
 
 /// 16 random bytes, Base64-encoded, as a fresh Hawk nonce.
@@ -754,6 +857,7 @@ pub(crate) mod tests {
             headers: vec![("bad\nheader".to_string(), "value".to_string())],
             body: None,
             form: None,
+            files: Vec::new(),
             signer: None,
         };
 
@@ -894,6 +998,203 @@ pub(crate) mod tests {
         state.set_form(vec![("name".into(), "value".into())]);
         state.sign_next("id", "key");
         assert!(state.send("/x", "POST").await.unwrap_err().contains("form"));
+    }
+
+    /// Echoes what the server actually received: every Content-Type header
+    /// and the raw body, lossily decoded (the fixtures are ASCII).
+    async fn spawn_multipart_echo() -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new().route(
+            "/upload",
+            any(|headers: HeaderMap, body: axum::body::Bytes| async move {
+                Json(json!({
+                    "content_types": headers
+                        .get_all("content-type")
+                        .iter()
+                        .map(|v| v.to_str().unwrap_or("").to_string())
+                        .collect::<Vec<_>>(),
+                    "body": String::from_utf8_lossy(&body),
+                }))
+            }),
+        );
+        spawn_app(app).await
+    }
+
+    fn attach(state: &mut HttpState, part: &str, file_name: &str, bytes: &[u8]) {
+        state.attach_file(part, std::path::Path::new(file_name), bytes.to_vec());
+    }
+
+    #[tokio::test]
+    async fn an_attached_file_is_sent_as_a_multipart_part_with_its_name_type_and_bytes() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        attach(&mut state, "content", "dir/id_front.png", b"PNGDATA");
+        state.send("/upload", "POST").await.expect("upload");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let body = echoed["body"].as_str().expect("body text");
+        assert!(
+            body.contains(r#"name="content"; filename="id_front.png""#),
+            "{body}"
+        );
+        assert!(body.contains("Content-Type: image/png"), "{body}");
+        assert!(body.contains("PNGDATA"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn form_parameters_travel_as_text_parts_beside_a_file() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        state.set_form(vec![("metadata".into(), r#"{"a":1}"#.into())]);
+        attach(&mut state, "content", "x.bin", b"B");
+        state.send("/upload", "POST").await.expect("upload");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let body = echoed["body"].as_str().expect("body text");
+        assert!(body.contains(r#"name="metadata""#), "{body}");
+        assert!(body.contains(r#"{"a":1}"#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn one_part_name_can_carry_several_files() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        attach(&mut state, "docs", "a.txt", b"AAA");
+        attach(&mut state, "docs", "b.txt", b"BBB");
+        state.send("/upload", "POST").await.expect("upload");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let body = echoed["body"].as_str().expect("body text");
+        assert_eq!(body.matches(r#"name="docs""#).count(), 2, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_file_with_an_unknown_extension_is_octet_stream() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        attach(&mut state, "content", "blob.zzzunknown", b"B");
+        state.send("/upload", "POST").await.expect("upload");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let body = echoed["body"].as_str().expect("body text");
+        assert!(
+            body.contains("Content-Type: application/octet-stream"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_an_attachment_form_parameters_stay_urlencoded() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        state.set_form(vec![("a".into(), "1".into())]);
+        state.send("/upload", "POST").await.expect("send");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        assert_eq!(
+            echoed["content_types"],
+            json!(["application/x-www-form-urlencoded"])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_multipart_content_type_wins_over_every_configured_one() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let defaults = vec![("Content-Type".to_string(), "application/json".to_string())];
+        let mut state = HttpState::new(apis_with("main", &base, defaults));
+        state.set_header("content-type", "text/plain");
+        state.add_header("CONTENT-TYPE", "application/xml");
+        attach(&mut state, "content", "x.bin", b"B");
+        state.send("/upload", "POST").await.expect("upload");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let types = echoed["content_types"].as_array().expect("array");
+        assert_eq!(types.len(), 1, "{types:?}");
+        assert!(
+            types[0]
+                .as_str()
+                .expect("string")
+                .starts_with("multipart/form-data; boundary="),
+            "{types:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_resends_the_same_file_content() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        attach(&mut state, "content", "x.bin", b"ORIGINAL");
+        state.send("/upload", "POST").await.expect("upload");
+        attach(&mut state, "content", "x.bin", b"MUTATED");
+
+        state.replay_last().await.expect("replay");
+
+        let echoed = state.last().expect("exchange").json().expect("JSON");
+        let body = echoed["body"].as_str().expect("body text");
+        assert!(
+            body.contains("ORIGINAL") && !body.contains("MUTATED"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_recorded_request_lists_parts_and_never_the_file_bytes() {
+        let (base, _server) = spawn_multipart_echo().await;
+        let mut state = HttpState::new(apis_with("main", &base, Vec::new()));
+        state.set_form(vec![("meta".into(), "hello".into())]);
+        attach(&mut state, "content", "id_front.png", b"SECRETBYTES");
+        state.send("/upload", "POST").await.expect("upload");
+
+        // The stub echoes the upload back, so only the request half is checked.
+        let sent = state
+            .last()
+            .and_then(|e| e.req_body.clone())
+            .expect("recorded request");
+        assert!(sent.contains("meta=hello"), "{sent}");
+        assert!(
+            sent.contains("content: id_front.png (image/png, 11 bytes)"),
+            "{sent}"
+        );
+        assert!(!sent.contains("SECRETBYTES"), "{sent}");
+    }
+
+    #[test]
+    fn attachments_are_cleared_by_reset_api_switch_and_a_raw_body() {
+        let mut state = state();
+        attach(&mut state, "content", "x.bin", b"B");
+        state.reset();
+        assert!(state.files.is_empty(), "reset");
+
+        attach(&mut state, "content", "x.bin", b"B");
+        state.set_body("{}".into());
+        assert!(state.files.is_empty(), "set_body");
+
+        attach(&mut state, "content", "x.bin", b"B");
+        state.clear_body();
+        assert!(state.files.is_empty(), "clear_body");
+
+        attach(&mut state, "content", "x.bin", b"B");
+        state.use_api("main").expect("declared");
+        assert!(state.files.is_empty(), "use_api");
+    }
+
+    #[test]
+    fn attaching_a_file_drops_a_pending_raw_body_and_keeps_form_parameters() {
+        let mut state = state();
+        state.set_body("{}".into());
+        attach(&mut state, "content", "x.bin", b"B");
+        assert!(state.body.is_none());
+
+        state.set_form(vec![("a".into(), "1".into())]);
+        assert_eq!(state.files.len(), 1, "set_form must not drop attachments");
+    }
+
+    #[tokio::test]
+    async fn a_signed_multipart_request_fails_before_transport() {
+        let mut state = state();
+        attach(&mut state, "content", "x.bin", b"B");
+        state.sign_next("id", "key");
+        let error = state.send("/x", "POST").await.unwrap_err();
+        assert!(error.contains("multipart"), "{error}");
     }
 
     #[test]
