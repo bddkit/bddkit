@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# Install bddkit from a GitHub Release. Linux/macOS only — see install.ps1 for Windows.
+# Install bddkit from a GitHub Release. Linux/macOS; on Windows (Git Bash, MSYS2,
+# Cygwin) it hands off to install.ps1.
 #
 #   curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh
 #
@@ -88,6 +89,23 @@ resolve_latest_tag() {
 }
 
 BIN_DIR="${BDDKIT_INSTALL_DIR:-$HOME/.local/bin}"
+
+# No sh install for Windows: install.ps1 owns the zip, the checksum and the user
+# PATH, so hand off to it rather than keep a second copy of that logic here.
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*)
+	PS1_CMD="irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex"
+	for ps in pwsh powershell; do
+		if has "$ps"; then
+			info "Windows detected — handing off to install.ps1 (${ps})"
+			exec "$ps" -NoProfile -Command "$PS1_CMD"
+		fi
+	done
+	error "PowerShell not found — run this in PowerShell instead:"
+	info "  ${PS1_CMD}"
+	exit 1
+	;;
+esac
 
 TARGET="$(detect_target)"
 if ! is_supported "$TARGET"; then
