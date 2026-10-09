@@ -17,6 +17,9 @@ pub struct ExpandedStep {
 pub struct ExpandedScenario {
     pub name: String,
     pub line: usize,
+    /// 0-based row ordinal across the outline's `Examples` tables; `None` for
+    /// a plain scenario. Rows share `line`, so this is what tells them apart.
+    pub example: Option<usize>,
     pub steps: Vec<ExpandedStep>,
 }
 
@@ -251,6 +254,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
         return vec![ExpandedScenario {
             name: sc.name.clone(),
             line: sc.position.line,
+            example: None,
             steps: base,
         }];
     }
@@ -278,6 +282,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
             out.push(ExpandedScenario {
                 name: format!("{} [{}]", sc.name, row.join(", ")),
                 line: sc.position.line,
+                example: Some(out.len()),
                 steps,
             });
         }

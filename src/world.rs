@@ -74,6 +74,8 @@ pub struct World {
     /// Non-fatal notices raised by the step just executed, drained by the
     /// runner into that step's report entry. Never survives past one step.
     pub warnings: Vec<String>,
+    /// Per feature file. Set by `run_file` once it knows the file; off until then.
+    pub trace: crate::events::Trace,
 }
 
 impl World {
@@ -98,6 +100,7 @@ impl World {
             plugins: crate::plugin::PluginState::new(plugins),
             workspace,
             warnings: Vec::new(),
+            trace: crate::events::Trace::off(),
         }
     }
 
