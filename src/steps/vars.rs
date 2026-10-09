@@ -252,6 +252,7 @@ mod tests {
             None,
             None,
             crate::options::Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         )
     }
 

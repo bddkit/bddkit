@@ -3431,6 +3431,7 @@ fn run_with_events(
         .arg(cfg)
         .arg("--events")
         .arg(&events)
+        .env_remove("BDDKIT_ARTIFACTS_DIR")
         .args(extra)
         .output()
         .expect("run bddkit");
@@ -3503,6 +3504,31 @@ async fn every_line_of_the_stream_is_one_json_object_with_a_rising_seq() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_started_names_the_artifact_root() {
+    let base = common::spawn().await;
+    let cfg = write_report_project(&base, "events-artifact-root");
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+    let run_id = stream[0]["run_id"].as_str().expect("run_id");
+    assert_eq!(
+        stream[0]["artifacts_dir"],
+        std::env::temp_dir()
+            .join(format!("bddkit-{run_id}"))
+            .display()
+            .to_string(),
+        "the default root, absolute"
+    );
+
+    // A relative flag value is reported as resolved against the working directory.
+    let (_, stream, _) = run_with_events(&cfg, &["--artifacts-dir", "evidence"]);
+    let root = stream[0]["artifacts_dir"].as_str().expect("artifacts_dir");
+    assert!(std::path::Path::new(root).is_absolute(), "{root}");
+    assert_eq!(
+        std::path::Path::new(root),
+        std::env::current_dir().expect("cwd").join("evidence")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

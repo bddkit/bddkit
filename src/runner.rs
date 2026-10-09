@@ -248,7 +248,7 @@ async fn run_step(
                     args: &args.caps,
                     docstring: args.docstring.as_ref(),
                     table: args.table.as_ref(),
-                    artifacts_dir: plugins.next_artifacts_dir(),
+                    artifacts_dir: world.artifacts.next_dir().display().to_string(),
                     workspace_dir: workspace_dir.clone(),
                     debug: world.debug,
                     options: OptionsJson::from(&effective),
@@ -515,6 +515,7 @@ pub struct RunContext {
     pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
     pub options: Options,
+    pub artifacts: Arc<crate::artifacts::Artifacts>,
     /// `--events`; `None` costs each emit site one branch.
     pub events: Option<Events>,
     fail_fast: bool,
@@ -536,6 +537,7 @@ impl RunContext {
         srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
+        artifacts: Arc<crate::artifacts::Artifacts>,
         fail_fast: bool,
     ) -> Self {
         Self {
@@ -548,6 +550,7 @@ impl RunContext {
             srp,
             plugins,
             options,
+            artifacts,
             events: None,
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
@@ -600,6 +603,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         ctx.srp.clone(),
         ctx.plugins.clone(),
         ctx.options.clone(),
+        ctx.artifacts.clone(),
     );
     world.trace = Trace::new(ctx.events.clone(), &lf.path, &lf.feature.name);
     let mut scenarios = Vec::new();
@@ -910,6 +914,7 @@ mod tests {
             None,
             plugins,
             Options::default(),
+            crate::artifacts::Artifacts::for_test(),
             false,
         ))
     }
@@ -969,6 +974,7 @@ mod tests {
             None,
             Some(plugins.clone()),
             Options::default(),
+            crate::artifacts::Artifacts::for_test(),
         );
         (world, plugins)
     }
@@ -1875,5 +1881,14 @@ Feature: eventual assertion
         assert!(!ctx.stopped(), "request_stop must stay gated by fail_fast");
         ctx.force_stop();
         assert!(ctx.stopped());
+    }
+
+    #[test]
+    fn a_run_without_plugins_can_still_allocate_an_artifact_path() {
+        let ctx = context(Registry::new().expect("built-in patterns compile"));
+        assert!(ctx.plugins.is_none());
+        let (first, second) = (ctx.artifacts.next_dir(), ctx.artifacts.next_dir());
+        assert_ne!(first, second);
+        assert!(first.starts_with(ctx.artifacts.root()));
     }
 }

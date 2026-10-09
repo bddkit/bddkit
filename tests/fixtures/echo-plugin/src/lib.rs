@@ -98,7 +98,9 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "description": "echoes its argument back into a variable, prefixed by the instance config" },
             { "pattern": r#"^the echo counter should reach (?P<count>\d+)$"#, "group": "echo", "kind": "assertion",
               "description": "asserts the instance has served this many steps" },
-            { "pattern": r#"^the echo should fail$"#, "group": "echo", "kind": "assertion" }
+            { "pattern": r#"^the echo should fail$"#, "group": "echo", "kind": "assertion" },
+            { "pattern": r#"^I echo the directories$"#, "group": "echo", "kind": "action",
+              "description": "writes a marker file into artifacts_dir and another into workspace_dir" }
         ])
         .to_string()
     })
@@ -241,6 +243,16 @@ pub extern "C" fn bddkit_dispatch(
                 ]
             })
             .to_string(),
+            3 => {
+                // Evidence lands where the host said, so a test can look there.
+                for (key, file) in [("artifacts_dir", "artifact.txt"), ("workspace_dir", "workspace.txt")] {
+                    let dir = std::path::Path::new(value[key].as_str().unwrap_or_default());
+                    if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(dir.join(file), key)) {
+                        return serde_json::json!({"status": "fatal", "error": e.to_string()}).to_string();
+                    }
+                }
+                serde_json::json!({"status": "passed"}).to_string()
+            }
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
