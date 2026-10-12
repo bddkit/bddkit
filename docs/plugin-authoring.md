@@ -32,7 +32,7 @@ serde_json = "1.0"
 
 The build produces `libbddkit_s3.so` (Linux), `libbddkit_s3.dylib` (macOS) or `bddkit_s3.dll` (Windows) in `target/<profile>/`. That file's path is what goes into the lock file in section 7.
 
-**`tests/fixtures/echo-plugin/` in the bddkit repository is a complete, working plugin — 260 lines, every export, every reply shape, the panic guard, the NUL handling.** Copy it and replace the body. It is also what the host's own test suite runs against, so it cannot rot: a change to the ABI that the fixture does not follow turns the suite red.
+**`tests/fixtures/echo-plugin/` in the bddkit repository is a complete, working plugin — about 330 lines, every export, every reply shape, the panic guard, the NUL handling.** Copy it and replace the body. Two things in it are deliberately bad examples for the host's own tests: its `validate_config` refuses a `password` key by quoting the value back, and `the echo should fail quoting "…"` quotes its argument in an error — each exists to prove the host hides what a careless plugin prints, and neither is a pattern to copy. It is also what the host's own test suite runs against, so it cannot rot: a change to the ABI that the fixture does not follow turns the suite red.
 
 For a plugin that does real work rather than echoing its arguments back, read
 [`sergeym/bddkit-s3`](https://github.com/sergeym/bddkit-s3): an S3/MinIO plugin
@@ -279,6 +279,8 @@ Reply:
 - `vars` (optional, default `{}`) — string → string, written into the scenario's variables so later steps can read `<<uploaded_etag>>`. **Kept only when `status` is `passed`**; on `not_yet` and `fatal` they are dropped, so an intermediate observation cannot leak into the scenario.
 - `diagnostics` (optional, default `[]`) — evidence, rendered into the failure dump. **Kept only on the failure path**; a `passed` reply's diagnostics are discarded. There is currently no channel for evidence from a step that succeeded.
 - `error` (optional, default `null`) — the failure message. See section 5.
+
+**The host filters what you send back.** `error` and every diagnostic pass through bddkit's privacy filter before they are printed or written, so a value the tester has marked as secret (a `secret` step parameter, a variable with a privacy word in its name, a sensitive header, a password in the config) appears as `***` — including inside a message you quote it in. A diagnostic whose `kind` is `json` is also masked by name: a string or number under a key with `password`, `secret` or `token` as a word is hidden where it stands, and the value joins the file's set. You still receive the real values in `args`, the docstring and the table; masking never changes what a plugin is given. A plugin cannot declare its own secrets or mark a step argument sensitive yet.
 
 A diagnostic is `{"title", "kind", "content", "path"}`: `title` and `kind` are required strings, `content` and `path` are optional. `kind` is free-form text — `text`, `json`, `http` and `image` are the conventional values, and an unrecognised one degrades to "print it as text" rather than failing the parse. The host renders each as `--- <title> (<kind>) ---`, then `content`, then `path`, appended to `error`.
 
