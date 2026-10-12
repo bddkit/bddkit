@@ -1,4 +1,5 @@
 use crate::options::{Options, OptionsLayer};
+use crate::privacy;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -29,6 +30,10 @@ pub struct Config {
     pub options: OptionsLayer,
     #[serde(skip)]
     pub effective_options: Options,
+    /// The config layer of the privacy vocabulary; `privacy::Privacy::resolve`
+    /// folds it with the environment and the flags.
+    #[serde(default)]
+    pub privacy: crate::privacy::PrivacyLayer,
     /// Everything the host does not name itself: `default_<group>` keys for
     /// plugin groups. Captured rather than rejected — a group's default is
     /// spelled the same way as `default_api`, and the host cannot know the
@@ -139,6 +144,18 @@ pub const API_FIELDS: &[(&str, bool, &str, Scalar)] = &[
         Scalar::NonScalar,
     ),
     (
+        "sensitive_headers",
+        false,
+        "header names masked in failure dumps and reports, added to authorization, cookie, set-cookie",
+        Scalar::NonScalar,
+    ),
+    (
+        "sensitive_headers_only",
+        false,
+        "header names masked instead of authorization, cookie, set-cookie; an empty list masks no header",
+        Scalar::NonScalar,
+    ),
+    (
         "options",
         false,
         "polling.timeout_secs / polling.interval_ms for eventual assertions against this API",
@@ -157,6 +174,15 @@ pub struct ApiConfig {
     pub options: OptionsLayer,
     #[serde(skip)]
     pub effective_options: Options,
+    /// Header names whose values are masked, added to the defaults.
+    #[serde(default)]
+    pub sensitive_headers: Option<Vec<String>>,
+    /// Header names whose values are masked, instead of the defaults.
+    #[serde(default)]
+    pub sensitive_headers_only: Option<Vec<String>>,
+    /// The two keys folded over the defaults, lowercase.
+    #[serde(skip)]
+    pub effective_sensitive_headers: Vec<String>,
 }
 
 /// `Clone` so `doctor` can hand `Db::connect` a one-entry map per connection.
@@ -299,6 +325,21 @@ impl Config {
             resource.effective_options = global
                 .apply(&resource.options)
                 .map_err(|error| anyhow::anyhow!("resources.api.{name}: {error}"))?;
+            let mut headers: Vec<String> = crate::http::DEFAULT_SENSITIVE_HEADERS
+                .iter()
+                .map(|header| header.to_string())
+                .collect();
+            let key = |key: &str| format!("resources.api.{name}.{key}");
+            crate::privacy::fold_list(
+                &mut headers,
+                (
+                    &resource.sensitive_headers,
+                    &resource.sensitive_headers_only,
+                ),
+                (&key("sensitive_headers"), &key("sensitive_headers_only")),
+                (&crate::http::header_name, "a valid header name"),
+            )?;
+            resource.effective_sensitive_headers = headers;
         }
         for (name, resource) in &mut self.resources.db {
             resource.effective_options = global
@@ -465,7 +506,16 @@ fn load_env_file(path: &Path, map: &mut BTreeMap<String, String>) -> Result<()> 
     match dotenvy::from_path_iter(path) {
         Ok(iter) => {
             for item in iter {
-                let (k, v) = item.with_context(|| format!("failed to parse {}", path.display()))?;
+                let (k, v) = item.map_err(|error| match error {
+                    // dotenvy's own message quotes the whole line, which is a
+                    // `NAME=secret` assignment: name the place and nothing else.
+                    dotenvy::Error::LineParse(_, at) => anyhow::anyhow!(
+                        "failed to parse {}: a line is malformed (error at character {at} of it)",
+                        path.display()
+                    ),
+                    other => anyhow::Error::new(other)
+                        .context(format!("failed to parse {}", path.display())),
+                })?;
                 map.insert(k, v);
             }
             Ok(())
@@ -734,6 +784,13 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     let app_env = app_env_in(config_dir, cli_env)?;
     let env_map = load_env_layers(config_dir, &app_env)?;
     let expanded = expand_env(raw, &env_map)?;
+    // Before the typed parse, whose errors can quote a value: a secret the
+    // document holds is recorded the moment it is known.
+    // A syntax error names a position and quotes nothing; a type error
+    // (`invalid type: string "…"`) does quote, which is why this comes first.
+    if let Ok(document) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&expanded) {
+        record_secrets(&document);
+    }
     let mut cfg: Config = serde_yaml_ng::from_str(&expanded).context("failed to parse config")?;
     // Resolve the defaults right away: an ambiguous config should fail at
     // startup, not at the first step that reaches for them.
@@ -741,7 +798,37 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     cfg.resolve_default_db()?;
     cfg.resolve_default_srp()?;
     cfg.resolve_options()?;
+    // The values of the headers a resource calls sensitive are known only now.
+    privacy::record(
+        &resolved_privacy(&cfg.privacy),
+        cfg.resources.api.values().flat_map(|api| {
+            api.default_headers
+                .iter()
+                .filter(|(name, _)| {
+                    api.effective_sensitive_headers
+                        .contains(&name.to_ascii_lowercase())
+                })
+                .map(|(_, value)| value.clone())
+        }),
+    );
     Ok(cfg)
+}
+
+/// The vocabulary a config selects, under the flags and the environment this
+/// process has; the defaults when the section or the sources are unusable —
+/// the typed parse and `run` report those properly.
+fn resolved_privacy(layer: &privacy::PrivacyLayer) -> privacy::Privacy {
+    privacy::Privacy::from_sources(Some(layer), &privacy::process_env, privacy::flags())
+        .unwrap_or_default()
+}
+
+fn record_secrets(document: &serde_yaml_ng::Value) {
+    let layer = document
+        .get("privacy")
+        .and_then(|section| serde_yaml_ng::from_value(section.clone()).ok())
+        .unwrap_or_default();
+    let privacy = resolved_privacy(&layer);
+    privacy::record(&privacy, privacy::secrets_in(document, &privacy.fields));
 }
 
 #[cfg(test)]
@@ -801,9 +888,92 @@ resources:
                 ("base_url", "http://localhost:1"),
                 ("timeout_secs", "5"),
                 ("default_headers", "{ Accept: application/json }"),
+                ("sensitive_headers", "[x-api-key]"),
+                ("sensitive_headers_only", "[x-api-key]"),
                 ("options", "{ polling: { timeout_secs: 3 } }"),
             ],
         );
+    }
+
+    fn sensitive_headers(body: &str) -> Result<Vec<String>> {
+        let cfg = parse(&format!(
+            "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://x\n{body}"
+        ))?;
+        Ok(cfg.resources.api["a"].effective_sensitive_headers.clone())
+    }
+
+    #[test]
+    fn sensitive_headers_extend_the_default_list_without_case() {
+        let headers = sensitive_headers("      sensitive_headers: [X-Api-Key]\n").unwrap();
+        assert_eq!(
+            headers,
+            ["authorization", "cookie", "set-cookie", "x-api-key"]
+        );
+        let headers = sensitive_headers("").unwrap();
+        assert_eq!(headers, ["authorization", "cookie", "set-cookie"]);
+    }
+
+    #[test]
+    fn sensitive_headers_only_replaces_and_an_empty_list_leaves_no_header() {
+        let headers = sensitive_headers("      sensitive_headers_only: [x-api-key]\n").unwrap();
+        assert_eq!(headers, ["x-api-key"]);
+        assert!(
+            sensitive_headers("      sensitive_headers_only: []\n")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The sink is process-wide and only ever grows, so each test uses values
+    /// no other test writes. Never load a config here that sets `reveal` or a
+    /// large `min_length`: `record` overwrites both for every test in the process.
+    fn load_api_with(body: &str) {
+        let src =
+            format!("paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://x\n{body}");
+        load_str(&src, Path::new("."), None).expect("config loads");
+    }
+
+    #[test]
+    fn a_default_header_value_is_recorded_only_while_its_header_is_sensitive() {
+        load_api_with("      default_headers: { Authorization: 'Bearer kept-secret-1' }\n");
+        load_api_with(
+            "      default_headers: { Authorization: 'Bearer open-value-2' }\n      sensitive_headers_only: []\n",
+        );
+        assert_eq!(privacy::mask_text("a Bearer kept-secret-1 b"), "a *** b");
+        assert_eq!(
+            privacy::mask_text("a Bearer open-value-2 b"),
+            "a Bearer open-value-2 b"
+        );
+    }
+
+    #[test]
+    fn a_url_password_and_a_field_word_value_are_recorded_after_expansion() {
+        unsafe { std::env::set_var("BDDKIT_TEST_DB_PW", "from-env-pw-3") };
+        load_api_with(
+            "      password: literal-pw-4\ndb_url: postgres://app:${BDDKIT_TEST_DB_PW}@db/app\n",
+        );
+        assert_eq!(privacy::mask_text("x from-env-pw-3 y"), "x *** y");
+        assert_eq!(privacy::mask_text("x literal-pw-4 y"), "x *** y");
+    }
+
+    #[test]
+    fn both_header_lists_in_one_resource_are_refused_naming_the_resource() {
+        let error =
+            sensitive_headers("      sensitive_headers: [a]\n      sensitive_headers_only: [b]\n")
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("resources.api.a.sensitive_headers_only"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_sensitive_header_must_be_a_valid_header_name() {
+        let error = sensitive_headers("      sensitive_headers: [\"not a header\"]\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("valid header name"), "{error}");
     }
 
     #[test]
@@ -841,6 +1011,25 @@ resources:
 
     /// The whole point of `check_group_defaults`: `extra` swallows the typo
     /// silently, so nothing else in the config layer can catch it.
+    #[test]
+    fn a_misspelt_key_in_the_privacy_section_fails_the_config_parse() {
+        let error = parse("paths: [f]\nresources:\n  api: {}\nprivacy:\n  wrods: [x]\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("wrods"), "{error}");
+    }
+
+    #[test]
+    fn the_privacy_section_parses_through_the_flattened_config() {
+        let cfg = parse("paths: [f]\nresources:\n  api: {}\nprivacy:\n  fields: [otp]\n  min_length: 5\n  reveal: true\n")
+            .unwrap();
+        assert_eq!(cfg.privacy.fields, Some(vec!["otp".to_string()]));
+        assert_eq!(
+            (cfg.privacy.min_length, cfg.privacy.reveal),
+            (Some(5), Some(true))
+        );
+    }
+
     #[test]
     fn a_default_for_a_group_nothing_declares_is_rejected() {
         let c = parse(
@@ -1243,6 +1432,17 @@ resources:
                 err.to_string().contains(&path.display().to_string()),
                 "{err}"
             );
+        }
+
+        #[test]
+        fn a_malformed_line_is_never_quoted_back() {
+            let dir = unique_dir("malformed_quote");
+            let path = dir.join(".env");
+            std::fs::write(&path, "DB_PASSWORD=hunter2222 \"unterminated\n").expect("write");
+            let err = load_env_file(&path, &mut BTreeMap::new()).expect_err("malformed");
+            let text = format!("{err:#}");
+            assert!(!text.contains("hunter2222"), "{text}");
+            assert!(text.contains(&path.display().to_string()), "{text}");
         }
 
         #[test]

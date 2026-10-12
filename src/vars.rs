@@ -1,3 +1,4 @@
+use crate::privacy::Redactor;
 use crate::unique::{Generator, parse_kind};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -7,6 +8,10 @@ use std::sync::LazyLock;
 pub struct VarStack {
     frames: Vec<HashMap<String, String>>,
     globals: HashMap<String, String>,
+    /// Told every value written under a name with a privacy word in it. A
+    /// handle on the file's set, so an `I include` that swaps this whole stack
+    /// hands the same one to its replacement.
+    redactor: Redactor,
 }
 
 impl VarStack {
@@ -14,7 +19,16 @@ impl VarStack {
         Self {
             frames: vec![HashMap::new()],
             globals: HashMap::new(),
+            redactor: Redactor::disabled(),
         }
+    }
+
+    pub fn set_redactor(&mut self, redactor: Redactor) {
+        self.redactor = redactor;
+    }
+
+    pub fn redactor(&self) -> Redactor {
+        self.redactor.clone()
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
@@ -27,6 +41,7 @@ impl VarStack {
     }
 
     pub fn set(&mut self, name: &str, value: String) {
+        self.redactor.variable(name, &value);
         self.frames
             .last_mut()
             .expect("the frame stack is never empty")
@@ -34,6 +49,7 @@ impl VarStack {
     }
 
     pub fn set_global(&mut self, name: &str, value: String) {
+        self.redactor.variable(name, &value);
         self.globals.insert(name.to_string(), value);
     }
 
@@ -124,6 +140,14 @@ pub const NULL_SENTINEL: &str = "\u{0}__bddkit_null__\u{0}";
 /// from it, and `steps::expression` accepts it in a typed parameter, so the two
 /// can never disagree about what the runner will substitute.
 pub const PLACEHOLDER: &str = r"<<[^\W\d]\w*(?:\([^)]*\))?>>";
+
+/// True when `text` is exactly one slot and nothing else.
+pub fn is_whole_slot(text: &str) -> bool {
+    static WHOLE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(&format!("^(?:{PLACEHOLDER})$")).expect("constant regex")
+    });
+    WHOLE.is_match(text)
+}
 
 static SLOT: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(PLACEHOLDER).expect("constant regex"));

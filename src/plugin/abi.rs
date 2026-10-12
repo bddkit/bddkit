@@ -211,13 +211,23 @@ impl DispatchResult {
     /// Diagnostics are evidence on the failure path, so they have to end up
     /// inside the one string `report::render_file` writes. Printing them
     /// directly would land in the middle of another worker's dump.
-    pub fn render_failure(&self) -> String {
+    ///
+    /// A `json` diagnostic is masked by name BEFORE it is joined in, while its
+    /// positions still exist, and what it holds under a sensitive name joins the
+    /// file's set. The rest of the text (the error, a text diagnostic) is masked
+    /// by value by whoever prints the failure.
+    pub fn render_failure(&self, redactor: &crate::privacy::Redactor) -> String {
         let mut out = self.error.clone().unwrap_or_else(|| NO_MESSAGE.to_string());
         for d in &self.diagnostics {
             out.push_str(&format!("\n\n--- {} ({}) ---", d.title, d.kind));
             if let Some(content) = &d.content {
                 out.push('\n');
-                out.push_str(content);
+                if d.kind == "json" {
+                    redactor.register(&redactor.json_hits(content));
+                    out.push_str(&redactor.mask_json(content));
+                } else {
+                    out.push_str(content);
+                }
             }
             if let Some(path) = &d.path {
                 out.push_str(&format!("\n{path}"));
@@ -355,7 +365,7 @@ mod tests {
             ],
             error: Some("access denied".into()),
         };
-        let text = r.render_failure();
+        let text = r.render_failure(&crate::privacy::Redactor::disabled());
         assert!(text.contains("access denied"), "{text}");
         assert!(text.contains("PUT /b/o"), "{text}");
         assert!(text.contains("403 Forbidden"), "{text}");

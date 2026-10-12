@@ -1,0 +1,17 @@
+# bddkit testing bddkit: each scenario runs the binary on a scratch project
+# through the `exec` plugin and asserts on what it printed and wrote. Run from
+# the repository root, after `cargo build` and `bddkit plugin install exec`:
+#
+#   ./target/debug/bddkit run --config selftest/bddkit.yaml
+#
+# BDDKIT_BIN names the binary the scenarios run (default target/debug/bddkit).
+paths: [selftest/features]
+macro_paths: [selftest/macros.yaml]
+
+resources:
+  api: {}
+  exec:
+    main:
+      # The repository root, so the scenarios use the same relative paths the
+      # command line above does.
+      cwd: ${PWD}

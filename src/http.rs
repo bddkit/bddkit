@@ -1,5 +1,6 @@
 use crate::hawk;
 use crate::options::Options;
+use crate::privacy::Redactor;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -17,6 +18,24 @@ pub struct Exchange {
     pub status: u16,
     pub resp_headers: Vec<(String, String)>,
     pub body: String,
+    /// Lowercase names of the headers the API that served this exchange calls
+    /// sensitive; their values are shown as `***`, whatever their length.
+    pub masked_headers: Vec<String>,
+    /// Where the values of sensitive fields stand in `url`, `req_body` and
+    /// `body`. Positions, not values: a short value is hidden too, and the
+    /// text around it stays as it was.
+    pub spans: Spans,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Spans {
+    pub url: Vec<std::ops::Range<usize>>,
+    pub req_body: Vec<std::ops::Range<usize>>,
+    pub body: Vec<std::ops::Range<usize>>,
+}
+
+fn ranges(hits: &[crate::privacy::Hit]) -> Vec<std::ops::Range<usize>> {
+    hits.iter().map(|hit| hit.range.clone()).collect()
 }
 
 /// One attached file, read into memory when the step ran so a retried
@@ -87,18 +106,53 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-impl std::fmt::Display for Exchange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "  {} {}", self.method, self.url)?;
+impl Exchange {
+    /// The failure dump. Every string is masked BEFORE a body is cut to 600
+    /// characters, so a secret that straddles the cut cannot show its start.
+    /// A header's value as it may be shown: `***` for a header the API calls
+    /// sensitive, whatever the value's length; otherwise the value, masked.
+    pub fn shown_header(&self, name: &str, value: &str, redactor: &Redactor) -> String {
+        let sensitive = self
+            .masked_headers
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(name));
+        redactor.show(sensitive, value)
+    }
+
+    pub fn render(&self, redactor: &Redactor) -> String {
+        use std::fmt::Write;
+        let header = |name: &str, value: &str| self.shown_header(name, value, redactor);
+        // Positions first, then values, then the cut: see `truncate`.
+        // The spans of a revealed run are empty, so this is then the text itself.
+        let by_position = crate::privacy::mask_ranges;
+        let mut out = format!(
+            "  {} {}\n",
+            self.method,
+            redactor.mask(&by_position(&self.url, &self.spans.url))
+        );
         for (k, v) in &self.req_headers {
-            writeln!(f, "    {k}: {v}")?;
+            let _ = writeln!(out, "    {k}: {}", header(k, v));
         }
         if let Some(b) = &self.req_body {
-            writeln!(f, "    {}", truncate(b, 600))?;
+            let shown = redactor.mask(&by_position(b, &self.spans.req_body));
+            let _ = writeln!(out, "    {}", truncate(&shown, 600));
         }
-        writeln!(f, "  ← {}", self.status)?;
-        write!(f, "    {}", truncate(&self.body, 600))
+        let _ = writeln!(out, "  ← {}", self.status);
+        let shown = redactor.mask(&by_position(&self.body, &self.spans.body));
+        let _ = write!(out, "    {}", truncate(&shown, 600));
+        out
     }
+}
+
+/// Headers whose values are masked unless a resource says otherwise (spec §7.4).
+pub const DEFAULT_SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "set-cookie"];
+
+/// A header name in its normal (lowercase) form, or `None` when it is not a
+/// valid header name.
+pub fn header_name(value: &str) -> Option<String> {
+    reqwest::header::HeaderName::from_bytes(value.as_bytes())
+        .ok()
+        .map(|name| name.as_str().to_string())
 }
 
 /// One API resource: its own client (and therefore its own timeout and
@@ -108,6 +162,7 @@ pub struct ApiResource {
     base_url: url::Url,
     default_headers: Vec<(String, String)>,
     options: Options,
+    sensitive_headers: Vec<String>,
 }
 
 impl ApiResource {
@@ -132,7 +187,17 @@ impl ApiResource {
                 .with_context(|| format!("invalid base_url {base_url:?}"))?,
             default_headers,
             options,
+            sensitive_headers: DEFAULT_SENSITIVE_HEADERS
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         })
+    }
+
+    /// Replaces the default list; names are lowercase, as `Config` resolves them.
+    pub fn with_sensitive_headers(mut self, names: Vec<String>) -> Self {
+        self.sensitive_headers = names;
+        self
     }
 
     /// One GET at `base_url` over this resource's own client, so the probe
@@ -212,6 +277,7 @@ pub struct HttpState {
     /// them in its replay recipe; API switches and scenario resets clear only
     /// credentials that have not been sent yet.
     signer: Option<hawk::Credentials>,
+    redactor: Redactor,
 }
 
 impl HttpState {
@@ -227,9 +293,15 @@ impl HttpState {
             last: None,
             replay: None,
             signer: None,
+            redactor: Redactor::disabled(),
         };
         state.reset();
         state
+    }
+
+    /// The file's set of secrets: what an exchange reveals joins it.
+    pub fn set_redactor(&mut self, redactor: Redactor) {
+        self.redactor = redactor;
     }
 
     /// Restore the default request builder at a scenario boundary and forget
@@ -277,21 +349,41 @@ impl HttpState {
 
     /// Replace: removes all values with this name, then sets one.
     pub fn set_header(&mut self, name: &str, value: &str) {
+        self.register_header(name, value);
         self.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
         self.headers.push((name.to_string(), value.to_string()));
     }
 
+    /// A value the step text carries joins the set the moment the step runs, not
+    /// when a request sends it: a scenario that fails before sending would
+    /// otherwise print it in its report.
+    fn register_header(&self, name: &str, value: &str) {
+        let sensitive = self.apis.get(&self.current).is_ok_and(|api| {
+            api.sensitive_headers
+                .iter()
+                .any(|masked| masked.eq_ignore_ascii_case(name))
+        });
+        if sensitive {
+            register_header(&self.redactor, name, value);
+        }
+    }
+
     /// Appends to the header's existing values.
     pub fn add_header(&mut self, name: &str, value: &str) {
+        self.register_header(name, value);
         self.headers.push((name.to_string(), value.to_string()));
     }
 
     pub fn set_query(&mut self, name: &str, value: &str) {
+        if self.redactor.field_is_sensitive(name) {
+            self.redactor.secret(value);
+        }
         self.query.retain(|(k, _)| k != name);
         self.query.push((name.to_string(), value.to_string()));
     }
 
     pub fn set_body(&mut self, body: String) {
+        self.redactor.register(&self.redactor.json_hits(&body));
         self.body = Some(body);
         self.form = None;
         self.files.clear();
@@ -304,6 +396,11 @@ impl HttpState {
     }
 
     pub fn set_form(&mut self, pairs: Vec<(String, String)>) {
+        for (name, value) in &pairs {
+            if self.redactor.field_is_sensitive(name) {
+                self.redactor.secret(value);
+            }
+        }
         self.form = Some(pairs);
         self.body = None;
     }
@@ -409,6 +506,24 @@ impl HttpState {
             recipe.body.clone()
         };
 
+        // What this request carries under a sensitive name joins the set before
+        // it leaves: a refused connection's error quotes the URL, query included.
+        let url_text = url.to_string();
+        let url_hits = self.redactor.query_hits(&url_text);
+        let request_hits = match &sent_body {
+            Some(body) if recipe.form.is_some() && !multipart => self.redactor.pair_hits(body),
+            Some(body) if recipe.form.is_none() && !multipart => self.redactor.json_hits(body),
+            _ => Vec::new(),
+        };
+        for (name, value) in recipe.query.iter().chain(recipe.form.iter().flatten()) {
+            if self.redactor.field_is_sensitive(name) {
+                self.redactor.secret(value);
+            }
+        }
+        self.redactor.register(&request_hits);
+        // A literal `?token=…` in the path is registered like a query step's.
+        self.redactor.register(&url_hits);
+
         let mut request_headers = recipe.headers.clone();
         if let Some(credentials) = &recipe.signer {
             if multipart {
@@ -466,13 +581,27 @@ impl HttpState {
         let request = req
             .build()
             .map_err(|e| ReplayError::Fatal(format!("failed to build HTTP request: {e}")))?;
-        let resp = api
-            .client
-            .execute(request)
-            .await
-            .map_err(|e| ReplayError::NotYet(format!("request failed: {e}")))?;
+        // Before the request leaves, signed headers included: a transport
+        // failure never reaches the response half below.
+        let sensitive = |name: &str| {
+            api.sensitive_headers
+                .iter()
+                .any(|masked| masked.eq_ignore_ascii_case(name))
+        };
+        for (name, value) in request_headers.iter().filter(|(name, _)| sensitive(name)) {
+            register_header(&self.redactor, name, value);
+        }
+        let resp = api.client.execute(request).await.map_err(|e| {
+            // reqwest quotes the URL, query string included: its short
+            // sensitive values are hidden by position, as in the dump.
+            let masked_url = crate::privacy::mask_ranges(&url_text, &ranges(&url_hits));
+            ReplayError::NotYet(format!(
+                "request failed: {}",
+                e.to_string().replace(&url_text, &masked_url)
+            ))
+        })?;
         let status = resp.status().as_u16();
-        let resp_headers = resp
+        let resp_headers: Vec<(String, String)> = resp
             .headers()
             .iter()
             .map(|(k, v)| {
@@ -487,6 +616,11 @@ impl HttpState {
             .await
             .map_err(|e| ReplayError::NotYet(format!("failed to read response body: {e}")))?;
 
+        for (name, value) in resp_headers.iter().filter(|(name, _)| sensitive(name)) {
+            register_header(&self.redactor, name, value);
+        }
+        let body_hits = self.redactor.json_hits(&body);
+        self.redactor.register(&body_hits);
         Ok(Exchange {
             method: method.to_string(),
             url: url.to_string(),
@@ -495,7 +629,41 @@ impl HttpState {
             status,
             resp_headers,
             body,
+            masked_headers: api.sensitive_headers.clone(),
+            spans: Spans {
+                url: ranges(&url_hits),
+                req_body: ranges(&request_hits),
+                body: ranges(&body_hits),
+            },
         })
+    }
+}
+
+/// Registers a sensitive header's value whole, and the part of it that travels
+/// on its own: the credential of `Authorization: Bearer <credential>`, each
+/// value of `Cookie`, the cookie value of `Set-Cookie` (not its attributes).
+fn register_header(redactor: &Redactor, name: &str, value: &str) {
+    redactor.secret(value);
+    let parts: Vec<&str> = match name.to_ascii_lowercase().as_str() {
+        "authorization" | "proxy-authorization" => {
+            value.split_once(' ').map(|(_, c)| c).into_iter().collect()
+        }
+        "cookie" => value
+            .split(';')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(_, v)| v)
+            .collect(),
+        "set-cookie" => value
+            .split(';')
+            .next()
+            .and_then(|pair| pair.split_once('='))
+            .map(|(_, v)| v)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    for part in parts {
+        redactor.secret(part.trim());
     }
 }
 
@@ -921,6 +1089,8 @@ pub(crate) mod tests {
             status: 200,
             resp_headers: vec![],
             body: "{}".into(),
+            masked_headers: Vec::new(),
+            spans: Default::default(),
         });
         s.use_api("second").expect("resource is declared");
         assert!(
@@ -1156,7 +1326,7 @@ pub(crate) mod tests {
 
         // The stub echoes the upload back, so only the request half is checked.
         let exchange = state.last().expect("exchange");
-        let shown = exchange.to_string();
+        let shown = exchange.render(&Redactor::disabled());
         let sent = shown.split("← ").next().expect("request half of the dump");
         assert!(
             sent.contains("content: id_front.png (image/png, 11 bytes)"),
@@ -1342,6 +1512,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_usable_part_of_a_sensitive_header_is_registered_too() {
+        let redactor = Redactor::new(
+            &crate::privacy::Privacy::default(),
+            crate::privacy::Secrets::new(7),
+        );
+        register_header(&redactor, "Authorization", "Bearer bearer-credential-1");
+        register_header(
+            &redactor,
+            "Cookie",
+            "a=cookie-value-0001; b=cookie-value-0002",
+        );
+        register_header(
+            &redactor,
+            "Set-Cookie",
+            "sid=session-value-0003; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+        );
+        let text = "bearer-credential-1 cookie-value-0001 cookie-value-0002 session-value-0003 Wed, 21 Oct 2026";
+        assert_eq!(redactor.mask(text), "*** *** *** *** Wed, 21 Oct 2026");
+    }
+
+    #[test]
     fn extracts_cookie_from_set_cookie_header() {
         let ex = Exchange {
             method: "GET".into(),
@@ -1357,6 +1548,8 @@ pub(crate) mod tests {
                 ("set-cookie".into(), "refresh_token=def; Path=/".into()),
             ],
             body: String::new(),
+            masked_headers: Vec::new(),
+            spans: Default::default(),
         };
         assert_eq!(ex.set_cookie("jwt_token").as_deref(), Some("abc123"));
         assert_eq!(ex.set_cookie("refresh_token").as_deref(), Some("def"));
@@ -1373,8 +1566,10 @@ pub(crate) mod tests {
             status: 422,
             resp_headers: vec![],
             body: "{\"error\":\"no\"}".into(),
+            masked_headers: Vec::new(),
+            spans: Default::default(),
         };
-        let s = ex.to_string();
+        let s = ex.render(&Redactor::disabled());
         assert!(s.contains("POST http://x/login"));
         assert!(s.contains("Content-Type: application/json"));
         assert!(s.contains("← 422"));

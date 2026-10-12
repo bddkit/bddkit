@@ -1,6 +1,6 @@
 # Run event stream, privacy and artifacts — specification
 
-**Status: specification.** The maintainer took the decisions below on 2026-10-06, the one on sensitive fields (7.5) on 2026-10-07, and the one on configuration values (7.6) on 2026-10-08; this replaces the design draft of 2026-10-04 and its open questions Q1–Q14. Three labels are used throughout. **Decided** — confirmed by the maintainer. **Detail** — chosen by the spec author to make a decision implementable and never discussed; section 13 lists every one of them, and a reviewer should confirm or change each. **Fact** — read from the code at the baseline.
+**Status: specification.** The maintainer took the decisions below on 2026-10-06, the one on sensitive fields (7.5) on 2026-10-07, and the one on configuration values (7.6) on 2026-10-08, and the ones on extendable lists, a configurable `min_length` and a `reveal` key (7.4, 7.7, 7.9) on 2026-10-12; this replaces the design draft of 2026-10-04 and its open questions Q1–Q14. Three labels are used throughout. **Decided** — confirmed by the maintainer. **Detail** — chosen by the spec author to make a decision implementable and never discussed; section 13 lists every one of them, and a reviewer should confirm or change each. **Fact** — read from the code at the baseline.
 
 **Baseline.** `bddkit/bddkit` `main` at `f303902` (0.2.2 plus unreleased work), `bddkit-browser` at `07c7beb`, `bddkit-exec` at `b641e71`, `bddkit-s3` at `0db5f06` (all 0.1.0), read on 2026-10-06. References are by function or type name, not line number. Section 14 lists every claim this specification leans on — re-check them against the files before trusting the prose.
 
@@ -231,17 +231,17 @@ The value enters the set whenever such a variable is written. `VarStack::set` an
 
 ### 7.4 What a resource declares
 
-**Decided.** The API module masks the values of sensitive request and response headers. The names are per resource and replace the module's default when given:
+**Decided.** The API module masks the values of sensitive request and response headers. The names are per resource. `sensitive_headers` adds to the module's default and `sensitive_headers_only` replaces it, the two forms of 7.7 (Decided 2026-10-12):
 
 ```yaml
 resources:
   api:
     backend:
       base_url: https://staging.example.test
-      sensitive_headers: [authorization, cookie, set-cookie]
+      sensitive_headers: [x-api-key]
 ```
 
-**Detail.** The default is `authorization`, `cookie`, `set-cookie`, matched without case; `API_FIELDS` gains the entry. A masked header keeps its name and shows `***` as its value, and the value joins the set.
+**Detail.** The default is `authorization`, `cookie`, `set-cookie`, matched without case, and `sensitive_headers: [x-api-key]` masks those three and `x-api-key`; an absent key, `~` and `[]` all mean just the default, while `sensitive_headers_only: [x-api-key]` masks `x-api-key` alone and `sensitive_headers_only: []` masks no header. Both in one resource is refused. **Detail:** each entry must be a valid header name, and `API_FIELDS` gains both entries. Both keys exist in the config only: a per-resource key has no flag or variable (7.7). A masked header keeps its name and shows `***` as its value, and the value joins the set.
 
 This is why the setting does not live in the `privacy` section: if the API and the database later become plugins, their settings move with them unchanged.
 
@@ -293,7 +293,7 @@ The walk runs on the expanded document, so a secret that arrives through `${DB_P
 
 **Decided: one gate.** Masking is a property of output, not of a call site. Everything any command prints passes through the same filter: `run`, `doctor` in its human and `--json` forms, `resource add` (which prints the block it would have written), and the `error:` line `main` prints when a command fails. That includes text bddkit did not write — a driver's connection error, a plugin's `validate_config` or `probe_config` refusal — and therefore covers whatever a sender later takes from stderr.
 
-Before the walk nothing from the file is known: if the config cannot be parsed, the defaults of 7.7 apply. **Detail:** `--reveal` is accepted by `doctor` as well as by `run`.
+Before the walk nothing from the file is known: if the config cannot be parsed, the defaults of 7.7 apply, under whatever the flags and the environment already say (7.7). **Detail:** `--reveal` is accepted by `doctor` as well as by `run`.
 
 ### 7.7 The `privacy` section
 
@@ -301,31 +301,39 @@ Before the walk nothing from the file is known: if the config cannot be parsed, 
 
 ```yaml
 privacy:
-  words: [secret, sensitive, gdpr]
-  fields: [password, secret, token, otp]
-  min_length: 8
+  words: [sensitive, gdpr]
+  fields: [otp]
+  min_length: 7
+  reveal: false
 ```
 
-`words` are for names the scenario's author chooses (7.3); `fields` are for names the system under test chose (7.5). Without the section: `words: [secret]`, `fields: [password, secret, token]`, `min_length: 8`. A given list replaces its default, it does not extend it. Every word masks the same way.
+`words` are for names the scenario's author chooses (7.3); `fields` are for names the system under test chose (7.5). Without the section: `words: [secret]`, `fields: [password, secret, token]`, `min_length: 7`, `reveal: false`. **Decided (2026-10-12):** every list option comes in two forms. `words`, `fields` and `sensitive_headers` **extend** what is below them; `words_only`, `fields_only` and `sensitive_headers_only` **replace** it. The example above adds `sensitive` and `gdpr` to the default word `secret`, and `otp` to the default fields; `fields_only: [otp]` would leave `otp` alone.
 
-**Detail.** `privacy` is a named field of `Config` with `deny_unknown_fields` on its own struct, as hand-written YAML has everywhere else. Each word of either list must match `[A-Za-z0-9]+`. An empty `words` is refused at load; an empty `fields` is allowed and switches the field rule off.
+**Decided (2026-10-12): precedence.** Every privacy option can be set by a flag, an environment variable and a config key, and the highest layer wins: flag, then environment, then config key, then the built-in default. The names are mechanical: `privacy.min_length` → `--privacy-min-length` → `BDDKIT_PRIVACY_MIN_LENGTH`; `privacy.reveal` → `--privacy-reveal` (with `--reveal` as a visible alias) → `BDDKIT_PRIVACY_REVEAL`; `privacy.fields` → `--privacy-fields` → `BDDKIT_PRIVACY_FIELDS`; `privacy.fields_only` → `--privacy-fields-only` → `BDDKIT_PRIVACY_FIELDS_ONLY`; the same for `words`. A list flag takes a comma-separated value, repeatable, and means the same as the variable. `sensitive_headers` and `sensitive_headers_only` are per resource and exist as config keys only. An empty environment variable is unset, as for `BDDKIT_EVENTS`, so the environment cannot say "replace with nothing"; `--privacy-fields-only ''` and `fields_only: []` can. The environment layer reads the process environment only, never the `.env` layers, as `BDDKIT_EVENTS` does. A boolean accepts `true`, `false`, `1` and `0`; anything else is exit 2 in `run` and a failed row in `doctor`. **Detail:** `run` and `doctor` share one flattened argument struct and one merge function.
+
+**Decided (2026-10-12): the list fold.** A list is the result of walking the layers from the lowest to the highest (default, config, environment, flag): start from the built-in default; at each layer `*_only` resets the list to its own value and the extend form appends to it. Setting both forms in one layer is refused. `~`, an absent key and an absent variable mean "nothing set"; `fields_only: []` means "replace with nothing" and switches that rule off, and so does `sensitive_headers_only: []` for a resource. `min_length` has no bounds; absent or `~` means 7. `reveal` is 7.9. Every word masks the same way.
+
+**Detail: the rule's exceptions.** An option does not get all three forms when one of them cannot exist: the config location itself (`--config`, `BDDKIT_CONFIG`); the report and event paths, which are opened before the config is read; and per-resource keys. Applying the rule to the options outside privacy (`concurrency`, `fail_fast`, tags, …) is a separate issue.
+
+**Detail.** `privacy` is a named field of `Config` with `deny_unknown_fields` on its own struct, as hand-written YAML has everywhere else. Each word of either list must match `[A-Za-z0-9]+`. An empty list is allowed everywhere, `words_only: []` included: the name rule is then off. A `*_only` entry for a resource's headers must be valid header names like the extend form.
 
 ### 7.8 The filter
 
 - **Where it applies.** Everything bddkit emits about a run: the failure text (console and both reports), step warnings, and every string of the event stream, including evidence and the text files the host writes for it. **Detail:** also the host's own debug output on stderr (`I am in debug mode`, `Show …`, `Print …`).
 - **When.** Where the text is produced, inside `run_file`, with that file's set — not at print time, when the file's `World` is gone. The set is the run-wide values (declared by resources at startup) plus the values the file registered.
+- **Reports and the stream differ in timing.** A report's texts get a final pass at the end of `run_file`, with the file's whole set, because a value can join the set after the step that mentions it was recorded (a header set in one step, sent in the next). The stream is masked with the set as it stands when each event is emitted and is never rewritten.
 - **Short values.** A value shorter than `min_length` is masked where its position is known — a `secret` parameter, a `vars` entry, a sensitive header, a sensitive field — but does not enter the set: masking every `42` in the output would destroy it.
 - **Before any cut.** The failure dump shortens a body to 600 characters. Masking comes first, so a secret that straddles the cut cannot show its first characters.
 - **Detail.** Longer values are replaced before shorter ones, so a value that contains another is masked whole. The mask is the literal `***`.
 - **Plugins.** A plugin receives real values; it needs them. What it sends back as `error` and `diagnostics` is rendered by the host and passes through the filter like any other text.
 
-### 7.9 `--reveal`
+### 7.9 `--reveal` and `privacy.reveal`
 
-**Decided.** `bddkit run --reveal` turns masking off for that run. It is a flag and only a flag: there is no way to disable masking in `bddkit.yaml`, because a line committed for one debugging session would switch it off in CI.
+**Decided (2026-10-12, reverses the decision of 2026-10-06).** `bddkit run --reveal` turns masking off for that run, and so does `privacy: {reveal: true}` in `bddkit.yaml`. bddkit is also a tool for developers practising BDD who want to see all the traffic without tuning options, so masking cannot be flag-only. The cost is that a committed `reveal: true` switches masking off in CI too; the mitigations are that the stream records it (below) and that the run prints the stderr line on every run it applies to. The flag, the environment variable `BDDKIT_PRIVACY_REVEAL` and the key follow the precedence of 7.7, so CI can set `BDDKIT_PRIVACY_REVEAL=false` to override a committed `reveal: true`; that is the safety net this reversal needs. The flag is presence-only (`--reveal`, `--privacy-reveal`) and sets reveal on; the other two layers can set it either way. `doctor`'s `privacy` row states whether masking is on and which layer decided (flag, env, config or default).
 
-**Decided.** The stream records what was in force: `run_started.privacy` is `{"masking": true, "words": ["secret"], "fields": ["password", "secret", "token"]}`. A hub can then refuse or flag a run that arrived unmasked.
+**Decided.** The stream records what was in force: `run_started.privacy` is `{"masking": true, "words": ["secret"], "fields": ["password", "secret", "token"], "min_length": 7}` (`masking` is false when `--reveal` or `reveal: true` is in force). A hub can then refuse or flag a run that arrived unmasked.
 
-**Detail.** `--reveal` prints one line on stderr saying masking is off.
+**Detail.** Revealing, by flag or by key, prints one line on stderr saying masking is off.
 
 ### 7.10 `doctor`
 
@@ -341,6 +349,10 @@ privacy:
 - **Derived values are not recognised:** a hash, a signature or a ciphertext of a secret is a different string. Sensitive headers cover the common case.
 - **Marking is by name.** `_secert` masks nothing and nothing complains, apart from the `doctor` hint. Renaming a variable changes what is masked.
 - **A family is masked whole.** `as "secret_reg"` masks every SRP variable of that login, the public ones included.
+- **A literal in a step's own text reaches the stream unmasked** unless its parameter is `secret`: `step_started` is emitted before the request that would register the value. Write `"Bearer <<secret_token>>"` instead of a literal token.
+- **Some places are masked by value only.** A short sensitive value is hidden by position in the failure dump and in `Print response body`, and by value (so only when it is long enough) in a multipart text part, in the message of an assertion that quotes a body (`actual: …`), and in `Print response body as "<path>"`, whose sub-tree is cut out of the document and so has no position left.
+- **A form value holding `&` or `=` is cut there** when the dump's `name=value&…` body is scanned, so only the part before it is hidden by position; the whole value still joins the set if it is long enough.
+- **A DSN whose password holds a raw `/`, `#` or `?`** is mis-split by URL parsing, so the config walk registers the wrong, shorter password. Percent-encode such a password.
 - **Images are not filtered.** A screenshot of a password field ships as it is.
 - **A masked assertion is harder to debug.** Use `--reveal`.
 
@@ -445,7 +457,7 @@ A reviewer should confirm each still holds, or agree to the stated change.
 - **Invariant 6, one `print!` per file.** Untouched: the stream never goes through stdout.
 - **Invariant 6, exit codes.** Changed on purpose: 143 and 129 appear (section 6), and exit 2 gains the lost-stream case next to the lost-report one.
 - **"Step text in a report is the raw feature text."** Changed on purpose, in one case: a literal value in a `secret` parameter is written as `***` (7.2).
-- **"Failure always dumps the full HTTP exchange."** Narrowed on purpose: sensitive header values, sensitive fields and registered secrets are masked in it unless `--reveal` is given.
+- **"Failure always dumps the full HTTP exchange."** Narrowed on purpose: sensitive header values, sensitive fields and registered secrets are masked in it unless `--reveal` or `privacy.reveal` is given.
 - **Everything a command prints goes through one filter.** New: `doctor`, `resource add` and the `error:` line of `main` are masked like the failure dump (7.6).
 - **Report paths are truncated before the config is read, in `run` and `doctor` alike.** Kept for the events path, by a separate open-once code path in `run` and a non-opening check in `doctor` for a path that is not a regular file.
 - **`doctor` reaches every pre-run check `run` makes, and exits 0 or 1.** Kept: `privacy` parsing is shared with `run`, and the name hint is a row that cannot fail.
@@ -462,7 +474,7 @@ A reviewer should confirm each still holds, or agree to the stated change.
 - **OpenTelemetry in the core.** Attractive — steps as spans, the service's own trace joined through a propagated header — and too heavy as a dependency of a test runner. A converter outside the core can do it from the stream.
 - **Per-file buffering, like the console.** Atomic, but a file's events would arrive only when the file ends.
 - **Masking in the hub.** Too late: the secret has already left the runner.
-- **A switch in the config to disable masking.** Gets committed.
+- **A switch in the config to disable masking.** Gets committed — first rejected, then accepted on 2026-10-12 (7.9) because developers practising BDD want the traffic visible without flags; the stream records it.
 
 ## 13. Details to confirm
 
@@ -474,15 +486,19 @@ Every **Detail** above, in one place. None was discussed; each is the spec autho
 4. A second signal exits with the code of the first. (6.2)
 5. The built-in declarations that become `secret`, the SRP values registered regardless of name, and `secret` being quoted like `text` under #79. (7.2)
 6. The default `sensitive_headers`: `authorization`, `cookie`, `set-cookie`. (7.4)
-7. `privacy` validation: word shape, empty list refused. (7.7)
+7. `privacy` validation: word shape; header names valid; every empty list allowed. (7.4, 7.7)
+7a. The environment layer reads the process environment only; an empty variable is unset. (7.7)
+7b. The `privacy` option names (`<key>` → `--privacy-<key>` → `BDDKIT_PRIVACY_<KEY>`), the exceptions to the three-forms rule, `run` and `doctor` sharing one argument struct, and a secret entering the set together with its form-urlencoded and JSON-escaped forms. (7.7, 7.8)
 8. The host's stderr debug output is masked too. (7.8)
 9. Longest-first replacement; the mask is `***`. (7.8)
-10. `--reveal` announces itself on stderr. (7.9)
+10. Revealing announces itself on stderr; `run_started.privacy` carries `min_length`. (7.9)
 11. The `doctor` hint reads slots and is an `ok` row. (7.10)
 12. One allocator for host and plugins; the workspace stays in the temporary directory; `run_started.artifacts_dir`; `media_type` from the extension. (8)
 13. The flag name `--evidence`, and that it requires `--events`. (9.1)
-14. Sensitive fields: names split on `_`, `-` and case boundaries; the default `fields: [password, secret, token]`; the three places the API module looks; numbers masked in place; `json` diagnostics covered; an empty `fields` allowed. (7.5, 7.7)
-15. The config walk: field words on keys, credentials inside URLs; `--reveal` on `doctor` too. (7.6)
+14. Sensitive fields: names split on `_`, `-` and case boundaries; the default `fields: [password, secret, token]`; the three places the API module looks; numbers masked in place; `json` diagnostics covered. (7.5, 7.7)
+15. The config walk: field words on keys, credentials inside URLs (as written and percent-decoded); the scalars of an array under a sensitive key are sensitive too, as the elements of a JSON array are (7.5); a malformed `.env` line is reported by file and position without quoting it; `--reveal` on `doctor` too. (7.5, 7.6)
+16. A sensitive header's usable part is registered with its whole value: the credential after the first space of `Authorization`, each value of `Cookie`, the cookie value (not the attributes) of `Set-Cookie`. Request headers are registered before the request is sent. (7.4)
+17. Sensitive fields in bodies: the scalars of an array under a sensitive name are sensitive (a reading of "descended into"); what a request carries under a sensitive name in its query, form or JSON body joins the set before the request leaves, so a refused connection's error cannot quote it. (7.5)
 
 ## 14. Claims to verify
 
@@ -525,4 +541,4 @@ Each is a fact this specification depends on. If one is wrong, the section named
 35. `${…}` references are expanded on the config's text before it is deserialised. → `config::expand_env`. (7.6)
 36. `resource add` prints the block it would have written when it writes nothing. → `resource.rs`. (7.6)
 37. `main` prints `error: {error:#}` for a failed command, and `doctor` prints a plugin's `probe_config` refusal. → `main.rs`, `doctor.rs`. (7.6)
-38. Whether a YAML parse error can quote a value from the file. **Not checked.** (7.6)
+38. Whether a YAML parse error can quote a value from the file. **Checked 2026-10-12:** a syntax error names a line and column and quotes nothing; a type error quotes the offending value (`invalid type: string "…", expected u64`), so the walk runs on the parsed document before the typed parse. (7.6)

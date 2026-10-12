@@ -169,6 +169,16 @@ jobs:
           done
           exit $code
 
+      # bddkit testing bddkit: selftest/ runs the binary on a scratch project
+      # through the published `exec` plugin and reads back what it printed and
+      # wrote. It is what proves masking works end to end; the Rust acceptance
+      # tests remain the gate that needs no plugin download.
+      - name: Self-test
+        run: |
+          cargo build --locked
+          ./target/debug/bddkit plugin install exec
+          ./target/debug/bddkit run --config selftest/bddkit.yaml
+
       # The JUnit files above, rendered on the job's summary page and, for a
       # PR, as annotations at the failing scenario — which is also the live
       # check that the XML `run --junit` writes is what GitHub reads.

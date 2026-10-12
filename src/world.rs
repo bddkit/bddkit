@@ -2,6 +2,7 @@ use crate::artifacts::Artifacts;
 use crate::db::DbHandle;
 use crate::http::{Apis, HttpState};
 use crate::options::{Options, OptionsLayer};
+use crate::privacy::Redactor;
 use crate::unique::Generator;
 use crate::vars::VarStack;
 use std::path::{Path, PathBuf};
@@ -80,6 +81,9 @@ pub struct World {
     pub warnings: Vec<String>,
     /// Per feature file. Set by `run_file` once it knows the file; off until then.
     pub trace: crate::events::Trace,
+    /// Per feature file: the secrets this file has met. Masks nothing until
+    /// `run_file` hands it a vocabulary.
+    pub redactor: Redactor,
 }
 
 impl World {
@@ -107,7 +111,16 @@ impl World {
             artifacts,
             warnings: Vec::new(),
             trace: crate::events::Trace::off(),
+            redactor: Redactor::disabled(),
         }
+    }
+
+    /// Hands the file's set to everything that registers into it.
+    pub fn set_redactor(&mut self, redactor: Redactor) {
+        self.vars.set_redactor(redactor.clone());
+        self.http.set_redactor(redactor.clone());
+        self.trace.set_redactor(redactor.clone());
+        self.redactor = redactor;
     }
 
     /// The working directory of this feature file, created on first use.

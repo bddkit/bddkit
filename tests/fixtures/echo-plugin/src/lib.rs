@@ -100,7 +100,11 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "description": "asserts the instance has served this many steps" },
             { "pattern": r#"^the echo should fail$"#, "group": "echo", "kind": "assertion" },
             { "pattern": r#"^I echo the directories$"#, "group": "echo", "kind": "action",
-              "description": "writes a marker file into artifacts_dir and another into workspace_dir" }
+              "description": "writes a marker file into artifacts_dir and another into workspace_dir" },
+            { "pattern": r#"^the echo should fail with json$"#, "group": "echo", "kind": "assertion",
+              "description": "fails with a JSON diagnostic holding a token" },
+            { "pattern": r#"^the echo should fail quoting "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "assertion",
+              "description": "fails with an error that quotes its argument" }
         ])
         .to_string()
     })
@@ -117,6 +121,15 @@ pub extern "C" fn bddkit_validate_config(request: *const c_char) -> *mut c_char 
         if value["config"]["prefix"].as_str().is_none() {
             return r#"{"ok":false,"error":"echo instance requires a string \"prefix\""}"#
                 .to_string();
+        }
+        // A refusal that quotes the offending value, as a careless plugin's
+        // would: the host must not let it print a secret from the config.
+        if let Some(password) = value["config"]["password"].as_str() {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("echo instance refuses the password {password:?}"),
+            })
+            .to_string();
         }
         // The half a manifest's `type` exists for: this key is a boolean, and a
         // plugin holding that line is what turns the host writing `'false'`
@@ -253,6 +266,20 @@ pub extern "C" fn bddkit_dispatch(
                 }
                 serde_json::json!({"status": "passed"}).to_string()
             }
+            4 => serde_json::json!({
+                "status": "fatal",
+                "error": "the echo step failed with evidence",
+                "diagnostics": [
+                    {"title": "response", "kind": "json",
+                     "content": r#"{"user": "ann", "token": "Zd1", "refresh_token": "diag-refresh-token-1"}"#}
+                ]
+            })
+            .to_string(),
+            5 => serde_json::json!({
+                "status": "fatal",
+                "error": format!("the echo quoted {}", args.first().cloned().unwrap_or_default()),
+            })
+            .to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()

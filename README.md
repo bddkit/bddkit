@@ -261,7 +261,7 @@ An include can nest up to 16 levels deep, checked at validation time; a cycle (f
 
 ### Writing a macro
 
-A macro file is a YAML list of `step:` templates with a `do:` body. A template is a [Cucumber Expression](https://cucumber.io/docs/cucumber/cucumber-expressions/): `(main )` is optional text, `post/article` an alternation, and `\(`, `\/`, `\{`, `\\` mean the character itself. Parameters use a bddkit extension, because Cucumber's own parameters have a type but no name: `{title}` is a named parameter that matches any text, `{n:uint}` restricts it to a type — `uint`, `int`, `float`, `word`, or `method` (an HTTP method). The body refers to a parameter as `<<title>>`.
+A macro file is a YAML list of `step:` templates with a `do:` body. A template is a [Cucumber Expression](https://cucumber.io/docs/cucumber/cucumber-expressions/): `(main )` is optional text, `post/article` an alternation, and `\(`, `\/`, `\{`, `\\` mean the character itself. Parameters use a bddkit extension, because Cucumber's own parameters have a type but no name: `{title}` is a named parameter that matches any text, `{n:uint}` restricts it to a type — `uint`, `int`, `float`, `word`, or `method` (an HTTP method) — and `{pw:secret}` matches what `{pw}` does and marks the value as a secret to hide (see Privacy). The body refers to a parameter as `<<title>>`.
 
 An alternation takes the whole word between spaces, optional parts included: `(the )post/article` means `(the )post` or `article`, not an optional `the` in front of either.
 
@@ -331,6 +331,54 @@ Variables live for the whole **feature file**, so a later scenario can read
 what an earlier one produced. Request state and the current connection reset
 per **scenario**. Files run in parallel; `@serial(name)` chains files that
 contend, `@priority(N)` moves one up the queue.
+
+## Privacy
+
+bddkit hides secrets in everything it prints or writes about a run: the failure text on the console, both reports (`--junit`, `--cucumber-json`), the event stream (`--events`), the debug output on stderr, `bddkit doctor` in its text and `--json` forms, the block `bddkit resource add` prints, and the `error:` line of a command that failed. There is one set of secret values and one filter that replaces every occurrence of a value with `***`. A value enters the set in five ways.
+
+1. **The step's author marks a parameter `secret`.** `{key:secret}` in a step declaration or a macro template matches exactly what `{key}` does, and the interpolated value joins the set when the step runs. A literal value is also written `***` in the step text of the console, both reports and the stream; a value that came through a `<<slot>>` leaves the text as written. The Hawk key, the AES key and the SRP password are `secret`, and the SRP steps also register their private `<prefix>_a` and `<prefix>_sessionKey`.
+2. **The scenario's author puts a privacy word in a variable's name.** A variable is sensitive when `secret` is one of the `_`-separated words of its name, at any position, in any case: `access_token_secret`, `secret_reg_verifier` and `reg_secret_verifier` are, `secretary_id` and `sessionSecret` are not. Its value joins the set whenever it is written. To mask a token an API returned, save it as `as "login_secret"`, and write `"Bearer <<login_secret>>"` rather than a literal token in the step that uses it.
+3. **A resource names its own sensitive headers.** On an API resource, `authorization`, `cookie` and `set-cookie` are masked by default: the header keeps its name and shows `***`. Add `sensitive_headers: [x-api-key]` to mask more, or `sensitive_headers_only: [x-api-key]` to replace the defaults (`[]` masks no header at all). The usable part of the value — the credential after `Bearer `, each cookie value — is registered too.
+4. **The system under test names a field.** A JSON key, form field or query parameter is sensitive when `password`, `secret` or `token` is one of its words, split on `_`, `-` and lower-to-upper case: `access_token`, `accessToken` and `refresh-token` are, `tokenizer` is not. The value is hidden where it stands, in the request and in the response, and the text around it is left exactly as it was. It joins the set before the failure dump of the step that received it is built, and what a request carries is registered before the request leaves. A string that is at least `min_length` characters long joins the set; a number is hidden where it stands and never joins. The scalars of an array take the sensitivity of the key above it.
+5. **The configuration.** As soon as `bddkit.yaml` is parsed and its `${…}` references expanded, the value under every key with a field word in its name (`password`, `secret_access_key`, `client_secret`) and the password of every URL with credentials (`postgres://app:hunter22@db/app`) join the set, plugin groups included. A secret that arrives through `${DB_PASSWORD}` or a `.env` file is caught the same way.
+
+```yaml
+privacy:
+  words: [sensitive, gdpr]     # more words that make a variable name sensitive
+  fields: [otp]                # more field words for names the system under test chose
+  min_length: 7                # shortest value that joins the set (default 7)
+  reveal: false                # true shows every value; see below
+```
+
+A list given as `words`, `fields` or `sensitive_headers` **adds** to the default (`words: [secret]`, `fields: [password, secret, token]`); `words_only`, `fields_only` and `sensitive_headers_only` **replace** it, and an empty `fields_only: []` switches that rule off. Both forms in one place is refused. A value shorter than `min_length` is hidden where its position is known — a `secret` parameter, a sensitive header, a sensitive field — but is not added to the set, because hiding every `42` in the output would destroy it.
+
+Every option can be set three ways, and the highest wins: **flag, then environment variable, then config key, then the default.** Lists fold the same way, lowest layer first: `*_only` discards what is below it, the other form appends to it.
+
+| Config key | Flag | Environment variable |
+|---|---|---|
+| `privacy.words` / `words_only` | `--privacy-words` / `--privacy-words-only` | `BDDKIT_PRIVACY_WORDS` / `BDDKIT_PRIVACY_WORDS_ONLY` |
+| `privacy.fields` / `fields_only` | `--privacy-fields` / `--privacy-fields-only` | `BDDKIT_PRIVACY_FIELDS` / `BDDKIT_PRIVACY_FIELDS_ONLY` |
+| `privacy.min_length` | `--privacy-min-length` | `BDDKIT_PRIVACY_MIN_LENGTH` |
+| `privacy.reveal` | `--privacy-reveal` (or `--reveal`) | `BDDKIT_PRIVACY_REVEAL` |
+
+A list flag or variable takes comma-separated words; an empty variable is unset, so only a flag or the config can say "replace with nothing". A boolean accepts `true`, `false`, `1` and `0`; anything else is exit 2 in `run` and a failed row in `doctor`. `sensitive_headers` and `sensitive_headers_only` belong to one API resource, so they exist as config keys only.
+
+**Seeing everything.** `--reveal`, `privacy.reveal: true` or `BDDKIT_PRIVACY_REVEAL=1` turns masking off for a run, and says so on stderr (`doctor` too). A `reveal: true` committed for one debugging session turns masking off in CI as well, so CI should set `BDDKIT_PRIVACY_REVEAL=false`: the environment beats the config. `run_started.privacy` in the event stream records what was in force (`masking`, `words`, `fields`, `min_length`), so a consumer can refuse or flag a run that arrived unmasked, and the `privacy` row of `bddkit doctor` states whether masking is on and which layer decided. The same row lists the `<<slot>>` names in feature files and macros that have `password`, `token` or `key` as a word and no privacy word — a hint that never fails the report and never changes what is masked.
+
+What masking does not do:
+
+- It works forwards. A value is hidden from the moment it enters the set, so a secret in a body that is not JSON, or under a name no field word matches, stays visible until a later step saves it into a sensitive variable.
+- A field word can be too eager. With `token` in the list, `next_page_token` is hidden wherever it appears afterwards; replace the list with `fields_only` when that hurts.
+- Database steps are not covered by `fields`: a column called `password` in `I have … with "password: …"` is not recognised. Pass the value through a sensitive variable.
+- A derived value — a hash, a signature, a ciphertext of a secret — is a different string and is not recognised.
+- Marking is by name. `_secert` hides nothing and only the `doctor` hint notices. A family is hidden whole: `as "secret_reg"` hides every SRP variable of that login, the public ones included.
+- Some places hide a short value only by value, so only when it is long enough: a multipart text part, the message of an assertion that quotes a body, and `Print response body as "<path>"`.
+- A literal in a step's own text reaches the event stream unmasked unless its parameter is `secret`, because `step_started` is emitted before the request that would register it.
+- A form value containing `&` or `=` is hidden by position only up to that character, and a DSN password holding a raw `/`, `#` or `?` is mis-split by URL parsing (percent-encode it); in both cases the value is still caught wherever it appears whole, if it is long enough.
+- Images are not filtered.
+- A masked assertion is harder to debug. Use `--reveal`.
+
+**Upgrading.** Failure dumps change for every existing suite: the values of `Authorization`, `Cookie` and `Set-Cookie`, and of any JSON key, form field or query parameter with `password`, `secret` or `token` as a word, are now `***`. Whoever relied on reading them there needs `--reveal`, or a `fields_only` list of their own.
 
 ## Databases
 
@@ -439,6 +487,8 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | Cleaning up a run's data | `examples/db-features/cleanup.feature` |
 | The same on MySQL and MariaDB | `examples/db-features-mysql/db.feature` |
 | SRP handshake, Hawk signing | `tests/features/` |
+| Hiding secrets, and the design behind it | the Privacy section above, `docs/events-design.md` section 7 |
+| bddkit tested by bddkit (masking, end to end) | `selftest/README.md` |
 | Config schema | `src/config.rs` |
 | Writing a plugin | `docs/plugin-authoring.md`, `tests/fixtures/echo-plugin/` |
 

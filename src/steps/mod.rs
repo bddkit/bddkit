@@ -234,7 +234,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::SignNextRequestWithHawk,
         "api",
-        r#"I sign the next request with Hawk id "{id}" and key "{key}""#,
+        r#"I sign the next request with Hawk id "{id}" and key "{key:secret}""#,
         "signs the next request with these Hawk credentials, and every replay of it",
     ),
     action(
@@ -527,7 +527,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::EncryptWithAes,
         "vars",
-        r#"I encrypt "{value}" with AES using key "{key}" as "{name}""#,
+        r#"I encrypt "{value}" with AES using key "{key:secret}" as "{name}""#,
         "encrypts a value with an AES key and stores the result in a variable",
     ),
     action(
@@ -687,13 +687,13 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::SrpVerifierWithSalt,
         "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password}" and salt "{salt}" as "{prefix}""#,
+        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" and salt "{salt}" as "{prefix}""#,
         "computes an SRP verifier from this salt into <prefix>_salt and <prefix>_verifier",
     ),
     action(
         StepId::SrpVerifier,
         "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password}" as "{prefix}""#,
+        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" as "{prefix}""#,
         "computes an SRP verifier from a fresh salt into <prefix>_salt and <prefix>_verifier",
     ),
     action(
@@ -705,7 +705,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::SrpCompleteLogin,
         "srp",
-        r#"I complete SRP login "{prefix}" for "{username}" with password "{password}" salt "{salt}" and "{server_public}""#,
+        r#"I complete SRP login "{prefix}" for "{username}" with password "{password:secret}" salt "{salt}" and "{server_public}""#,
         "answers the server challenge into <prefix>_M1, <prefix>_M2 and <prefix>_sessionKey",
     ),
     action(
@@ -871,6 +871,57 @@ impl Registry {
                 hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
             )),
         }
+    }
+
+    /// The step text as a report, the console and the stream show it: a literal
+    /// value of a `secret` parameter is written `***`, a value that came through
+    /// a `<<…>>` slot stays as written. A text that matches no single entry is
+    /// returned as it is — the run reports that failure itself.
+    pub fn display_text<'t>(
+        &self,
+        text: &'t str,
+        redactor: &crate::privacy::Redactor,
+    ) -> std::borrow::Cow<'t, str> {
+        if !redactor.enabled() {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut matches = self.entries.iter().filter_map(|entry| {
+            let captures = entry.regex.captures(text)?;
+            Some((entry, captures))
+        });
+        let (Some((entry, captures)), None) = (matches.next(), matches.next()) else {
+            return std::borrow::Cow::Borrowed(text);
+        };
+        let spans: Vec<(usize, usize)> = entry
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, param)| param.ty.secret)
+            .filter_map(|(index, _)| captures.get(index + 1))
+            .filter(|capture| !crate::vars::is_whole_slot(capture.as_str()))
+            .map(|capture| (capture.start(), capture.end()))
+            .collect();
+        if spans.is_empty() {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut shown = String::with_capacity(text.len());
+        let mut copied = 0;
+        for (start, end) in spans {
+            shown.push_str(&text[copied..start]);
+            shown.push_str(crate::privacy::MASK);
+            copied = end;
+        }
+        shown.push_str(&text[copied..]);
+        std::borrow::Cow::Owned(shown)
+    }
+
+    /// Every text a macro body carries: its steps and their docstrings.
+    pub fn macro_texts(&self) -> impl Iterator<Item = &str> {
+        self.macros.iter().flat_map(|definition| {
+            definition.body.iter().flat_map(|step| {
+                std::iter::once(step.text.as_str()).chain(step.docstring.as_deref())
+            })
+        })
     }
 
     pub fn macro_def(&self, index: usize) -> &MacroDef {
@@ -1279,7 +1330,7 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::PrintResponseHeaders => debug::print_headers(w),
         StepId::PrintResponseBody => debug::print_body(w),
         StepId::PrintResponseBodyAsPath => debug::print_body_as(w, a.cap(0)),
-        StepId::PrintTable => debug::print_table(a.table.as_ref()),
+        StepId::PrintTable => debug::print_table(w, a.table.as_ref()),
         StepId::SrpVerifier => srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)),
         StepId::SrpVerifierWithSalt => {
             srp::generate_verifier(w, a.cap(0), a.cap(1), Some(a.cap(2)), a.cap(3))
@@ -1318,9 +1369,9 @@ async fn sleep(secs: &str) -> Result<(), String> {
 }
 
 fn show_all_variables(w: &World) -> Result<(), String> {
-    eprintln!("=== All variables ===");
+    debug_eprintln!(w, "=== All variables ===");
     for (name, value) in w.vars.all_vars() {
-        eprintln!("{}: {}", name, value);
+        debug_eprintln!(w, "{}: {}", name, w.redactor.shown(&name, &value));
     }
     Ok(())
 }
@@ -1328,7 +1379,7 @@ fn show_all_variables(w: &World) -> Result<(), String> {
 fn show_variable(w: &World, name: &str) -> Result<(), String> {
     match w.vars.get(name) {
         Some(v) => {
-            eprintln!("{}: {}", name, v);
+            debug_eprintln!(w, "{}: {}", name, w.redactor.shown(name, v));
             Ok(())
         }
         None => Err(format!("variable not found: {name}")),
@@ -1833,6 +1884,34 @@ mod tests {
                 Err(e) => panic!("ambiguity: {e}"),
             }
         }
+    }
+
+    #[test]
+    fn display_text_hides_a_literal_secret_and_keeps_a_slot() {
+        let r = reg();
+        let redactor = crate::privacy::Redactor::new(
+            &crate::privacy::Privacy::default(),
+            crate::privacy::Secrets::new(7),
+        );
+        let shown = |text: &str| r.display_text(text, &redactor).into_owned();
+        assert_eq!(
+            shown(r#"I sign the next request with Hawk id "session-1" and key "abc""#),
+            r#"I sign the next request with Hawk id "session-1" and key "***""#
+        );
+        assert_eq!(
+            shown(r#"I sign the next request with Hawk id "session-1" and key "<<key>>""#),
+            r#"I sign the next request with Hawk id "session-1" and key "<<key>>""#
+        );
+        // A literal glued to a slot is still a literal.
+        assert_eq!(
+            shown(r#"I sign the next request with Hawk id "i" and key "ab<<key>>""#),
+            r#"I sign the next request with Hawk id "i" and key "***""#
+        );
+        assert_eq!(
+            shown(r#"I include "a.feature""#),
+            r#"I include "a.feature""#
+        );
+        assert_eq!(shown("no such step"), "no such step");
     }
 
     #[test]

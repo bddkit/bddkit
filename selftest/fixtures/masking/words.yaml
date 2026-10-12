@@ -1,0 +1,11 @@
+paths: [selftest/fixtures/masking/features]
+
+resources:
+  api:
+    stub:
+      base_url: http://127.0.0.1:1/
+      # Named like a secret, so the config walk registers its value.
+      client_secret: config-secret-value-6
+
+privacy:
+  words_only: [gdpr]

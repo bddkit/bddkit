@@ -4454,3 +4454,1139 @@ fn interrupting_a_busy_run_leaves_a_terminated_stream() {
         "the anchor was still in flight"
     );
 }
+
+// ---- privacy: the layers that decide what is masked (spec §7.7, §7.9) ----
+
+/// A project whose config carries `privacy_yaml` as extra top-level text, run
+/// with an events stream, `args` and `envs`.
+fn run_privacy(
+    name: &str,
+    base: &str,
+    privacy_yaml: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (std::process::Output, Vec<Value>, std::path::PathBuf) {
+    let cfg = write_report_project(base, name);
+    let mut text = std::fs::read_to_string(&cfg).expect("read config");
+    text.push_str(privacy_yaml);
+    std::fs::write(&cfg, text).expect("write config");
+    let events = cfg.with_file_name("events.ndjson");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+    command
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&events)
+        .args(args);
+    for key in [
+        "BDDKIT_PRIVACY_WORDS",
+        "BDDKIT_PRIVACY_WORDS_ONLY",
+        "BDDKIT_PRIVACY_FIELDS",
+        "BDDKIT_PRIVACY_FIELDS_ONLY",
+        "BDDKIT_PRIVACY_MIN_LENGTH",
+        "BDDKIT_PRIVACY_REVEAL",
+        "BDDKIT_ARTIFACTS_DIR",
+    ] {
+        command.env_remove(key);
+    }
+    let out = command
+        .envs(envs.iter().copied())
+        .output()
+        .expect("run bddkit");
+    let stream = read_stream(&events);
+    (out, stream, cfg)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_started_records_the_privacy_vocabulary_in_force() {
+    let base = common::spawn().await;
+    let (_, stream, _) = run_privacy("privacy-default", &base, "", &[], &[]);
+    assert_eq!(
+        stream[0]["privacy"],
+        serde_json::json!({
+            "masking": true,
+            "words": ["secret"],
+            "fields": ["password", "secret", "token"],
+            "min_length": 7,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_flag_beats_the_environment_beats_the_config_for_min_length() {
+    let base = common::spawn().await;
+    let config = "privacy:\n  min_length: 3\n";
+    let min_length = |args: &[&str], envs: &[(&str, &str)]| {
+        let (_, stream, _) = run_privacy("privacy-min", &base, config, args, envs);
+        stream[0]["privacy"]["min_length"].clone()
+    };
+    assert_eq!(min_length(&[], &[]), 3);
+    assert_eq!(min_length(&[], &[("BDDKIT_PRIVACY_MIN_LENGTH", "5")]), 5);
+    let both = [("BDDKIT_PRIVACY_MIN_LENGTH", "5")];
+    assert_eq!(min_length(&["--privacy-min-length", "9"], &both), 9);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lists_extend_or_replace_across_the_layers() {
+    let base = common::spawn().await;
+    let (_, stream, _) = run_privacy(
+        "privacy-lists",
+        &base,
+        "privacy:\n  fields: [otp]\n  words_only: [gdpr]\n",
+        &["--privacy-fields", "pin,cvv"],
+        &[("BDDKIT_PRIVACY_FIELDS_ONLY", "iban")],
+    );
+    // The environment resets the list below it, the flag then adds to it.
+    assert_eq!(
+        stream[0]["privacy"]["fields"],
+        serde_json::json!(["iban", "pin", "cvv"])
+    );
+    assert_eq!(stream[0]["privacy"]["words"], serde_json::json!(["gdpr"]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reveal_is_announced_on_stderr_and_recorded_in_the_stream() {
+    let base = common::spawn().await;
+    let (out, stream, _) = run_privacy("privacy-reveal", &base, "", &["--reveal"], &[]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("masking is off"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stream[0]["privacy"]["masking"], false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_environment_overrides_a_reveal_committed_in_the_config() {
+    let base = common::spawn().await;
+    let config = "privacy:\n  reveal: true\n";
+    let (out, stream, _) = run_privacy("privacy-committed", &base, config, &[], &[]);
+    assert_eq!(stream[0]["privacy"]["masking"], false);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("masking is off"));
+
+    let ci = [("BDDKIT_PRIVACY_REVEAL", "false")];
+    let (out, stream, _) = run_privacy("privacy-ci", &base, config, &[], &ci);
+    assert_eq!(stream[0]["privacy"]["masking"], true);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("masking is off"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bad_privacy_value_is_exit_two_in_run_and_a_failed_row_in_doctor() {
+    let base = common::spawn().await;
+    let bad = [("BDDKIT_PRIVACY_REVEAL", "yes")];
+    let (out, _, cfg) = run_privacy("privacy-bad", &base, "", &[], &bad);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("BDDKIT_PRIVACY_REVEAL"));
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .envs(bad)
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("BDDKIT_PRIVACY_REVEAL"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_key_under_privacy_is_refused() {
+    let base = common::spawn().await;
+    let typo = "privacy:\n  wrods: [x]\n";
+    let (out, _, cfg) = run_privacy("privacy-typo", &base, typo, &[], &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("wrods"));
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("wrods"), "{stdout}");
+}
+
+// ---- privacy: what the failure text shows (spec §7.8) ----
+
+/// A one-file project against the stub. `api_extra` is appended to the `stub`
+/// API resource (indented to sit inside it) and `top_extra` to the config.
+fn masking_project(
+    name: &str,
+    base: &str,
+    feature: &str,
+    api_extra: &str,
+    top_extra: &str,
+) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(dir.join("features/mask.feature"), feature).expect("write feature");
+    let config = dir.join("cfg.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n{api_extra}{top_extra}",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+    config
+}
+
+/// Runs the project and returns (exit code, stdout, stderr).
+fn run_masking(
+    cfg: &std::path::Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (i32, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+    command.args(["run", "--config"]).arg(cfg).args(args);
+    for key in [
+        "BDDKIT_PRIVACY_WORDS",
+        "BDDKIT_PRIVACY_WORDS_ONLY",
+        "BDDKIT_PRIVACY_FIELDS",
+        "BDDKIT_PRIVACY_FIELDS_ONLY",
+        "BDDKIT_PRIVACY_MIN_LENGTH",
+        "BDDKIT_PRIVACY_REVEAL",
+    ] {
+        command.env_remove(key);
+    }
+    let out = command
+        .envs(envs.iter().copied())
+        .output()
+        .expect("run bddkit");
+    (
+        out.status.code().expect("exit code"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+const FAILING_WITH_AUTH: &str = r#"Feature: masking
+  Scenario: a failing request
+    Given the "Authorization" request header is "Bearer s3cr3t-token-value"
+    And the "X-Api-Key" request header is "key-value-12345"
+    When I request "/ping"
+    Then the response code is 500
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_authorization_header_is_masked_in_the_failure_dump() {
+    let base = common::spawn().await;
+    let cfg = masking_project("mask-auth", &base, FAILING_WITH_AUTH, "", "");
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains("Authorization: ***"), "{stdout}");
+    assert!(!stdout.contains("s3cr3t-token-value"), "{stdout}");
+    // X-Api-Key is not on the default list.
+    assert!(stdout.contains("key-value-12345"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_junit_report_carries_the_masked_failure_text() {
+    let base = common::spawn().await;
+    let cfg = masking_project("mask-junit", &base, FAILING_WITH_AUTH, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1);
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(xml.contains("Authorization: ***"), "{xml}");
+    assert!(!xml.contains("s3cr3t-token-value"), "{xml}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_headers_extend_the_default_list() {
+    let base = common::spawn().await;
+    let cfg = masking_project(
+        "mask-hdr-extend",
+        &base,
+        FAILING_WITH_AUTH,
+        "      sensitive_headers: [x-api-key]\n",
+        "",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("s3cr3t-token-value"), "{stdout}");
+    assert!(!stdout.contains("key-value-12345"), "{stdout}");
+    assert!(stdout.contains("X-Api-Key: ***"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_headers_only_replaces_the_default_list() {
+    let base = common::spawn().await;
+    let cfg = masking_project(
+        "mask-hdr-only",
+        &base,
+        FAILING_WITH_AUTH,
+        "      sensitive_headers_only: [x-api-key]\n",
+        "",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("key-value-12345"), "{stdout}");
+    assert!(stdout.contains("Bearer s3cr3t-token-value"), "{stdout}");
+}
+
+/// The request never gets an answer, so only what was registered before it left
+/// can hide the token that an earlier step's text carries into the report.
+#[test]
+fn a_header_is_masked_in_the_report_even_when_the_request_never_connects() {
+    let cfg = masking_project(
+        "mask-refused",
+        "http://127.0.0.1:1/",
+        FAILING_WITH_AUTH,
+        "",
+        "",
+    );
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1);
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(xml.contains("request failed"), "{xml}");
+    assert!(!xml.contains("s3cr3t-token-value"), "{xml}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reveal_turns_masking_off_and_says_so() {
+    let base = common::spawn().await;
+    let cfg = masking_project("mask-reveal", &base, FAILING_WITH_AUTH, "", "");
+    let (_, stdout, stderr) = run_masking(&cfg, &["--reveal"], &[]);
+    assert!(stdout.contains("Bearer s3cr3t-token-value"), "{stdout}");
+    assert!(stderr.contains("masking is off"), "{stderr}");
+}
+
+fn variable_feature(set: &[(&str, &str)], check: &str) -> String {
+    let mut text = String::from("Feature: masking\n  Scenario: a failing assertion\n");
+    for (name, value) in set {
+        text.push_str(&format!(
+            "    Given set variable \"{name}\" to \"{value}\"\n"
+        ));
+    }
+    text.push_str(&format!(
+        "    Then variable \"{check}\" should be equal to \"nothing\"\n"
+    ));
+    text
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_variable_with_a_privacy_word_is_masked_wherever_its_value_appears() {
+    let base = common::spawn().await;
+    for name in ["access_token_secret", "secret_reg_verifier"] {
+        let feature = variable_feature(&[(name, "verifier-value-77")], name);
+        let cfg = masking_project("mask-var", &base, &feature, "", "");
+        let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+        assert_eq!(code, 1, "{stdout}");
+        assert!(!stdout.contains("verifier-value-77"), "{name}: {stdout}");
+        assert!(stdout.contains("***"), "{name}: {stdout}");
+    }
+}
+
+/// `as "reg_secret"` plus an exported `verifier` is what makes this shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_privacy_word_in_the_middle_of_a_name_still_masks() {
+    let base = common::spawn().await;
+    let name = "reg_secret_verifier";
+    let feature = variable_feature(&[(name, "middle-value-4321")], name);
+    let cfg = masking_project("mask-var-middle", &base, &feature, "", "");
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(!stdout.contains("middle-value-4321"), "{stdout}");
+    assert!(stdout.contains("***"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_name_that_only_contains_a_privacy_word_does_not_mask() {
+    let base = common::spawn().await;
+    for name in ["secretary_id", "sessionSecret"] {
+        let feature = variable_feature(&[(name, "plain-value-88")], name);
+        let cfg = masking_project("mask-var-no", &base, &feature, "", "");
+        let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+        assert!(stdout.contains("plain-value-88"), "{name}: {stdout}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn privacy_words_only_replaces_the_default_word() {
+    let base = common::spawn().await;
+    let feature = "Feature: masking
+  Scenario: the new word
+    Given set variable \"gdpr_note\" to \"gdpr-value-12345\"
+    Then variable \"gdpr_note\" should be equal to \"nothing\"
+
+  Scenario: the old word
+    Given set variable \"secret_note\" to \"secret-value-1234\"
+    Then variable \"secret_note\" should be equal to \"nothing\"
+";
+    let cfg = masking_project(
+        "mask-words-only",
+        &base,
+        feature,
+        "",
+        "privacy:\n  words_only: [gdpr]\n",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("gdpr-value-12345"), "{stdout}");
+    assert!(stdout.contains("secret-value-1234"), "{stdout}");
+    // Without the key the default word applies: `secret_` masks, `gdpr_` does not.
+    let cfg = masking_project("mask-words-default", &base, feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(stdout.contains("gdpr-value-12345"), "{stdout}");
+    assert!(!stdout.contains("secret-value-1234"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_secret_is_not_added_to_the_value_filter() {
+    let base = common::spawn().await;
+    let feature = variable_feature(&[("secret_pin", "tiny")], "secret_pin");
+    let cfg = masking_project("mask-short", &base, &feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(stdout.contains("tiny"), "{stdout}");
+    // The same value is masked once the minimum length allows it.
+    let (_, stdout, _) = run_masking(&cfg, &["--privacy-min-length", "4"], &[]);
+    assert!(!stdout.contains("tiny"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_longer_secret_is_masked_before_one_it_contains() {
+    let base = common::spawn().await;
+    let feature = variable_feature(
+        &[
+            ("secret_short", "abcdefgh"),
+            ("secret_long", "abcdefgh-and-more-1"),
+        ],
+        "secret_long",
+    );
+    let cfg = masking_project("mask-longer", &base, &feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("and-more"), "{stdout}");
+    assert!(!stdout.contains("abcdefgh"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_config_key_with_a_field_word_is_masked_wherever_its_value_appears() {
+    let base = common::spawn().await;
+    let feature = variable_feature(&[("note", "cfg-secret-value-1")], "note");
+    let cfg = masking_project(
+        "mask-config",
+        &base,
+        &feature,
+        "      client_secret: cfg-secret-value-1\n",
+        "",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("cfg-secret-value-1"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_secret_from_an_env_reference_is_masked_like_one_written_in_the_file() {
+    let base = common::spawn().await;
+    let feature = variable_feature(&[("note", "env-secret-value-2")], "note");
+    let cfg = masking_project(
+        "mask-config-env",
+        &base,
+        &feature,
+        "      client_secret: ${MASK_TEST_SECRET}\n",
+        "",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[("MASK_TEST_SECRET", "env-secret-value-2")]);
+    assert!(!stdout.contains("env-secret-value-2"), "{stdout}");
+}
+
+/// An `I include` swaps the whole variable stack, but not what the file has
+/// learned to hide: a secret saved inside the included scenario is still masked
+/// when the caller fails later.
+#[test]
+fn a_secret_saved_inside_an_include_is_masked_in_the_callers_failure() {
+    let dir = std::env::temp_dir().join(format!("bddkit-mask-include-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/target.feature"),
+        "Feature: setup\n  @exports(leak)\n  Scenario: signs in\n    Given set variable \"inner_secret\" to \"included-value-1\"\n    And set variable \"leak\" to \"included-value-1\"\n",
+    )
+    .expect("write target");
+    std::fs::write(
+        dir.join("features/caller.feature"),
+        "Feature: caller\n  Scenario: fails afterwards\n    Given I include \"target.feature\"\n    Then variable \"leak\" should be equal to \"nothing\"\n",
+    )
+    .expect("write caller");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+    )
+    .expect("write config");
+    let (code, stdout, _) = run_bddkit_in("run", &dir);
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(!stdout.contains("included-value-1"), "{stdout}");
+}
+
+// ---- privacy: output with no World around it (spec §7.6, §7.8) ----
+
+/// A project whose connection has a password in its DSN and, in a field that
+/// wants a list, the same URL again. No current driver or `doctor` message
+/// quotes a DSN, but a config type error quotes the string it was given, so
+/// this is the one way to make the value appear in an error today; the tests
+/// guard against any future message that does.
+fn dsn_project(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/a.feature"),
+        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n",
+    )
+    .expect("write feature");
+    let config = dir.join("cfg.yaml");
+    let dsn = "postgres://app:dsn-pass-1234@127.0.0.1:1/app";
+    std::fs::write(
+        &config,
+        format!(
+            "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n  db:\n    main:\n      dsn: {dsn}\n      search_path: {dsn}\n"
+        ),
+    )
+    .expect("write config");
+    config
+}
+
+#[test]
+fn a_dsn_password_never_appears_in_a_connection_error() {
+    let cfg = dsn_project("mask-dsn-run");
+    let (code, stdout, stderr) = run_masking(&cfg, &[], &[]);
+    let text = format!("{stdout}{stderr}");
+    assert_eq!(code, 2, "{text}");
+    assert!(
+        text.contains("expected a sequence"),
+        "the error is shown: {text}"
+    );
+    assert!(text.contains("app:***@127.0.0.1"), "{text}");
+    assert!(!text.contains("dsn-pass-1234"), "{text}");
+}
+
+#[test]
+fn doctor_masks_a_dsn_password_in_its_report_and_its_json() {
+    let cfg = dsn_project("mask-dsn-doctor");
+    for extra in [&[][..], &["--json"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["doctor", "--config"])
+            .arg(&cfg)
+            .args(extra)
+            .output()
+            .expect("run doctor");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(text.contains("expected a sequence"), "{text}");
+        assert!(text.contains("app:***@127.0.0.1"), "{text}");
+        assert!(!text.contains("dsn-pass-1234"), "{text}");
+    }
+}
+
+#[test]
+fn doctor_says_so_on_stderr_when_masking_is_off() {
+    let cfg = dsn_project("mask-doctor-reveal");
+    std::fs::write(
+        &cfg,
+        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n",
+    )
+    .expect("a config that parses");
+    for (args, envs) in [
+        (&["--reveal"][..], &[][..]),
+        (&[][..], &[("BDDKIT_PRIVACY_REVEAL", "1")][..]),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["doctor", "--config"])
+            .arg(&cfg)
+            .args(args)
+            .envs(envs.iter().copied())
+            .output()
+            .expect("run doctor");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("masking is off"), "{stderr}");
+    }
+}
+
+#[test]
+fn resource_add_masks_the_block_it_prints() {
+    let cfg = dsn_project("mask-resource-add");
+    std::fs::write(
+        &cfg,
+        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n",
+    )
+    .expect("a config that parses");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["resource", "add", "db", "second", "--config"])
+        .arg(&cfg)
+        .args(["--dsn", "postgres://app:add-pass-5678@127.0.0.1:1/app"])
+        .output()
+        .expect("run resource add");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("The block, for manual insertion"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("app:***@127.0.0.1"), "{stdout}");
+    assert!(!stdout.contains("add-pass-5678"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_event_stream_carries_the_masked_failure_text() {
+    let base = common::spawn().await;
+    let feature = variable_feature(&[("secret_note", "stream-value-1234")], "secret_note");
+    let cfg = masking_project("mask-stream", &base, &feature, "", "");
+    let events = cfg.with_file_name("events.ndjson");
+    let (code, _, _) = run_masking(&cfg, &["--events", events.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1);
+    let failure = of_type(&read_stream(&events), "scenario_finished")[0]["failure"]
+        .as_str()
+        .expect("failure text")
+        .to_string();
+    assert!(failure.contains("***"), "{failure}");
+    assert!(!failure.contains("stream-value-1234"), "{failure}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_output_on_stderr_is_masked() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: debug print
+    Given set variable "secret_note" to "debug-value-1234"
+    And I am in debug mode
+    And the request body is:
+      """
+      {"note": "<<secret_note>>"}
+      """
+    When I request "/echo" using HTTP POST
+    Then Print response body
+"#;
+    let cfg = masking_project("mask-debug", &base, feature, "", "");
+    let (code, _, stderr) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("***"), "{stderr}");
+    assert!(!stderr.contains("debug-value-1234"), "{stderr}");
+}
+
+// ---- privacy: the `secret` parameter type (spec §7.2) ----
+
+const HAWK_LITERAL: &str = r#"Feature: masking
+  Scenario: signed with a literal key
+    Given I sign the next request with Hawk id "session-1" and key "hawk-literal-key-1"
+    And the request body is:
+      """
+      {"code": "555555"}
+      """
+    When I request "/hawk" using HTTP POST
+    Then the response code is 500
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_literal_secret_is_masked_in_the_step_text_of_a_report() {
+    let base = common::spawn().await;
+    let cfg = masking_project("mask-literal", &base, HAWK_LITERAL, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let events = cfg.with_file_name("events.ndjson");
+    let args = [
+        "--junit",
+        junit.to_str().expect("utf-8"),
+        "--events",
+        events.to_str().expect("utf-8"),
+    ];
+    let (code, stdout, _) = run_masking(&cfg, &args, &[]);
+    assert_eq!(code, 1, "{stdout}");
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(xml.contains("and key &quot;***&quot;"), "{xml}");
+    assert!(!xml.contains("hawk-literal-key-1"), "{xml}");
+    let stream = std::fs::read_to_string(&events).expect("stream");
+    assert!(!stream.contains("hawk-literal-key-1"), "{stream}");
+    assert!(stream.contains(r#"and key \"***\""#), "{stream}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_secret_parameter_is_masked_in_the_failure_dump() {
+    let base = common::spawn().await;
+    // The failing step is the one that takes the secret.
+    let feature = r#"Feature: masking
+  Scenario: a key of the wrong size
+    Given I encrypt "payload" with AES using key "short-literal-key" as "c"
+"#;
+    let cfg = masking_project("mask-aes", &base, feature, "", "");
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains(r#"using key "***" as "c""#), "{stdout}");
+    assert!(!stdout.contains("short-literal-key"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slot_in_a_secret_parameter_stays_as_written_and_its_value_is_masked() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: a key from a variable
+    Given set variable "hawk_key" to "hawk-slot-key-0001"
+    And I sign the next request with Hawk id "session-1" and key "<<hawk_key>>"
+    And the request body is:
+      """
+      {"code": "555555"}
+      """
+    When I request "/hawk" using HTTP POST
+    Then the response code is 500
+"#;
+    let cfg = masking_project("mask-slot", &base, feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (_, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(xml.contains("&lt;&lt;hawk_key&gt;&gt;"), "{xml}");
+    assert!(!xml.contains("hawk-slot-key-0001") && !stdout.contains("hawk-slot-key-0001"));
+}
+
+/// One parser serves builtin declarations and macro templates, so a macro's
+/// `{pw:secret}` marks its argument without any other change.
+#[test]
+fn a_macro_template_can_declare_a_secret_parameter() {
+    let dir = std::env::temp_dir().join(format!("bddkit-mask-macro-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/m.feature"),
+        "Feature: f\n  Scenario: s\n    Given I log in as \"ann\" with password \"macro-literal-pw1\"\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: 'I log in as \"{user}\" with password \"{pw:secret}\"'\n  do:\n    - variable \"pw\" should be equal to \"nothing\"\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
+            dir.join("features").display().to_string().replace('\\', "/"),
+        ),
+    )
+    .expect("write config");
+    let (code, stdout, _) = run_masking(&dir.join("cfg.yaml"), &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains(r#"with password "***""#), "{stdout}");
+    assert!(!stdout.contains("macro-literal-pw1"), "{stdout}");
+}
+
+/// A literal shorter than `min_length` never joins the set, so only the
+/// step text itself can hide it: the console, the report and the stream must
+/// each show `***`, and never the value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_literal_secret_is_hidden_by_position_everywhere() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: a short key
+    Given I encrypt "payload" with AES using key "q7z" as "c"
+"#;
+    let cfg = masking_project("mask-short-literal", &base, feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let events = cfg.with_file_name("events.ndjson");
+    let args = [
+        "--junit",
+        junit.to_str().expect("utf-8"),
+        "--events",
+        events.to_str().expect("utf-8"),
+    ];
+    let (code, stdout, _) = run_masking(&cfg, &args, &[]);
+    assert_eq!(code, 1, "{stdout}");
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    let stream = std::fs::read_to_string(&events).expect("stream");
+    for (place, text) in [("console", &stdout), ("junit", &xml), ("stream", &stream)] {
+        assert!(!text.contains("q7z"), "{place}: {text}");
+        assert!(text.contains("***"), "{place}: {text}");
+    }
+}
+
+#[test]
+fn the_debug_line_of_a_macro_call_hides_a_short_literal_secret() {
+    let dir = std::env::temp_dir().join(format!("bddkit-mask-macro-debug-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/m.feature"),
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n    And I log in as \"ann\" with password \"q7z\"\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("macros.yaml"),
+        "- step: 'I log in as \"{user}\" with password \"{pw:secret}\"'\n  do:\n    - set variable \"user_seen\" to \"<<user>>\"\n",
+    )
+    .expect("write macros");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
+            dir.join("features").display().to_string().replace('\\', "/"),
+        ),
+    )
+    .expect("write config");
+    let (code, _, stderr) = run_masking(&dir.join("cfg.yaml"), &[], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("macro"), "{stderr}");
+    assert!(!stderr.contains("q7z"), "{stderr}");
+}
+
+// ---- privacy: sensitive fields found by the name the system gave them (spec §7.5) ----
+
+/// A POST to /echo with `body`, whose answer the next step contradicts so the
+/// dump is printed: the stub answers 201.
+fn echo_feature(body: &str, extra_steps: &str) -> String {
+    format!(
+        "Feature: masking\n  Scenario: echo\n    Given the request body is:\n      \"\"\"\n      {body}\n      \"\"\"\n{extra_steps}    When I request \"/echo\" using HTTP POST\n    Then the response code is 200\n"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() {
+    let base = common::spawn().await;
+    // The stub echoes the request body back, as a login answer would carry its token.
+    let feature = echo_feature(
+        r#"{"user": "ann", "access_token": "tok-from-the-server-1"}"#,
+        "",
+    );
+    let cfg = masking_project("mask-token", &base, &feature, "", "");
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(!stdout.contains("tok-from-the-server-1"), "{stdout}");
+    assert!(stdout.contains(r#""access_token":"***""#), "{stdout}");
+    assert!(stdout.contains("ann"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sensitive_field_is_found_at_any_depth_and_in_any_naming_style() {
+    let base = common::spawn().await;
+    let body = r#"{"data": {"list": [{"refreshToken": "tok-camel-case-1"}, {"client-secret": "tok-kebab-case-2"}]}, "password": 12345678}"#;
+    let cfg = masking_project("mask-depth", &base, &echo_feature(body, ""), "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    for leaked in ["tok-camel-case-1", "tok-kebab-case-2", "12345678"] {
+        assert!(!stdout.contains(leaked), "{leaked}: {stdout}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_field_that_only_contains_a_field_word_is_not_masked() {
+    let base = common::spawn().await;
+    let body = r#"{"tokenizer": "plain-tokenizer-value", "key": "plain-key-value"}"#;
+    let cfg = masking_project("mask-contains", &base, &echo_feature(body, ""), "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(stdout.contains("plain-tokenizer-value"), "{stdout}");
+    assert!(stdout.contains("plain-key-value"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_keeps_its_exact_text_around_a_masked_field() {
+    let base = common::spawn().await;
+    // Shorter than `min_length`: only the position can hide it.
+    let body = "{ \"a\" :1,   \"token\"  :  \"Zq9\" ,\"z\":2 }";
+    let cfg = masking_project("mask-exact", &base, &echo_feature(body, ""), "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(
+        stdout.contains("{ \"a\" :1,   \"token\"  :  \"***\" ,\"z\":2 }"),
+        "{stdout}"
+    );
+    // The echoed answer is compact; its own field is hidden by position too.
+    assert!(stdout.contains(r#""token":"***""#), "{stdout}");
+    assert!(!stdout.contains("Zq9"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sensitive_form_field_and_query_parameter_are_masked() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: form and query
+    Given the query parameter "api_token" is "query-token-value-1"
+    And the query parameter "second_token" is "q1z"
+    And the query parameter "page" is "2"
+    And the request form parameters are:
+      | name         | value               |
+      | client_secret | form-secret-value-2 |
+      | f_secret      | f2y                 |
+      | name         | ann                 |
+    When I request "/echo" using HTTP POST
+    Then the response code is 200
+"#;
+    let cfg = masking_project("mask-form", &base, feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(!stdout.contains("query-token-value-1"), "{stdout}");
+    assert!(!stdout.contains("form-secret-value-2"), "{stdout}");
+    assert!(stdout.contains("api_token=***"), "{stdout}");
+    // Too short to join the set: only their position can hide them.
+    assert!(stdout.contains("second_token=***"), "{stdout}");
+    assert!(stdout.contains("f_secret=***"), "{stdout}");
+    assert!(
+        !stdout.contains("q1z") && !stdout.contains("f2y"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("page=2"), "{stdout}");
+    assert!(stdout.contains("client_secret=***"), "{stdout}");
+    assert!(stdout.contains("name=ann"), "{stdout}");
+}
+
+/// A refused connection puts the whole URL into reqwest's message.
+#[test]
+fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
+    let feature = r#"Feature: masking
+  Scenario: refused
+    Given the query parameter "api_token" is "refused-token-value-1"
+    And the query parameter "token" is "Zr7"
+    When I request "/echo"
+    Then the response code is 200
+"#;
+    let cfg = masking_project("mask-refused-query", "http://127.0.0.1:1/", feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    // The step that set the value passed and is listed in the report: only a
+    // value registered before the request left can be hidden there.
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(!xml.contains("refused-token-value-1"), "{xml}");
+    assert!(stdout.contains("request failed"), "{stdout}");
+    assert!(!stdout.contains("refused-token-value-1"), "{stdout}");
+    assert!(!stdout.contains("Zr7"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
+    let base = common::spawn().await;
+    // The secret starts 5 characters before the 600-character cut.
+    let prefix = r#"{"pad": ""#;
+    let pad = "x".repeat(595 - prefix.len() - r#"", "n": ""#.len());
+    let secret = "straddle-secret-value-1";
+    let body = format!(r#"{prefix}{pad}", "n": "{secret}"}}"#);
+    let feature = echo_feature(
+        &body,
+        &format!("    And set variable \"secret_cut\" to \"{secret}\"\n"),
+    );
+    let cfg = masking_project("mask-cut", &base, &feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(stdout.contains(&pad), "the body is shown: {stdout}");
+    assert!(
+        !stdout.contains("stra"),
+        "no first characters of it: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_fields_only_list_switches_the_field_rule_off() {
+    let base = common::spawn().await;
+    let body = r#"{"access_token": "tok-visible-value-1"}"#;
+    let cfg = masking_project(
+        "mask-fields-off",
+        &base,
+        &echo_feature(body, ""),
+        "",
+        "privacy:\n  fields_only: []\n",
+    );
+    let (_, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert!(stdout.contains("tok-visible-value-1"), "{stdout}");
+}
+
+/// The token exists only in the answer: nothing sent registered it, and the
+/// cookie header that also carries it is off the list, so only the scan of the
+/// response body can hide it, here in the dump of the very step that received it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_only_the_response_carries_is_masked_by_the_response_scan() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: login
+    Given the request body is:
+      """
+      {"user": "ann", "password": "correct"}
+      """
+    When I request "/login" using HTTP POST
+    And extract "jwt" from JSON as "session"
+    Then variable "session" should be equal to "nothing"
+"#;
+    let cfg = masking_project(
+        "mask-response-only",
+        &base,
+        feature,
+        "      sensitive_headers_only: []\n",
+        "privacy:\n  fields: [jwt]\n",
+    );
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains(r#""jwt":"***""#), "{stdout}");
+    assert!(!stdout.contains("tok-abc"), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_response_body_hides_a_short_sensitive_value_by_position() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: debug print
+    Given the request body is:
+      """
+      {"note": "kept-visible", "token": "Zp4"}
+      """
+    When I request "/echo" using HTTP POST
+    Then Print response body
+"#;
+    let cfg = masking_project("mask-print-short", &base, feature, "", "");
+    let (code, _, stderr) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("kept-visible"), "{stderr}");
+    assert!(!stderr.contains("Zp4"), "{stderr}");
+}
+
+/// A value the request carried under a sensitive name is secret everywhere
+/// afterwards, not only in that request's dump: here in the text of a later,
+/// passed step that happens to repeat it. The answer does not echo it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_json_value_sent_under_a_sensitive_name_is_secret_everywhere_afterwards() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: sent, not echoed
+    Given the request body is:
+      """
+      {"token": "tok-json-value-1"}
+      """
+    When I request "/ping" using HTTP POST
+    And set variable "note" to "tok-json-value-1"
+    Then variable "note" should be equal to "nothing"
+"#;
+    let cfg = masking_project("mask-json-request", &base, feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(!xml.contains("tok-json-value-1"), "{xml}");
+    assert!(!stdout.contains("tok-json-value-1"), "{stdout}");
+}
+
+#[test]
+fn doctor_lists_sensitive_looking_names_without_failing() {
+    let feature = r#"Feature: names
+  Scenario: s
+    Given set variable "session_token" to "x"
+    And set variable "token_secret" to "y"
+    And set variable "primary_key" to "z"
+    And set variable "monkey" to "w"
+    Then variable "session_token" should be equal to "<<session_token>>"
+    And variable "token_secret" should be equal to "<<token_secret>>"
+    And variable "primary_key" should be equal to "<<primary_key>>"
+    And variable "monkey" should be equal to "<<monkey>>"
+"#;
+    let cfg = masking_project("mask-doctor-hint", "http://127.0.0.1:1/", feature, "", "");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "never a failure: {stdout}");
+    let hint = stdout
+        .lines()
+        .find(|line| line.contains("look sensitive"))
+        .unwrap_or_else(|| panic!("no hint in: {stdout}"));
+    assert!(
+        hint.contains("session_token") && hint.contains("primary_key"),
+        "{hint}"
+    );
+    // A privacy word is in `token_secret`; `monkey` has no word of its own.
+    assert!(
+        !hint.contains("token_secret") && !hint.contains("monkey"),
+        "{hint}"
+    );
+}
+
+/// `Show all variables` prints a name and a value, so the name decides: a value
+/// too short to join the set is still hidden by the privacy word in its name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn show_variables_hides_a_short_value_by_its_variables_name() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: show
+    Given set variable "secret_pin" to "q8z"
+    And set variable "plain_note" to "kept-visible"
+    And I am in debug mode
+    Then Show all variables
+    And Show "secret_pin" variable
+"#;
+    let cfg = masking_project("mask-show", &base, feature, "", "");
+    let (code, _, stderr) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("secret_pin: ***"), "{stderr}");
+    assert!(stderr.contains("plain_note: kept-visible"), "{stderr}");
+    assert!(!stderr.contains("q8z"), "{stderr}");
+}
+
+// ---- privacy: leaks found in review ----
+
+/// The value is written in the path, and nothing else names it: only
+/// registering what the URL's query carries can hide it when a later, passed
+/// step repeats it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_literal_query_value_in_the_path_joins_the_set() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: token in the path
+    When I request "/ping?api_token=path-token-value-1"
+    And set variable "note" to "path-token-value-1"
+    Then variable "note" should be equal to "nothing"
+"#;
+    let cfg = masking_project("mask-path-query", &base, feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(!xml.contains("path-token-value-1"), "{xml}");
+    assert!(!stdout.contains("path-token-value-1"), "{stdout}");
+}
+
+/// Nothing is ever sent, so only registering at the step can hide the header.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: header, no request
+    Given the "Authorization" request header is "Bearer unsent-token-value-1"
+    And the "X-Trace" request header is "plain-trace-value"
+    Then the response code is 200
+"#;
+    let cfg = masking_project("mask-unsent", &base, feature, "", "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1);
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(!xml.contains("unsent-token-value-1"), "{xml}");
+    assert!(xml.contains("plain-trace-value"), "{xml}");
+}
+
+/// Decided (spec 7.5): a number under a sensitive name is hidden where it
+/// stands and never joins the set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_number_under_a_sensitive_name_is_hidden_in_place_and_never_joins_the_set() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: numeric pin
+    Given the request body is:
+      """
+      {"token": 87654321}
+      """
+    When I request "/echo" using HTTP POST
+    And set variable "note" to "87654321"
+    Then variable "note" should be equal to "nothing"
+"#;
+    let cfg = masking_project("mask-number", &base, feature, "", "");
+    let (code, stdout, _) = run_masking(&cfg, &[], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(stdout.contains(r#""token":***"#), "{stdout}");
+    // Not in the set: the plain variable still shows it.
+    assert!(stdout.contains("actual:   87654321"), "{stdout}");
+}
+
+/// `--reveal` turns masking off, the step text of a `secret` parameter included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
+    let base = common::spawn().await;
+    let feature = r#"Feature: masking
+  Scenario: a key of the wrong size
+    Given I encrypt "payload" with AES using key "short-literal-key" as "c"
+"#;
+    let cfg = masking_project("mask-reveal-literal", &base, feature, "", "");
+    let (_, stdout, _) = run_masking(&cfg, &["--reveal"], &[]);
+    assert!(
+        stdout.contains(r#"using key "short-literal-key""#),
+        "{stdout}"
+    );
+}

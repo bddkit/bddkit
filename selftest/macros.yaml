@@ -1,0 +1,6 @@
+# Runs the binary on the masking fixture and writes its reports where a later
+# step can read them. `config` is a file of selftest/fixtures/masking/ without
+# its extension; `options` is appended to the command line.
+- step: 'I run the masking fixture "{config}" with options "{options}"'
+  do:
+    - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/masking/<<config>>.yaml --junit selftest/out/junit.xml --events selftest/out/events.ndjson <<options>>\""

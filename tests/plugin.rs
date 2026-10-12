@@ -1507,3 +1507,55 @@ fn the_workspace_stays_outside_a_given_artifacts_dir() {
         "no workspace file under the artifact root"
     );
 }
+
+// ---- privacy: what a plugin sends back passes through the host's filter ----
+
+#[test]
+fn a_sensitive_field_in_a_json_diagnostic_is_masked() {
+    let dir = project(
+        "mask-json-diagnostic",
+        "Feature: f\n  Scenario: s\n    Given the echo should fail with json\n\n  Scenario: later\n    Given set variable \"note\" to \"diag-refresh-token-1\"\n    Then variable \"note\" should be equal to \"nothing\"\n",
+        "",
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    // What the diagnostic held under a sensitive name joined the file's set: a
+    // later scenario that prints the same value, under a plain name, hides it.
+    assert!(!stdout.contains("diag-refresh-token-1"), "{stdout}");
+    // `Zd1` is shorter than min_length: only its position hides it.
+    assert!(stdout.contains(r#""token": "***""#), "{stdout}");
+    assert!(!stdout.contains("Zd1"), "{stdout}");
+    assert!(stdout.contains("ann"), "{stdout}");
+}
+
+#[test]
+fn a_plugin_config_secret_is_masked_in_a_validate_config_refusal() {
+    let dir = project(
+        "mask-validate-config",
+        "Feature: f\n  Scenario: s\n    Given the echo should fail\n",
+        "  echo:\n    main:\n      prefix: p-\n      password: plugin-secret-1234\n",
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("refuses the password"), "{stderr}");
+    assert!(stderr.contains(r#""***""#), "{stderr}");
+    assert!(!stderr.contains("plugin-secret-1234"), "{stderr}");
+}
+
+#[test]
+fn a_secret_reaches_a_plugin_unmasked_and_its_reply_is_masked() {
+    let dir = project(
+        "mask-reaches-plugin",
+        "Feature: f\n  Scenario: s\n    Given set variable \"secret_note\" to \"plugin-arg-secret-1\"\n    And I echo \"<<secret_note>>\" as \"copy\"\n    And variable \"copy\" should be equal to \"implicit-plugin-arg-secret-1\"\n    Then the echo should fail quoting \"<<secret_note>>\"\n",
+        "",
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The plugin got the real value (the equality step passed and the failing
+    // one is the quoting step), and what it replied is hidden.
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("the echo quoted ***"), "{stdout}");
+    assert!(!stdout.contains("plugin-arg-secret-1"), "{stdout}");
+}
