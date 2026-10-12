@@ -1,3 +1,11 @@
+/// `eprintln!` for the host's own debug output: masked with the file's set, as
+/// the failure text is. Textually first, so every module below sees it.
+macro_rules! debug_eprintln {
+    ($world:expr, $($arg:tt)*) => {
+        eprintln!("{}", $world.redactor.mask(&format!($($arg)*)))
+    };
+}
+
 mod artifacts;
 mod config;
 mod db;
@@ -13,6 +21,7 @@ mod macros;
 mod options;
 mod plugin;
 mod polling;
+mod privacy;
 mod report;
 mod resource;
 mod runner;
@@ -170,7 +179,7 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
     }
     .await;
     Ok(outcome.unwrap_or_else(|error| {
-        eprintln!("error: {error:#}");
+        eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
         1
     }))
 }
@@ -259,7 +268,10 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
                     return Ok(1);
                 }
                 Err(error) => {
-                    println!("{error:#}\n\nnothing was written.");
+                    println!(
+                        "{}\n\nnothing was written.",
+                        privacy::mask_text(&format!("{error:#}"))
+                    );
                     return Ok(1);
                 }
             };
@@ -351,12 +363,15 @@ struct DoctorArgs {
     dir: DirArgs,
     #[command(flatten)]
     reports: ReportArgs,
+    #[command(flatten)]
+    privacy: PrivacyArgs,
 }
 
 /// Unlike `run`, every outcome here is a report: a config that cannot be
 /// parsed is the most ordinary thing `doctor` has to say, not a reason to
 /// answer in a different currency. Hence 0/1 and no `?`.
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
+    privacy::set_flags(args.privacy.layer());
     let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
     let report = doctor::check(
         args.config.as_deref(),
@@ -365,6 +380,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         &dir_env,
         &args.reports.paths(),
         args.events.as_deref(),
+        &args.privacy.layer(),
     )
     .await;
     if args.json {
@@ -373,6 +389,55 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         print!("{}", report.render());
     }
     Ok(report.exit_code())
+}
+
+/// The flag layer of the privacy options (spec §7.7); `run` and `doctor` flatten
+/// the same struct so they cannot disagree about what a flag means.
+#[derive(Args, Default)]
+struct PrivacyArgs {
+    /// Show real values instead of `***` in everything printed or written
+    #[arg(long = "privacy-reveal", visible_alias = "reveal")]
+    reveal: bool,
+    /// Shortest value, in characters, that is masked wherever it appears [default: 7]
+    #[arg(long = "privacy-min-length")]
+    min_length: Option<usize>,
+    /// Extra words that make a variable name sensitive (comma-separated, repeatable)
+    #[arg(long = "privacy-words", value_delimiter = ',', action = clap::ArgAction::Append)]
+    words: Option<Vec<String>>,
+    /// Replace the words that make a variable name sensitive
+    #[arg(long = "privacy-words-only", value_delimiter = ',', action = clap::ArgAction::Append)]
+    words_only: Option<Vec<String>>,
+    /// Extra field words that make a JSON key, form field or query parameter sensitive
+    #[arg(long = "privacy-fields", value_delimiter = ',', action = clap::ArgAction::Append)]
+    fields: Option<Vec<String>>,
+    /// Replace the field words that make a key, form field or query parameter sensitive
+    #[arg(long = "privacy-fields-only", value_delimiter = ',', action = clap::ArgAction::Append)]
+    fields_only: Option<Vec<String>>,
+}
+
+impl PrivacyArgs {
+    fn layer(&self) -> privacy::PrivacyLayer {
+        // `--privacy-fields-only ''` arrives as one empty part; the same
+        // trimming as a variable's turns it into the empty list it means.
+        let list = |list: &Option<Vec<String>>| {
+            list.as_ref()
+                .map(|parts| privacy::split_list(&parts.join(",")))
+        };
+        privacy::PrivacyLayer {
+            words: list(&self.words),
+            words_only: list(&self.words_only),
+            fields: list(&self.fields),
+            fields_only: list(&self.fields_only),
+            min_length: self.min_length,
+            reveal: self.reveal.then_some(true),
+        }
+    }
+}
+
+/// A variable that is set and not empty. An empty value is unset: a templated
+/// `BDDKIT_EVENTS=` means "off".
+fn env_var(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
 #[derive(Args)]
@@ -411,6 +476,8 @@ struct RunArgs {
     dir: DirArgs,
     #[command(flatten)]
     reports: ReportArgs,
+    #[command(flatten)]
+    privacy: PrivacyArgs,
 }
 
 /// A report is a property of the run, not of the suite, so these live on the
@@ -565,6 +632,18 @@ async fn main() {
     // Every path that can build a pool runs through here first — `AnyPool`
     // panics rather than erroring if a driver is not installed.
     sqlx::any::install_default_drivers();
+    // The default hook prints the payload as it is, and a payload can hold a
+    // value (an `unwrap` on a parsed secret). Same text, masked.
+    std::panic::set_hook(Box::new(|info| {
+        // The backtrace the default hook would print, when RUST_BACKTRACE asks.
+        let backtrace = std::backtrace::Backtrace::capture();
+        let trace = if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            format!("\n{backtrace}")
+        } else {
+            String::new()
+        };
+        eprintln!("{}", privacy::mask_text(&format!("panic: {info}{trace}")));
+    }));
     let cli = Cli::parse();
     // Each command names what did not happen: "run not started" is a lie when
     // the user only asked for a listing.
@@ -586,7 +665,10 @@ async fn main() {
     match result {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("error: {error:#}\n\n{nothing_happened}");
+            eprintln!(
+                "error: {}\n\n{nothing_happened}",
+                privacy::mask_text(&format!("{error:#}"))
+            );
             std::process::exit(2);
         }
     }
@@ -787,6 +869,7 @@ async fn handle_interrupt(
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
+    privacy::set_flags(cli.privacy.layer());
     cli.reports
         .paths()
         .into_iter()
@@ -796,28 +879,26 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let events_file = cli
         .events
         .clone()
-        // An empty value is unset: a templated `BDDKIT_EVENTS=` means "off".
-        .or_else(|| {
-            std::env::var_os("BDDKIT_EVENTS")
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-        })
+        .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from))
         .map(|path| events::open(&path))
         .transpose()?;
     let config_path = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
         .path;
     let cfg = config::load(&config_path, cli.env.as_deref())?;
+    let privacy = privacy::Privacy::from_sources(
+        Some(&cfg.privacy),
+        &privacy::process_env,
+        cli.privacy.layer(),
+    )?;
+    if privacy.reveal {
+        eprintln!("{}", privacy.reveal_notice());
+    }
     let generator = Arc::new(unique::Generator::new());
     let artifacts = Arc::new(artifacts::Artifacts::new(
         cli.artifacts_dir
             .clone()
-            // An empty value is unset, as for `BDDKIT_EVENTS`.
-            .or_else(|| {
-                std::env::var_os("BDDKIT_ARTIFACTS_DIR")
-                    .filter(|path| !path.is_empty())
-                    .map(PathBuf::from)
-            }),
+            .or_else(|| env_var("BDDKIT_ARTIFACTS_DIR").map(PathBuf::from)),
         generator.run_id(),
     )?);
     let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
@@ -826,7 +907,10 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
         Err(error) => {
-            eprintln!("error: 1 problem, run not started\n\n  {error}");
+            eprintln!(
+                "error: 1 problem, run not started\n\n  {}",
+                privacy::mask_text(&error.to_string())
+            );
             std::process::exit(2);
         }
     };
@@ -855,7 +939,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
     if !problems.is_empty() {
         eprintln!("error: {} problem(s), run not started\n", problems.len());
         for p in &problems {
-            eprintln!("{p}");
+            eprintln!("{}", privacy::mask_text(&p.to_string()));
         }
         std::process::exit(2);
     }
@@ -876,7 +960,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
                 api.timeout_secs,
                 headers,
                 api.effective_options.clone(),
-            )?,
+            )?
+            .with_sensitive_headers(api.effective_sensitive_headers.clone()),
         );
     }
     let apis = Arc::new(http::Apis::new(by_name, cfg.resolve_default_api()?)?);
@@ -928,6 +1013,12 @@ async fn run(cli: RunArgs) -> Result<i32> {
                     .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
                 "artifacts_dir": artifacts.root().display().to_string(),
                 "concurrency": cfg.concurrency,
+                "privacy": {
+                    "masking": !privacy.reveal,
+                    "words": privacy.words,
+                    "fields": privacy.fields,
+                    "min_length": privacy.min_length,
+                },
                 "files": chains.iter().map(|chain| chain.files.len()).sum::<usize>(),
             }),
         );
@@ -946,6 +1037,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
         cli.fail_fast,
     );
     ctx.events = events;
+    ctx.redactor = privacy::Redactor::new(&privacy, privacy::recorded());
     let ctx = Arc::new(ctx);
 
     let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone(), interrupts));
@@ -977,7 +1069,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
     // The one deliberate exception to "2 = before the first request": a
     // report silently lost behind a green code is the worse outcome.
     if let Err(error) = cli.reports.write(&results) {
-        eprintln!("error: {error:#}");
+        eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
         code = 2;
     }
     // After the reports, so `exit` is the code the process really returns —
@@ -1002,9 +1094,51 @@ async fn run(cli: RunArgs) -> Result<i32> {
             }
         };
         if let Ok(Err(error)) = stream {
-            eprintln!("error: cannot write the events file: {error}");
+            eprintln!(
+                "error: cannot write the events file: {}",
+                privacy::mask_text(&error.to_string())
+            );
             code = 2;
         }
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn privacy_layer(args: &[&str]) -> privacy::PrivacyLayer {
+        let argv = ["bddkit", "run"].into_iter().chain(args.iter().copied());
+        match Cli::try_parse_from(argv).expect("flags parse").command {
+            Command::Run(run) => run.privacy.layer(),
+            _ => unreachable!("parsed `run`"),
+        }
+    }
+
+    #[test]
+    fn an_empty_list_flag_is_an_empty_list_and_an_absent_one_is_nothing_set() {
+        let layer = privacy_layer(&["--privacy-fields-only", ""]);
+        assert_eq!(layer.fields_only, Some(vec![]));
+        assert_eq!(layer.fields, None);
+        assert_eq!(privacy_layer(&[]), privacy::PrivacyLayer::default());
+    }
+
+    #[test]
+    fn a_list_flag_splits_on_commas_and_repeats_append() {
+        let layer = privacy_layer(&["--privacy-fields", "otp, pin", "--privacy-fields", "cvv"]);
+        assert_eq!(
+            layer.fields,
+            Some(vec!["otp".into(), "pin".into(), "cvv".into()])
+        );
+    }
+
+    #[test]
+    fn reveal_has_two_spellings_and_only_ever_sets_true() {
+        for flag in ["--reveal", "--privacy-reveal"] {
+            assert_eq!(privacy_layer(&[flag]).reveal, Some(true), "{flag}");
+        }
+        assert_eq!(privacy_layer(&[]).reveal, None);
+    }
 }

@@ -23,6 +23,7 @@ fn prepare(
     caps: Vec<String>,
     params: &[crate::steps::expression::Param],
     vars: &VarStack,
+    redactor: &crate::privacy::Redactor,
     generator: &Generator,
 ) -> Result<Args, String> {
     // Substitution applies to arguments, the doc string, and table cells —
@@ -36,6 +37,9 @@ fn prepare(
     // is the first point where that value exists (invariant 1).
     for (param, value) in params.iter().zip(&caps) {
         param.check(value)?;
+        if param.ty.secret {
+            redactor.secret(value);
+        }
     }
     let docstring = step
         .docstring
@@ -77,9 +81,12 @@ fn execute_step<'a>(
     Box::pin(async move {
         let started = Instant::now();
         let warned = world.warnings.len();
-        world
-            .trace
-            .step_started(&step.keyword, &step.text, origin, source);
+        world.trace.step_started(
+            &step.keyword,
+            &reg.display_text(&step.text, &world.redactor),
+            origin,
+            source,
+        );
         let result = run_step(world, reg, step, source, generator, depth).await;
         world
             .trace
@@ -104,7 +111,7 @@ async fn run_step(
             if matches!(id, StepId::Include | StepId::IncludeScenario) {
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
-            let args = prepare(step, caps, params, &world.vars, generator)?;
+            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
             if id == StepId::AttachFile {
                 // Needs the directory of the file the step is written in,
                 // which `dispatch` does not carry — same reason as Include.
@@ -127,7 +134,8 @@ async fn run_step(
                         OptionsSource::Db => world.db.options()?.clone(),
                     };
                     let effective = base.apply(&layer)?;
-                    let mut polling = Polling::new(&step.text, &effective.polling);
+                    let shown = reg.display_text(&step.text, &world.redactor);
+                    let mut polling = Polling::new(&shown, &effective.polling);
                     let mut attempt = 0;
                     loop {
                         match dispatch(world, id, &args, attempt).await {
@@ -154,13 +162,17 @@ async fn run_step(
             }
 
             let definition = reg.macro_def(index);
-            let args = prepare(step, caps, params, &world.vars, generator)?;
+            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
             world.vars.push_frame();
             for (param, value) in definition.compiled.params.iter().zip(args.caps) {
                 world.vars.set(&param.name, value);
             }
             if world.debug {
-                eprintln!("macro {:?}", step.text);
+                debug_eprintln!(
+                    world,
+                    "macro {:?}",
+                    reg.display_text(&step.text, &world.redactor)
+                );
             }
 
             // A macro body resolves ITS OWN includes relative to the
@@ -193,13 +205,20 @@ async fn run_step(
                 .await
                 {
                     world.vars.pop_frame(&[])?;
-                    return Err(format!("  {}\n{error}", body_step.text));
+                    return Err(format!(
+                        "  {}\n{error}",
+                        reg.display_text(&body_step.text, &world.redactor)
+                    ));
                 }
             }
             let exported = world.vars.pop_frame(&definition.exports)?;
             if world.debug {
                 for (k, v) in &exported {
-                    eprintln!("  export {k} = {}", debug_display(v));
+                    debug_eprintln!(
+                        world,
+                        "  export {k} = {}",
+                        world.redactor.shown(k, debug_display(v))
+                    );
                 }
             }
             Ok(())
@@ -212,7 +231,7 @@ async fn run_step(
             // Arguments cross the boundary already interpolated: a plugin
             // never sees raw step text and never sees `<<variable>>`
             // syntax (invariant 1, restated at the FFI boundary).
-            let args = prepare(step, caps, params, &world.vars, generator)?;
+            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
             let Some(plugins) = world.plugins.plugins().cloned() else {
                 return Err("this step is served by a plugin, but no plugin is loaded".into());
             };
@@ -231,9 +250,10 @@ async fn run_step(
                 Some(layer) => base.apply(layer)?,
                 None => base,
             };
+            let shown = reg.display_text(&step.text, &world.redactor);
             let mut polling = layer
                 .as_ref()
-                .map(|_| Polling::new(&step.text, &effective.polling));
+                .map(|_| Polling::new(&shown, &effective.polling));
             // A `per_worker` instance belongs to this file, so this file
             // both creates and drops it; a `shared` one is only borrowed.
             let per_worker = plugins.is_per_worker(lib);
@@ -300,18 +320,22 @@ async fn run_step(
                         }
                         return Ok(());
                     }
-                    Status::Fatal => return Err(result.render_failure()),
+                    Status::Fatal => return Err(result.render_failure(&world.redactor)),
                     Status::NotYet if !assertion => {
                         return Err(format!(
                             "a plugin action answered not_yet, which only an assertion may do: {}",
-                            result.render_failure()
+                            result.render_failure(&world.redactor)
                         ));
                     }
                     Status::NotYet => match &mut polling {
                         // Without an armed modifier there is no second
                         // attempt, so not_yet is simply a failure.
-                        None => return Err(result.render_failure()),
-                        Some(polling) => polling.after_not_yet(&result.render_failure()).await?,
+                        None => return Err(result.render_failure(&world.redactor)),
+                        Some(polling) => {
+                            polling
+                                .after_not_yet(&result.render_failure(&world.redactor))
+                                .await?
+                        }
                     },
                 }
             }
@@ -395,13 +419,18 @@ fn run_include<'a>(
         };
 
         if world.debug {
-            eprintln!(
+            debug_eprintln!(
+                world,
                 "include {} › {:?}",
                 crate::feature::display_path(&resolved),
                 expanded.name
             );
             for (k, v) in &with_values {
-                eprintln!("  with {k} = {}", debug_display(v));
+                debug_eprintln!(
+                    world,
+                    "  with {k} = {}",
+                    world.redactor.shown(k, debug_display(v))
+                );
             }
         }
 
@@ -412,7 +441,8 @@ fn run_include<'a>(
             .map(|bg| bg.steps.iter().map(crate::feature::to_step).collect())
             .unwrap_or_default();
 
-        let fresh = VarStack::new();
+        let mut fresh = VarStack::new();
+        fresh.set_redactor(world.vars.redactor());
         let saved = std::mem::replace(&mut world.vars, fresh);
         for (name, value) in &with_values {
             world.vars.set(name, value.clone());
@@ -433,7 +463,7 @@ fn run_include<'a>(
                     caller_step.line,
                     crate::feature::display_path(&resolved),
                     step.line,
-                    step.text
+                    reg.display_text(&step.text, &world.redactor)
                 ));
                 break;
             }
@@ -478,7 +508,11 @@ fn run_include<'a>(
             && let Ok(exported) = &export_result
         {
             for (k, v) in exported {
-                eprintln!("  export {k} = {}", debug_display(v));
+                debug_eprintln!(
+                    world,
+                    "  export {k} = {}",
+                    world.redactor.shown(k, debug_display(v))
+                );
             }
         }
 
@@ -518,6 +552,9 @@ pub struct RunContext {
     pub artifacts: Arc<crate::artifacts::Artifacts>,
     /// `--events`; `None` costs each emit site one branch.
     pub events: Option<Events>,
+    /// The run-wide privacy vocabulary and the secrets known before the first
+    /// request; each file forks it. `main` sets it; masks nothing until then.
+    pub redactor: crate::privacy::Redactor,
     fail_fast: bool,
     stop: std::sync::atomic::AtomicBool,
     ending: std::sync::atomic::AtomicBool,
@@ -552,6 +589,7 @@ impl RunContext {
             options,
             artifacts,
             events: None,
+            redactor: crate::privacy::Redactor::disabled(),
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
             ending: std::sync::atomic::AtomicBool::new(false),
@@ -606,6 +644,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         ctx.artifacts.clone(),
     );
     world.trace = Trace::new(ctx.events.clone(), &lf.path, &lf.feature.name);
+    world.set_redactor(ctx.redactor.fork());
     let mut scenarios = Vec::new();
 
     let background: Vec<ExpandedStep> = lf
@@ -646,12 +685,12 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         match tokio::task::spawn_blocking(move || plugins.reset_instances(&handles))
                             .await
                         {
-                            Ok(result) => result
-                                .err()
-                                .map(|error| format!("  scenario reset\n{error}")),
-                            Err(error) => Some(format!(
+                            Ok(result) => result.err().map(|error| {
+                                world.redactor.mask(&format!("  scenario reset\n{error}"))
+                            }),
+                            Err(error) => Some(world.redactor.mask(&format!(
                                 "  scenario reset\nthe plugin reset task failed: {error}"
-                            )),
+                            ))),
                         }
                     }
                 }
@@ -669,16 +708,21 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     index: None,
                 };
                 let status = if failure.is_some() {
-                    world
-                        .trace
-                        .step_skipped(&step.keyword, &step.text, step.line);
+                    world.trace.step_skipped(
+                        &step.keyword,
+                        &ctx.reg.display_text(&step.text, &world.redactor),
+                        step.line,
+                    );
                     StepStatus::Skipped
                 } else if let Err(e) =
                     execute_step(&mut world, &ctx.reg, step, &lf.path, &generator, 0, origin).await
                 {
-                    let mut msg = format!("  {}\n{e}", step.text);
+                    let mut msg = world.redactor.mask(&format!(
+                        "  {}\n{e}",
+                        ctx.reg.display_text(&step.text, &world.redactor)
+                    ));
                     if let Some(ex) = world.http.last() {
-                        msg.push_str(&format!("\n\n{ex}"));
+                        msg.push_str(&format!("\n\n{}", ex.render(&world.redactor)));
                     }
                     failure = Some(msg);
                     StepStatus::Failed
@@ -687,17 +731,23 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 };
                 steps.push(StepResult {
                     keyword: step.keyword.clone(),
-                    text: step.text.clone(),
+                    text: ctx
+                        .reg
+                        .display_text(&step.text, &world.redactor)
+                        .into_owned(),
                     line: step.line,
                     status,
                     duration: step_started.elapsed(),
-                    warnings: std::mem::take(&mut world.warnings),
+                    warnings: std::mem::take(&mut world.warnings)
+                        .iter()
+                        .map(|warning| world.redactor.mask(warning))
+                        .collect(),
                 });
             }
             let duration = started.elapsed();
             world.trace.scenario_finished(failure.as_deref(), duration);
             scenarios.push(ScenarioResult {
-                name: ex.name,
+                name: world.redactor.mask(&ex.name),
                 line: ex.line,
                 failure,
                 steps,
@@ -712,6 +762,25 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         let handles = world.plugins.to_drop();
         if !handles.is_empty() {
             let _ = tokio::task::spawn_blocking(move || plugins.drop_instances(&handles)).await;
+        }
+    }
+
+    // A value can join the set AFTER the step that mentions it was recorded (a
+    // header set in one step, sent in the next), so the texts are masked once
+    // more with the file's final set.
+    for scenario in &mut scenarios {
+        scenario.name = world.redactor.mask(&scenario.name);
+        scenario.failure = scenario
+            .failure
+            .take()
+            .map(|text| world.redactor.mask(&text));
+        for step in &mut scenario.steps {
+            step.text = world.redactor.mask(&step.text);
+            step.warnings = step
+                .warnings
+                .iter()
+                .map(|w| world.redactor.mask(w))
+                .collect();
         }
     }
 
@@ -731,14 +800,20 @@ fn worker_count(concurrency: usize, units: usize) -> usize {
 /// A panic inside a file does not kill the run: the file runs as a separate
 /// task, and its failure turns into that file's failure (spec §10). The
 /// panic text itself is printed to stderr by the standard panic hook.
-fn panicked_file(lf: &LoadedFeature, error: &tokio::task::JoinError) -> FileResult {
+fn panicked_file(
+    lf: &LoadedFeature,
+    error: &tokio::task::JoinError,
+    redactor: &crate::privacy::Redactor,
+) -> FileResult {
     FileResult {
         path: lf.path.clone(),
         name: lf.feature.name.clone(),
         scenarios: vec![ScenarioResult {
             name: "file run aborted".to_string(),
             line: 0,
-            failure: Some(format!("panic while running the file: {error}")),
+            // The file's own set is gone with its `World`: the run-wide one is
+            // what is left to mask a payload with.
+            failure: Some(redactor.mask(&format!("panic while running the file: {error}"))),
             steps: Vec::new(),
             duration: std::time::Duration::ZERO,
         }],
@@ -840,7 +915,7 @@ pub async fn run_all(
                     let task = tokio::spawn(run_file(lf.clone(), ctx.clone()));
                     let (result, panicked) = match task.await {
                         Ok(r) => (r, false),
-                        Err(error) => (panicked_file(lf, &error), true),
+                        Err(error) => (panicked_file(lf, &error, &ctx.redactor), true),
                     };
                     // Here, not in `run_file`, so a file that panicked is closed
                     // in the stream too — and any scenario or step it left open
@@ -1807,7 +1882,11 @@ Feature: eventual assertion
         let error = tokio::spawn(async { panic!("deliberate") })
             .await
             .expect_err("the task must panic");
-        let result = panicked_file(&chains::file("bad.feature", ""), &error);
+        let result = panicked_file(
+            &chains::file("bad.feature", ""),
+            &error,
+            &crate::privacy::Redactor::disabled(),
+        );
         assert_eq!(result.failed(), 1);
         assert!(
             result.scenarios[0]

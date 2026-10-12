@@ -29,6 +29,8 @@ pub fn generate_verifier(
 pub fn start_login(w: &mut World, prefix: &str) -> Result<(), String> {
     let p = params(w)?;
     let (a, a_pub) = srp::start_login(&p);
+    // The private values of the login are secret whatever the prefix is called.
+    w.redactor.secret(&a);
     w.vars.set(&format!("{prefix}_a"), a);
     w.vars.set(&format!("{prefix}_A"), a_pub);
     Ok(())
@@ -55,6 +57,7 @@ pub fn complete_login(
     let proof = srp::complete_login(&p, salt, identity, password, &a, b)?;
     w.vars.set(&format!("{prefix}_M1"), proof.m1);
     w.vars.set(&format!("{prefix}_M2"), proof.m2);
+    w.redactor.secret(&proof.session_key);
     w.vars
         .set(&format!("{prefix}_sessionKey"), proof.session_key);
     Ok(())

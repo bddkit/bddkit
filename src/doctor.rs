@@ -68,7 +68,9 @@ impl Report {
             target: target.map(str::to_string),
             status,
             probe,
-            detail: detail.to_string(),
+            // Before the report is rendered or serialised, so a secret holding a
+            // quote cannot slip past in its JSON-escaped form.
+            detail: crate::privacy::mask_text(detail),
         });
     }
 
@@ -144,6 +146,7 @@ pub async fn check(
     dir_env: &dirs::Env,
     report_paths: &[&Path],
     events_path: Option<&Path>,
+    privacy_flags: &crate::privacy::PrivacyLayer,
 ) -> Report {
     let resolved = config::resolve_config_path(explicit_config);
     let mut report = Report {
@@ -223,6 +226,20 @@ pub async fn check(
             return report;
         }
     };
+
+    // The same resolution `run` makes, so a bad `BDDKIT_PRIVACY_*` value or a
+    // list given in both forms is a failed row here and exit 2 there. The row
+    // itself is pushed once the features are read, for the hint it carries.
+    let privacy = crate::privacy::Privacy::from_sources(
+        Some(&cfg.privacy),
+        &crate::privacy::process_env,
+        privacy_flags.clone(),
+    );
+    if let Ok(privacy) = &privacy
+        && privacy.reveal
+    {
+        eprintln!("{}", privacy.reveal_notice());
+    }
 
     // This walks the layered `.bddkit` directory chain and reads
     // `plugins.yaml` a second time — `load_plugins` below reads the same
@@ -319,7 +336,12 @@ pub async fn check(
         }
         (None, _) => Err("the step registry did not build — see the macros stage"),
     };
-    check_features(&mut report, &cfg, vocabulary, plugins.as_deref());
+    let words = privacy.as_ref().map_or_else(
+        |_| crate::privacy::Privacy::default().words,
+        |p| p.words.clone(),
+    );
+    let unmarked = check_features(&mut report, &cfg, vocabulary, plugins.as_deref(), &words);
+    push_privacy(&mut report, &privacy, &unmarked);
     check_apis(&mut report, &cfg, live).await;
     check_databases(&mut report, &cfg, live).await;
     check_srp(&mut report, &cfg);
@@ -380,12 +402,15 @@ fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins,
 /// instance off. `run` accepts that config and fails in the scenario, because
 /// a `--tag` may keep the scenario out; `doctor` applies no filter, so here
 /// the failure is certain and is reported as one.
+/// Returns the names of the `<<…>>` slots that look sensitive and carry no
+/// privacy word, for the `privacy` row.
 fn check_features(
     report: &mut Report,
     cfg: &config::Config,
     registry: Result<&crate::steps::Registry, &'static str>,
     plugins: Option<&crate::plugin::Plugins>,
-) {
+    words: &[String],
+) -> std::collections::BTreeSet<String> {
     let paths = match feature::discover(&cfg.paths) {
         Ok(paths) => paths,
         Err(error) => {
@@ -399,7 +424,7 @@ fn check_features(
                 Status::Skipped,
                 "no feature file was discovered",
             );
-            return;
+            return Default::default();
         }
     };
     let mut loaded = Vec::new();
@@ -416,6 +441,7 @@ fn check_features(
     // decides whether it has anything to do at all.
     let filter = feature::TagFilter::new(&[]);
     loaded.retain(|lf| lf.has_selected_scenario(&filter));
+    let unmarked = unmarked_names(&loaded, registry.ok(), words);
 
     let skipped = match registry {
         Ok(registry) => {
@@ -472,6 +498,62 @@ fn check_features(
             report.push("scheduling", None, Status::Ok, &detail);
         }
         Err(error) => report.push("scheduling", None, Status::Failed, &error),
+    }
+    unmarked
+}
+
+/// Slots in the suite's feature files and macro bodies that look like a secret
+/// and are not marked as one (spec §7.10).
+fn unmarked_names(
+    loaded: &[std::sync::Arc<feature::LoadedFeature>],
+    registry: Option<&crate::steps::Registry>,
+    words: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut texts: Vec<&str> = Vec::new();
+    for lf in loaded {
+        let steps = lf
+            .feature
+            .background
+            .iter()
+            .flat_map(|background| background.steps.iter())
+            .chain(lf.feature.scenarios.iter().flat_map(|sc| sc.steps.iter()));
+        for step in steps {
+            texts.push(&step.value);
+            texts.extend(step.docstring.as_deref());
+            if let Some(table) = &step.table {
+                texts.extend(table.rows.iter().flatten().map(String::as_str));
+            }
+        }
+    }
+    texts.extend(registry.into_iter().flat_map(|r| r.macro_texts()));
+    crate::privacy::unmarked_names(texts, words)
+}
+
+fn push_privacy(
+    report: &mut Report,
+    privacy: &anyhow::Result<crate::privacy::Privacy>,
+    unmarked: &std::collections::BTreeSet<String>,
+) {
+    match privacy {
+        Ok(privacy) => {
+            let mut detail = format!(
+                "masking {} (decided by {}); min_length {}, words [{}], fields [{}]",
+                if privacy.reveal { "off" } else { "on" },
+                privacy.reveal_source(),
+                privacy.min_length,
+                privacy.words.join(", "),
+                privacy.fields.join(", "),
+            );
+            if !unmarked.is_empty() {
+                let names: Vec<&str> = unmarked.iter().map(String::as_str).collect();
+                detail.push_str(&format!(
+                    "\nlook sensitive, and nothing marks them as secret (no privacy word in the name): {}",
+                    names.join(", ")
+                ));
+            }
+            report.push("privacy", None, Status::Ok, &detail);
+        }
+        Err(error) => report.push("privacy", None, Status::Failed, &format!("{error:#}")),
     }
 }
 

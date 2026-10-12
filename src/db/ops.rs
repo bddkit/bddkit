@@ -13,10 +13,10 @@ use std::time::Instant;
 /// Prints the SQL and parameters if debug mode is enabled (§8).
 pub fn log_sql(w: &World, sql: &str, binds: &[Option<String>], logs: &[String]) {
     if w.debug {
-        eprintln!("SQL: {sql}");
-        eprintln!("PARAMETERS: {binds:?}");
+        debug_eprintln!(w, "SQL: {sql}");
+        debug_eprintln!(w, "PARAMETERS: {binds:?}");
         for l in logs {
-            eprintln!("  auto: {l}");
+            debug_eprintln!(w, "  auto: {l}");
         }
     }
 }
@@ -28,7 +28,7 @@ async fn timed<T, E>(w: &World, fut: impl Future<Output = Result<T, E>>) -> Resu
     let start = Instant::now();
     let result = fut.await;
     if w.debug {
-        eprintln!("TIME: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0);
+        debug_eprintln!(w, "TIME: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0);
     }
     result
 }
@@ -291,7 +291,7 @@ pub async fn call_procedure(w: &mut World, name: &str, args_str: &str) -> Result
         placeholder_list(state.platform, args.len())
     );
     if w.debug {
-        eprintln!("SQL: {sql}\nARGUMENTS: {args:?}");
+        debug_eprintln!(w, "SQL: {sql}\nARGUMENTS: {args:?}");
     }
     timed(w, bind_args(sqlx::query(&sql), &args).execute(&state.pool))
         .await
@@ -314,7 +314,7 @@ pub async fn call_function(
     let sql = state.platform.cast_text(&call);
     let sql = format!("SELECT {sql}");
     if w.debug {
-        eprintln!("SQL: {sql}\nARGUMENTS: {args:?}");
+        debug_eprintln!(w, "SQL: {sql}\nARGUMENTS: {args:?}");
     }
     let row = timed(
         w,
@@ -337,7 +337,7 @@ pub async fn next_sequence(w: &mut World, seq: &str, var: &str) -> Result<(), St
         .next_sequence(seq)
         .ok_or_else(|| format!("sequences are not supported on {}", state.platform.name()))?;
     if w.debug {
-        eprintln!("SQL: {sql} [{seq}]");
+        debug_eprintln!(w, "SQL: {sql} [{seq}]");
     }
     let row = timed(
         w,

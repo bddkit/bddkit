@@ -620,9 +620,10 @@ pub struct AddInput<'a> {
 pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
     /// Prints the reason, and the block when one was assembled, and answers 1.
     fn refuse(reason: &str, block: Option<&str>) -> anyhow::Result<i32> {
-        println!("{reason}\n\nnothing was written.");
+        let mask = crate::privacy::mask_text;
+        println!("{}\n\nnothing was written.", mask(reason));
         if let Some(block) = block {
-            println!("The block, for manual insertion:\n\n{block}");
+            println!("The block, for manual insertion:\n\n{}", mask(block));
         }
         Ok(1)
     }
@@ -765,7 +766,9 @@ async fn check_new_resource(
             }
             println!(
                 "{}",
-                crate::doctor::probe_api(&resource, &api.base_url).await?
+                crate::privacy::mask_text(
+                    &crate::doctor::probe_api(&resource, &api.base_url).await?
+                )
             );
         }
         "db" => {

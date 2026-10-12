@@ -17,9 +17,15 @@ fn headers_table(headers: &[(String, String)]) -> String {
 
 pub fn print_headers(w: &World) -> Result<(), String> {
     let ex = super::assert::last(w)?;
-    eprintln!(
+    debug_eprintln!(
+        w,
         "=== Response headers ===\n{}",
-        headers_table(&ex.resp_headers)
+        headers_table(
+            &ex.resp_headers
+                .iter()
+                .map(|(name, value)| (name.clone(), ex.shown_header(name, value, &w.redactor)))
+                .collect::<Vec<_>>()
+        )
     );
     Ok(())
 }
@@ -44,9 +50,9 @@ fn grid(rows: &[Vec<String>]) -> String {
         .join("\n")
 }
 
-pub fn print_table(table: Option<&Vec<Vec<String>>>) -> Result<(), String> {
+pub fn print_table(w: &World, table: Option<&Vec<Vec<String>>>) -> Result<(), String> {
     let rows = table.ok_or("step `Print table:` requires a table")?;
-    eprintln!("{}", grid(rows));
+    debug_eprintln!(w, "{}", grid(rows));
     Ok(())
 }
 
@@ -130,11 +136,21 @@ pub fn print_body(w: &World) -> Result<(), String> {
             let v = ex.json()?;
             let pretty = serde_json::to_string_pretty(&v)
                 .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            eprintln!("{}", highlight(&pretty, "json"));
+            // Masked before highlighting: colour codes may split what a
+            // masked value would otherwise match whole.
+            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
         }
-        BodyKind::Xml => eprintln!("{}", highlight(&beautify_markup(&ex.body), "xml")),
-        BodyKind::Html => eprintln!("{}", highlight(&beautify_markup(&ex.body), "html")),
-        BodyKind::Plain => eprintln!("{}", ex.body),
+        BodyKind::Xml => debug_eprintln!(
+            w,
+            "{}",
+            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "xml")
+        ),
+        BodyKind::Html => debug_eprintln!(
+            w,
+            "{}",
+            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "html")
+        ),
+        BodyKind::Plain => debug_eprintln!(w, "{}", ex.body),
     }
     Ok(())
 }
@@ -148,10 +164,11 @@ pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
             let sub = crate::json::path::read(&root, path)?;
             let pretty = serde_json::to_string_pretty(sub)
                 .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            eprintln!("{}", highlight(&pretty, "json"));
+            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
         }
         BodyKind::Xml | BodyKind::Html => {
-            eprintln!(
+            debug_eprintln!(
+                w,
                 "{}",
                 markup::select(kind, &ex.body, path, false).map_err(|e| e.to_string())?
             );

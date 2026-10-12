@@ -441,10 +441,20 @@ impl Plugins {
             match self.libs[*lib].drop_instance(*handle) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    eprintln!("warning: dropping {group}.{instance} failed: {error}")
+                    eprintln!(
+                        "{}",
+                        crate::privacy::mask_text(&format!(
+                            "warning: dropping {group}.{instance} failed: {error}"
+                        ))
+                    )
                 }
                 Err(error) => {
-                    eprintln!("warning: dropping {group}.{instance} failed: {error:#}")
+                    eprintln!(
+                        "{}",
+                        crate::privacy::mask_text(&format!(
+                            "warning: dropping {group}.{instance} failed: {error:#}"
+                        ))
+                    )
                 }
             }
         }
@@ -811,7 +821,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 4);
+        assert_eq!(plugins.step_count(), 6);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

@@ -387,6 +387,8 @@ mod tests {
             status: 200,
             resp_headers: headers,
             body: body.to_string(),
+            masked_headers: Vec::new(),
+            spans: Default::default(),
         });
         w
     }

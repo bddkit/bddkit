@@ -7,6 +7,7 @@
 //! so a slow reader of a FIFO cannot change a test's timing.
 
 use crate::feature::display_path;
+use crate::privacy::Redactor;
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -209,6 +210,10 @@ pub struct Trace {
     scenario: usize,
     steps: usize,
     open: Vec<usize>,
+    /// Masks every string BEFORE it becomes JSON, so a secret holding a quote
+    /// or a backslash cannot slip past in its escaped form. Applies the file's
+    /// set as it stands when each event is emitted; the stream is never rewritten.
+    redactor: Redactor,
 }
 
 impl Trace {
@@ -220,7 +225,12 @@ impl Trace {
             scenario: 0,
             steps: 0,
             open: Vec::new(),
+            redactor: Redactor::disabled(),
         }
+    }
+
+    pub fn set_redactor(&mut self, redactor: Redactor) {
+        self.redactor = redactor;
     }
 
     /// Emits `file_started`.
@@ -244,7 +254,7 @@ impl Trace {
         self.steps = 0;
         self.open.clear();
         let mut fields = json!({
-            "file": self.file, "scenario": self.scenario, "name": name, "line": line,
+            "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(name), "line": line,
         });
         if let Some(example) = example {
             fields["example"] = example.into();
@@ -259,7 +269,8 @@ impl Trace {
             json!({
                 "file": self.file, "scenario": self.scenario,
                 "status": if failure.is_some() { "failed" } else { "passed" },
-                "duration_us": micros(duration), "failure": failure,
+                "duration_us": micros(duration),
+                "failure": failure.map(|text| self.redactor.mask(text)),
             }),
         );
     }
@@ -272,7 +283,7 @@ impl Trace {
         self.steps += 1;
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "step": step,
-            "keyword": keyword, "text": text, "line": origin.line,
+            "keyword": keyword, "text": self.redactor.mask(text), "line": origin.line,
         });
         if let Some(parent) = self.open.last() {
             fields["parent"] = (*parent).into();
@@ -295,7 +306,8 @@ impl Trace {
             json!({
                 "file": self.file, "scenario": self.scenario, "step": step,
                 "status": if passed { "passed" } else { "failed" },
-                "duration_us": micros(duration), "warnings": warnings,
+                "duration_us": micros(duration),
+                "warnings": warnings.iter().map(|w| self.redactor.mask(w)).collect::<Vec<_>>(),
             }),
         );
     }
@@ -308,7 +320,7 @@ impl Trace {
             "step_skipped",
             json!({
                 "file": self.file, "scenario": self.scenario, "step": step,
-                "keyword": keyword, "text": text, "line": line,
+                "keyword": keyword, "text": self.redactor.mask(text), "line": line,
             }),
         );
     }

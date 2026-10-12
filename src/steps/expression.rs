@@ -23,6 +23,9 @@ pub struct ParamType {
     /// accepts a whole `<<…>>` slot and is checked again after interpolation.
     /// `text` and `any` accept a slot already and need no check.
     typed: bool,
+    /// The value is a secret: the runner registers it when the step is
+    /// prepared and a literal one is written `***` in the step text it shows.
+    pub secret: bool,
     shape: Shape,
 }
 
@@ -42,42 +45,56 @@ pub static TYPES: &[ParamType] = &[
         name: "text",
         regex: r#"[^"]*"#,
         typed: false,
+        secret: false,
+        shape: Shape::Star(CharClass::NonQuote),
+    },
+    ParamType {
+        name: "secret",
+        regex: r#"[^"]*"#,
+        typed: false,
+        secret: true,
         shape: Shape::Star(CharClass::NonQuote),
     },
     ParamType {
         name: "any",
         regex: ".*?",
         typed: false,
+        secret: false,
         shape: Shape::Star(CharClass::Any),
     },
     ParamType {
         name: "uint",
         regex: r"\d+",
         typed: true,
+        secret: false,
         shape: Shape::Plus(CharClass::Digit),
     },
     ParamType {
         name: "int",
         regex: r"-?\d+",
         typed: true,
+        secret: false,
         shape: Shape::SignedInt,
     },
     ParamType {
         name: "float",
         regex: r"[+-]?(?:inf|NaN|(?:\d+|\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?)",
         typed: true,
+        secret: false,
         shape: Shape::Star(CharClass::Any),
     },
     ParamType {
         name: "word",
         regex: r"[^\s]+",
         typed: true,
+        secret: false,
         shape: Shape::Plus(CharClass::NonSpace),
     },
     ParamType {
         name: "method",
         regex: "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS",
         typed: true,
+        secret: false,
         shape: Shape::Words(&["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
     },
 ];
@@ -515,5 +532,13 @@ mod tests {
                 .variants,
             &include
         ));
+    }
+
+    #[test]
+    fn secret_matches_exactly_what_text_matches() {
+        let secret = compile("x {v:secret}", "text").expect("valid");
+        let text = compile("x {v:text}", "text").expect("valid");
+        assert_eq!(secret.regex.as_str(), text.regex.as_str());
+        assert!(secret.params[0].ty.secret && !text.params[0].ty.secret);
     }
 }
