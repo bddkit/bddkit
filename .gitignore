@@ -8,3 +8,6 @@ target/
 
 # Session artefacts: specs and plans live on the machine, not in the repo.
 docs/superpowers/
+
+# Written by selftest/ scenarios.
+/selftest/out/

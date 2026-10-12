@@ -488,6 +488,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | The same on MySQL and MariaDB | `examples/db-features-mysql/db.feature` |
 | SRP handshake, Hawk signing | `tests/features/` |
 | Hiding secrets, and the design behind it | the Privacy section above, `docs/events-design.md` section 7 |
+| bddkit tested by bddkit (masking, end to end) | `selftest/README.md` |
 | Config schema | `src/config.rs` |
 | Writing a plugin | `docs/plugin-authoring.md`, `tests/fixtures/echo-plugin/` |
 
