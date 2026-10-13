@@ -6,8 +6,11 @@
 //! after the terminator, and a file still in flight must not panic over it),
 //! so a slow reader of a FIFO cannot change a test's timing.
 
+use crate::artifacts::{Artifacts, media_type};
 use crate::feature::display_path;
-use crate::privacy::Redactor;
+use crate::http::Exchange;
+use crate::plugin::abi::Diagnostic;
+use crate::privacy::{Redactor, mask_ranges};
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -210,6 +213,9 @@ pub struct Trace {
     scenario: usize,
     steps: usize,
     open: Vec<usize>,
+    /// `--evidence`: where long text goes. `None` leaves every evidence method
+    /// a no-op, as `events: None` does for the rest.
+    evidence: Option<Arc<Artifacts>>,
     /// Masks every string BEFORE it becomes JSON, so a secret holding a quote
     /// or a backslash cannot slip past in its escaped form. Applies the file's
     /// set as it stands when each event is emitted; the stream is never rewritten.
@@ -225,8 +231,20 @@ impl Trace {
             scenario: 0,
             steps: 0,
             open: Vec::new(),
+            evidence: None,
             redactor: Redactor::disabled(),
         }
+    }
+
+    /// Turns on `vars`, `evidence` and `attempt` events.
+    pub fn collect_evidence(&mut self, artifacts: Arc<Artifacts>) {
+        if self.events.is_some() {
+            self.evidence = Some(artifacts);
+        }
+    }
+
+    pub fn evidence_on(&self) -> bool {
+        self.evidence.is_some()
     }
 
     pub fn set_redactor(&mut self, redactor: Redactor) {
@@ -277,7 +295,16 @@ impl Trace {
 
     /// Numbers the step, whatever its depth, and makes it the caller of every
     /// step started before it finishes.
-    pub fn step_started(&mut self, keyword: &str, text: &str, origin: Origin, source: &Path) {
+    /// `vars` are the resolved slots as `[expression, value]` pairs, already
+    /// masked; they are written only with `--evidence`, and only if any.
+    pub fn step_started(
+        &mut self,
+        keyword: &str,
+        text: &str,
+        origin: Origin,
+        source: &Path,
+        vars: Vec<Value>,
+    ) {
         let Some(events) = &self.events else { return };
         let step = self.steps;
         self.steps += 1;
@@ -291,6 +318,9 @@ impl Trace {
         }
         if let Some(index) = origin.index {
             fields["index"] = index.into();
+        }
+        if self.evidence_on() && !vars.is_empty() {
+            fields["vars"] = vars.into();
         }
         self.open.push(step);
         events.emit("step_started", fields);
@@ -321,6 +351,223 @@ impl Trace {
             json!({
                 "file": self.file, "scenario": self.scenario, "step": step,
                 "keyword": keyword, "text": self.redactor.mask(text), "line": line,
+            }),
+        );
+    }
+}
+
+/// Text of at most this many bytes stays in the event; `bddkit-exec` applies
+/// the same limit to what it returns.
+const INLINE_LIMIT: usize = 16 * 1024;
+
+impl Trace {
+    /// Masked text as the stream carries it: itself when short, else a file
+    /// reference. A file that cannot be written leaves the head of the text
+    /// inline, marked, rather than a long body in the event.
+    fn text(&self, masked: String, file_name: &str) -> Value {
+        let Some(artifacts) = &self.evidence else {
+            return masked.into();
+        };
+        if masked.len() <= INLINE_LIMIT {
+            return masked.into();
+        }
+        match artifacts.write(file_name, masked.as_bytes()) {
+            Ok(path) => {
+                json!({"path": path, "size": masked.len(), "media_type": media_type(file_name)})
+            }
+            Err(error) => {
+                let mut cut = INLINE_LIMIT;
+                while !masked.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                format!("{}… [not written to a file: {error}]", &masked[..cut]).into()
+            }
+        }
+    }
+
+    fn evidence_event(
+        &self,
+        group: &str,
+        resource: &str,
+        kind: &str,
+        title: Option<&str>,
+        payload: Value,
+    ) {
+        let (Some(events), Some(step)) = (&self.events, self.open.last()) else {
+            return;
+        };
+        if self.evidence.is_none() {
+            return;
+        }
+        let mut fields = json!({
+            "file": self.file, "scenario": self.scenario, "step": step,
+            "group": group, "resource": resource, "kind": kind,
+        });
+        if let Some(title) = title {
+            fields["title"] = self.redactor.mask(title).into();
+        }
+        if let (Some(into), Value::Object(from)) = (fields.as_object_mut(), payload) {
+            into.extend(from);
+        }
+        events.emit("evidence", fields);
+    }
+
+    /// One HTTP exchange, as `HttpState` stored it. Header values are hidden by
+    /// name, sensitive fields by position, the rest by value — the order the
+    /// failure dump uses — and only then is a body weighed against the limit.
+    pub fn http(&self, resource: &str, exchange: &Exchange, elapsed: Duration) {
+        if self.evidence.is_none() {
+            return;
+        }
+        let masked = |text: &str, spans: &[std::ops::Range<usize>]| {
+            self.redactor.mask(&mask_ranges(text, spans))
+        };
+        let headers = |pairs: &[(String, String)]| -> Vec<Value> {
+            pairs
+                .iter()
+                .map(|(name, value)| {
+                    json!([name, exchange.shown_header(name, value, &self.redactor)])
+                })
+                .collect()
+        };
+        let body = |text: &str, spans: &[std::ops::Range<usize>], name: &str| {
+            let masked = masked(text, spans);
+            let extension =
+                if masked.len() > INLINE_LIMIT && serde_json::from_str::<Value>(&masked).is_ok() {
+                    "json"
+                } else {
+                    "txt"
+                };
+            self.text(masked, &format!("{name}.{extension}"))
+        };
+        let request_body = exchange
+            .req_body
+            .as_deref()
+            .map(|text| body(text, &exchange.spans.req_body, "request-body"));
+        self.evidence_event(
+            "api",
+            resource,
+            "http",
+            None,
+            json!({"content": {
+                "method": exchange.method,
+                "url": masked(&exchange.url, &exchange.spans.url),
+                "request": {"headers": headers(&exchange.req_headers), "body": request_body},
+                "status": exchange.status,
+                "response": {
+                    "headers": headers(&exchange.resp_headers),
+                    "body": body(&exchange.body, &exchange.spans.body, "response-body"),
+                },
+                "duration_us": micros(elapsed),
+            }}),
+        );
+    }
+
+    /// One statement with its binds, after it ran.
+    pub fn sql(&self, resource: &str, sql: &str, binds: &[Option<String>], elapsed: Duration) {
+        if self.evidence.is_none() {
+            return;
+        }
+        let binds: Vec<Value> = binds
+            .iter()
+            .map(|bind| match bind.as_deref() {
+                None | Some(NULL_SENTINEL) => Value::Null,
+                Some(value) => self.redactor.mask(value).into(),
+            })
+            .collect();
+        self.evidence_event(
+            "db",
+            resource,
+            "sql",
+            None,
+            json!({"content": {
+                "sql": self.redactor.mask(sql), "binds": binds, "duration_us": micros(elapsed),
+            }}),
+        );
+    }
+
+    /// A plugin's diagnostic, whatever the status of its reply. `path` is
+    /// absolute or relative to the dispatch's `artifacts_dir`; a file outside
+    /// the root is copied in first. Returns what could not be done, as warnings.
+    pub fn diagnostic(
+        &self,
+        group: &str,
+        instance: &str,
+        dispatch_dir: &Path,
+        diagnostic: &Diagnostic,
+    ) -> Vec<String> {
+        let Some(artifacts) = &self.evidence else {
+            return Vec::new();
+        };
+        let mut warnings = Vec::new();
+        let mut payload = json!({});
+        if let Some(content) = &diagnostic.content {
+            let masked = if diagnostic.kind == "json" {
+                self.redactor.register(&self.redactor.json_hits(content));
+                self.redactor.mask_json(content)
+            } else {
+                self.redactor.mask(content)
+            };
+            let name = if diagnostic.kind == "json" {
+                "content.json"
+            } else {
+                "content.txt"
+            };
+            match self.text(masked, name) {
+                // Beside a `path` the reference is nested, so the file the
+                // plugin reported cannot overwrite its keys.
+                Value::Object(reference) if diagnostic.path.is_some() => {
+                    payload["content"] = Value::Object(reference)
+                }
+                Value::Object(reference) => payload
+                    .as_object_mut()
+                    .expect("an object literal")
+                    .extend(reference),
+                inline => payload["content"] = inline,
+            }
+        }
+        if let Some(reported) = &diagnostic.path {
+            let source = dispatch_dir.join(reported);
+            let referenced = source.metadata().and_then(|meta| {
+                let path = match artifacts.relative(&source) {
+                    Some(path) => path,
+                    None => artifacts.copy_in(&source)?,
+                };
+                Ok((path, meta.len()))
+            });
+            match referenced {
+                Ok((path, size)) => {
+                    payload["media_type"] = media_type(&path).into();
+                    payload["path"] = path.into();
+                    payload["size"] = size.into();
+                }
+                Err(error) => warnings.push(format!(
+                    "evidence file {reported:?} of {:?} could not be referenced: {error}",
+                    diagnostic.title
+                )),
+            }
+        }
+        self.evidence_event(
+            group,
+            instance,
+            &diagnostic.kind,
+            Some(&diagnostic.title),
+            payload,
+        );
+        warnings
+    }
+
+    /// One `not_yet` of an eventual assertion; `n` counts from 1.
+    pub fn attempt(&self, n: u64, message: &str) {
+        let (Some(events), Some(step), Some(_)) = (&self.events, self.open.last(), &self.evidence)
+        else {
+            return;
+        };
+        events.emit(
+            "attempt",
+            json!({
+                "file": self.file, "scenario": self.scenario, "step": step,
+                "n": n, "message": self.redactor.mask(message),
             }),
         );
     }

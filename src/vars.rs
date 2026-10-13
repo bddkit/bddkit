@@ -8,6 +8,9 @@ use std::sync::LazyLock;
 pub struct VarStack {
     frames: Vec<HashMap<String, String>>,
     globals: HashMap<String, String>,
+    /// Names bound from a `secret` macro parameter. Never unmarked when the
+    /// frame pops: hiding a later same-named variable too is the safe error.
+    secret_names: std::collections::HashSet<String>,
     /// Told every value written under a name with a privacy word in it. A
     /// handle on the file's set, so an `I include` that swaps this whole stack
     /// hands the same one to its replacement.
@@ -19,6 +22,7 @@ impl VarStack {
         Self {
             frames: vec![HashMap::new()],
             globals: HashMap::new(),
+            secret_names: Default::default(),
             redactor: Redactor::disabled(),
         }
     }
@@ -46,6 +50,14 @@ impl VarStack {
             .last_mut()
             .expect("the frame stack is never empty")
             .insert(name.to_string(), value);
+    }
+
+    pub fn mark_secret(&mut self, name: &str) {
+        self.secret_names.insert(name.to_string());
+    }
+
+    pub fn is_secret(&self, name: &str) -> bool {
+        self.secret_names.contains(name)
     }
 
     pub fn set_global(&mut self, name: &str, value: String) {
@@ -155,6 +167,18 @@ static SLOT: LazyLock<regex::Regex> =
 /// Substitutes `<<…>>`. Applied ONLY to arguments, doc strings, and table
 /// cells — never to the whole step text, or pre-run validation would be impossible.
 pub fn interpolate(input: &str, vars: &VarStack, generator: &Generator) -> Result<String, String> {
+    interpolate_with(input, vars, generator, &mut Vec::new())
+}
+
+/// `interpolate`, plus the `(expression, value)` of every slot it resolved, in
+/// order of appearance. The pairs come from the same pass as the string: a
+/// second pass would draw new `<<unique()>>` values the step never sent.
+pub fn interpolate_with(
+    input: &str,
+    vars: &VarStack,
+    generator: &Generator,
+    resolved: &mut Vec<(String, String)>,
+) -> Result<String, String> {
     let mut out = String::with_capacity(input.len());
     let mut last = 0usize;
     for m in SLOT.find_iter(input) {
@@ -181,6 +205,7 @@ pub fn interpolate(input: &str, vars: &VarStack, generator: &Generator) -> Resul
             (n, Some(_)) => return Err(format!("unknown function {n:?}")),
         };
         out.push_str(&value);
+        resolved.push((inner.to_string(), value));
         last = m.end();
     }
     out.push_str(&input[last..]);

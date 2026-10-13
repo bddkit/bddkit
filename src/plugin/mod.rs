@@ -821,7 +821,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 6);
+        assert_eq!(plugins.step_count(), 7);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
