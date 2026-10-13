@@ -537,7 +537,10 @@ impl Trace {
             });
             match referenced {
                 Ok((path, size)) => {
-                    payload["media_type"] = media_type(&path).into();
+                    payload["media_type"] = match diagnostic.media_type.as_deref() {
+                        Some(declared) if !declared.is_empty() => declared.into(),
+                        _ => media_type(&path).into(),
+                    };
                     payload["path"] = path.into();
                     payload["size"] = size.into();
                 }

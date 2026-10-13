@@ -28,7 +28,7 @@
 - Cucumber Messages compatibility. Decided against (section 12).
 - Debug output (`Show …`, `Print …`, SQL debug lines) as events. Excluded.
 - Running a single scenario, and a machine-readable inventory of a suite. Separate questions.
-- Any change to the plugin ABI. Deferred to work package 6, which is not specified here (section 10).
+- Any change to the plugin ABI in packages 1–5. Work package 6 makes it, once, in section 10.
 
 ## 3. Work packages
 
@@ -353,8 +353,8 @@ privacy:
 - **Some places are masked by value only.** A short sensitive value is hidden by position in the failure dump and in `Print response body`, and by value (so only when it is long enough) in a multipart text part, in the message of an assertion that quotes a body (`actual: …`), and in `Print response body as "<path>"`, whose sub-tree is cut out of the document and so has no position left.
 - **A form value holding `&` or `=` is cut there** when the dump's `name=value&…` body is scanned, so only the part before it is hidden by position; the whole value still joins the set if it is long enough.
 - **A DSN whose password holds a raw `/`, `#` or `?`** is mis-split by URL parsing, so the config walk registers the wrong, shorter password. Percent-encode such a password.
-- **Images are not filtered.** A screenshot of a password field ships as it is, and so does any file a plugin names in a diagnostic `path`: only text the host writes itself goes through the filter.
-- **Position is known for `json` only.** A plugin diagnostic of another kind, or a short secret passed on to a macro parameter that is not `secret`, is masked by value alone.
+- **Images are not filtered.** A screenshot of a password field ships as it is, and so does any file a plugin names in a diagnostic `path`: only text the host writes itself goes through the filter. Filtering such a file is the plugin's duty (section 10).
+- **Position is known for `json` only.** A plugin diagnostic of another kind, or a short secret passed on to a macro parameter that is not `secret`, is masked by value alone. A plugin may declare its own secrets in a reply and mark a secret step argument (section 10); the same minimum length applies.
 - **A masked assertion is harder to debug.** Use `--reveal`.
 
 ## 8. Artifacts (package 4)
@@ -432,23 +432,27 @@ Illustrative values again:
 
 - **API.** One event per exchange, emitted wherever `HttpState` stores one — an explicit send and every polling replay. The host holds a body as a `String`, so a non-text body is evidenced as it is held; keeping its bytes is out of scope.
 - **Database.** One event per statement, at the sites that print SQL in debug mode today.
-- **Plugins.** The diagnostics of a reply become `evidence` events whenever the reply carries any, on any status, with `title`, `kind`, `content` and `path` passed through and `size` and `media_type` added by the host. This needs no ABI change. Telling a plugin that evidence is wanted is package 6.
+- **Plugins.** The diagnostics of a reply become `evidence` events whenever the reply carries any, on any status, with `title`, `kind`, `content` and `path` passed through and `size` and `media_type` added by the host. This needs no ABI change. Telling a plugin that evidence is wanted is package 6 (section 10).
 
 ### 9.4 `attempt`
 
 One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence`, because the message quotes the values that did not match.
 
-## 10. Plugins (package 6) — deferred
+## 10. Plugins (package 6)
 
-Not specified here; it needs its own discussion before any code. What that discussion has to settle:
+**Decided: one ABI generation, `ABI_VERSION` 2.** All five additions below are optional and independent, but they ship together as one bump rather than one at a time: a plugin that sends `secrets` can then rely on a host that reads them, and the request hint, which a plugin has to be able to count on, needs a version to count on. The cost is that a plugin built for generation 1 is refused at load, and the published ones must be rebuilt. The three published plugins read the request by key and set no `deny_unknown_fields`, so the extra key itself would not have broken them; the bump is chosen for the guarantee, not forced by the parse. **Detail:** `plugin/abi.rs` states that an older host ignores keys it does not know, and that stays true for everything a plugin sends.
 
-- **A hint in the dispatch request** that evidence is wanted, so a plugin does not take a screenshot nobody will read. It would be an eighth key. `docs/plugin-authoring.md` says "All seven keys are always present"; the three published plugins read the request by key and would not break on one more. Is it an additive key, or an `ABI_VERSION` bump?
-- **Secrets from a plugin.** An optional `secrets` list in the reply, so a plugin can register values the way a resource does in 7.4.
-- **Sensitivity in a step spec.** Plugin steps are regexes with unnamed groups, so `{name:secret}` does not apply; `StepSpec` would need an optional field naming the secret groups.
-- **`media_type` in a diagnostic,** instead of the host guessing from an extension.
-- **Files a plugin writes** are not filtered by the host. Is that the plugin's duty, and does it then need the secret set?
+**Decided: the request hint.** The dispatch request gains an eighth key, `evidence`: true when the run was started with `--evidence`. It is sent on every attempt, polling replays included. A plugin that reads it may attach a screenshot to a passing step; one that does not still has its diagnostics dropped from a `passed` reply when nobody asked.
 
-Until then plugin steps take part in everything else: lifecycle events, variable-name masking of what they write, the filter over what they return, and their failure-path diagnostics as evidence.
+**Decided: `secrets` in the reply.** An optional list of strings the host adds to its filter, honoured on **every** status. A failing reply is where a secret is most likely to be quoted, so ignoring it there would defeat the field. The values are registered before anything else in the reply is read, so `error`, the diagnostics and a `not_yet` message are masked too. **Detail:** the filter's `privacy.min_length` applies, exactly as to a `secret` parameter.
+
+**Decided: sensitivity in `StepSpec`.** An optional `secret_groups`, a list of capture-group numbers **counted from 1**, as a regex counts them. The numbers refer to the groups of the pattern, which is what an author reads; the host maps `n` to `args[n - 1]`. A listed group behaves as a `{name:secret}` parameter of a built-in step (7.2): a literal in it is `***` in every step text, its value is registered, its slot is `***` in `vars`. A number no group has is a load error (exit 2).
+
+**Decided: `media_type` in a diagnostic.** Optional. When present the host uses it for the file at `path`; when absent it guesses from the extension as in section 8.
+
+**Decided: files a plugin writes are the plugin's duty to filter.** The host cannot read an image, and it does not hand the secret set to a plugin: that would put values the plugin never produced into its hands. Section 7.11 already says images are not filtered.
+
+**Out of scope here:** the first consumer, `bddkit-browser`'s `I take a screenshot` returning its PNG on `passed`, is a change in that repository.
 
 ## 11. Invariants this touches
 

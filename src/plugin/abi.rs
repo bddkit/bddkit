@@ -14,7 +14,12 @@ use std::collections::BTreeMap;
 
 /// Bumped only for a breaking change to the payloads or the symbol set.
 /// The host refuses a plugin reporting anything else.
-pub const ABI_VERSION: u32 = 1;
+///
+/// 2: the dispatch request gained `evidence`, the reply `secrets`, a
+/// diagnostic `media_type` and a step spec `secret_groups` (#90). Each is
+/// optional on its own; the generation moved once, for the lot, so a plugin
+/// that sends `secrets` can rely on a host that reads them.
+pub const ABI_VERSION: u32 = 2;
 
 /// A message used whenever a plugin reports failure without giving a reason.
 const NO_MESSAGE: &str = "the plugin reported a failure with no message";
@@ -52,7 +57,7 @@ pub struct Manifest {
     /// What the `resources.<group>` body of each claimed group takes, keyed by
     /// group because one manifest may claim several. Optional and defaulted:
     /// a plugin that describes nothing stays fully supported, which is why
-    /// `ABI_VERSION` does not move for it.
+    /// `ABI_VERSION` did not move for it (it moved later, once, for #90).
     ///
     ///
     /// A key naming a group the manifest does not claim is a load error
@@ -122,6 +127,14 @@ pub struct StepSpec {
     /// plugin's job, not the host's.
     #[serde(default)]
     pub description: Option<String>,
+    /// Capture groups of `pattern` that hold a secret, 1-based like the regex
+    /// groups themselves (`[2]` is the second `(...)`). The host hides a
+    /// literal one in every step text it shows, registers the value as it
+    /// does for `{name:secret}`, and writes `***` for its slot in the stream.
+    /// Optional and defaulted; an index no group has is a load error
+    /// (`library::check_secret_groups`).
+    #[serde(default)]
+    pub secret_groups: Vec<usize>,
 }
 
 impl StepSpec {
@@ -174,6 +187,10 @@ pub struct DispatchRequest<'a> {
     pub workspace_dir: String,
     pub debug: bool,
     pub options: OptionsJson,
+    /// The run writes the evidence of a PASSING step too (`--evidence`), so a
+    /// plugin may attach a screenshot nobody would read otherwise. Sent on
+    /// every attempt of a polled assertion.
+    pub evidence: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -194,6 +211,10 @@ pub struct Diagnostic {
     pub content: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// The media type of the file at `path`. When absent the host guesses it
+    /// from the file's extension.
+    #[serde(default)]
+    pub media_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -203,11 +224,38 @@ pub struct DispatchResult {
     pub vars: BTreeMap<String, String>,
     #[serde(default)]
     pub diagnostics: Vec<Diagnostic>,
+    /// Values the host adds to its filter, on every status: a failing reply
+    /// is where a secret is most likely to be quoted. Subject to the same
+    /// `privacy.min_length` as any other value.
+    #[serde(default)]
+    pub secrets: Vec<String>,
     #[serde(default)]
     pub error: Option<String>,
 }
 
 impl DispatchResult {
+    /// A reply that does not parse as a whole may still have declared
+    /// `secrets`, and the message that reports it quotes the raw reply. Read
+    /// just that key so the failure can be masked like any other; `None` when
+    /// it declared none, and the caller reports the parse error as it always
+    /// did.
+    pub fn salvage(reply: &str, message: String) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(reply).ok()?;
+        let secrets: Vec<String> = value
+            .get("secrets")?
+            .as_array()?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        (!secrets.is_empty()).then(|| Self {
+            status: Status::Fatal,
+            vars: BTreeMap::new(),
+            diagnostics: Vec::new(),
+            secrets,
+            error: Some(message),
+        })
+    }
+
     /// Diagnostics are evidence on the failure path, so they have to end up
     /// inside the one string `report::render_file` writes. Printing them
     /// directly would land in the middle of another worker's dump.
@@ -318,7 +366,7 @@ mod tests {
     fn a_step_description_is_optional_in_both_directions() {
         // Plugins published before the field existed must keep loading — they
         // simply list without a description — which is why this is additive
-        // and `ABI_VERSION` does not move.
+        // and `ABI_VERSION` did not move for it (generation 2 moved once, for #90).
         let plain: Vec<StepSpec> =
             serde_json::from_str(r#"[{"pattern":"^a$","group":"widget","kind":"action"}]"#)
                 .expect("steps parse");
@@ -355,14 +403,17 @@ mod tests {
                     kind: "http".into(),
                     content: Some("403 Forbidden".into()),
                     path: None,
+                    media_type: None,
                 },
                 Diagnostic {
                     title: "Screenshot".into(),
                     kind: "image".into(),
                     content: None,
                     path: Some("/run/artifacts/7/fail.png".into()),
+                    media_type: None,
                 },
             ],
+            secrets: Vec::new(),
             error: Some("access denied".into()),
         };
         let text = r.render_failure(&crate::privacy::Redactor::disabled());
@@ -370,6 +421,17 @@ mod tests {
         assert!(text.contains("PUT /b/o"), "{text}");
         assert!(text.contains("403 Forbidden"), "{text}");
         assert!(text.contains("/run/artifacts/7/fail.png"), "{text}");
+    }
+
+    #[test]
+    fn a_malformed_reply_still_yields_the_secrets_it_declared() {
+        let reply = r#"{"status":"fatal","secrets":["tok-123456"],"diagnostics":[{"kind":"x"}]}"#;
+        assert!(serde_json::from_str::<DispatchResult>(reply).is_err());
+        let salvaged = DispatchResult::salvage(reply, "malformed".into()).expect("secrets kept");
+        assert_eq!(salvaged.secrets, vec!["tok-123456".to_string()]);
+        assert_eq!(salvaged.status, Status::Fatal);
+        assert!(DispatchResult::salvage(r#"{"status":1}"#, "m".into()).is_none());
+        assert!(DispatchResult::salvage("not json", "m".into()).is_none());
     }
 
     #[test]
@@ -416,6 +478,7 @@ mod tests {
             workspace_dir: "/tmp/run/workspace/000000".into(),
             debug: false,
             options: OptionsJson::from(&crate::options::Options::default()),
+            evidence: true,
         };
         let value = serde_json::to_value(&request).expect("serialises");
         // `serde_json::Value::Object` is a `BTreeMap` (no `preserve_order`
@@ -431,6 +494,7 @@ mod tests {
             "workspace_dir",
             "debug",
             "options",
+            "evidence",
         ];
         expected.sort();
         assert_eq!(keys, expected);
@@ -439,6 +503,32 @@ mod tests {
             "an absent docstring stays present as null, as the documented payload shows"
         );
         assert_eq!(value["options"]["polling"]["interval_ms"], 100);
+        assert_eq!(value["evidence"], true);
+    }
+
+    #[test]
+    fn the_evidence_additions_are_optional_in_what_a_plugin_sends() {
+        let step: StepSpec = serde_json::from_str(
+            r#"{"pattern":"^a \"(.*)\" \"(.*)\"$","group":"w","kind":"action","secret_groups":[2]}"#,
+        )
+        .expect("step parses");
+        assert_eq!(step.secret_groups, vec![2]);
+        let plain: StepSpec =
+            serde_json::from_str(r#"{"pattern":"^a$","group":"w","kind":"action"}"#).unwrap();
+        assert!(plain.secret_groups.is_empty());
+
+        let reply: DispatchResult = serde_json::from_str(
+            r#"{"status":"fatal","secrets":["s3cr3t-value"],
+                "diagnostics":[{"title":"t","kind":"image","path":"a.bin","media_type":"image/png"}]}"#,
+        )
+        .expect("reply parses");
+        assert_eq!(reply.secrets, vec!["s3cr3t-value".to_string()]);
+        assert_eq!(
+            reply.diagnostics[0].media_type.as_deref(),
+            Some("image/png")
+        );
+        let bare: DispatchResult = serde_json::from_str(r#"{"status":"passed"}"#).unwrap();
+        assert!(bare.secrets.is_empty());
     }
 
     #[test]
@@ -495,7 +585,7 @@ mod tests {
 
     #[test]
     fn a_manifest_without_fields_parses_to_an_empty_map() {
-        // Additive, so `ABI_VERSION` does not move: a plugin published before
+        // Additive: `ABI_VERSION` did not move for it. A plugin published before
         // the key existed keeps loading and simply describes nothing.
         let m: Manifest = serde_json::from_str(r#"{"name":"x","version":"0.1.0","groups":["x"]}"#)
             .expect("manifest parses");

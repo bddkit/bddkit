@@ -60,7 +60,7 @@ fn guard(envelope_kind: &str, body: impl FnOnce() -> String) -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_abi_version() -> u32 {
-    1
+    2
 }
 
 #[unsafe(no_mangle)]
@@ -90,6 +90,17 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
     })
 }
 
+/// The one env switch in this fixture, like the worker's: a manifest body is
+/// fixed, so only the environment can make it declare a group its pattern
+/// does not have.
+fn secret_group() -> usize {
+    if std::env::var_os("BDDKIT_ECHO_FIXTURE_BAD_SECRET_GROUP").is_some() {
+        3
+    } else {
+        2
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_list_steps() -> *mut c_char {
     guard("envelope", || {
@@ -106,7 +117,18 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^the echo should fail quoting "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "assertion",
               "description": "fails with an error that quotes its argument" },
             { "pattern": r#"^I echo evidence$"#, "group": "echo", "kind": "action",
-              "description": "passes, reporting a text, a file inside artifacts_dir and a file outside it as diagnostics" }
+              "description": "passes, reporting a text, a file inside artifacts_dir and a file outside it as diagnostics" },
+            { "pattern": r#"^I echo the evidence hint$"#, "group": "echo", "kind": "action",
+              "description": "publishes the request's evidence flag as the variable echo_hint" },
+            { "pattern": r#"^I echo a declared secret and a typed file$"#, "group": "echo", "kind": "action",
+              "description": "passes, declaring a secret, quoting it in a diagnostic and reporting a file with its media type" },
+            { "pattern": r#"^the echo should fail declaring "(?P<value>[^"]*)" secret$"#, "group": "echo", "kind": "assertion",
+              "description": "fails with an error quoting its argument, which it also declares as a secret" },
+            { "pattern": r#"^the echo should not be ready yet declaring "(?P<value>[^"]*)" secret$"#, "group": "echo", "kind": "assertion",
+              "description": "answers not_yet, quoting its argument, which it also declares as a secret, and the request's evidence flag" },
+            { "pattern": r#"^I echo "(?P<user>[^"]*)" with password "(?P<password>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "secret_groups": [secret_group()],
+              "description": "fails quoting its password, which the step spec marks secret" }
         ])
         .to_string()
     })
@@ -303,6 +325,51 @@ pub extern "C" fn bddkit_dispatch(
                 })
                 .to_string()
             }
+            7 => {
+                let hint = value["evidence"].as_bool().unwrap_or(false).to_string();
+                serde_json::json!({"status": "passed", "vars": {"echo_hint": hint}}).to_string()
+            }
+            8 => {
+                let dir = std::path::Path::new(value["artifacts_dir"].as_str().unwrap_or_default());
+                let path = dir.join("shot.bin");
+                if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, "png")) {
+                    return serde_json::json!({"status": "fatal", "error": e.to_string()}).to_string();
+                }
+                serde_json::json!({
+                    "status": "passed",
+                    "secrets": ["declared-secret-1"],
+                    "diagnostics": [
+                        {"title": "quote", "kind": "text", "content": "token declared-secret-1"},
+                        {"title": "shot", "kind": "image", "path": path.display().to_string(),
+                         "media_type": "image/png"}
+                    ]
+                })
+                .to_string()
+            }
+            9 => {
+                let secret = args.first().cloned().unwrap_or_default();
+                serde_json::json!({
+                    "status": "fatal",
+                    "secrets": [secret],
+                    "error": format!("the echo leaked {secret}"),
+                })
+                .to_string()
+            }
+            10 => {
+                let secret = args.first().cloned().unwrap_or_default();
+                let evidence = value["evidence"].as_bool().unwrap_or(false);
+                serde_json::json!({
+                    "status": "not_yet",
+                    "secrets": [secret],
+                    "error": format!("not ready {secret} evidence={evidence}"),
+                })
+                .to_string()
+            }
+            11 => serde_json::json!({
+                "status": "fatal",
+                "error": format!("the echo was given {}", args.get(1).cloned().unwrap_or_default()),
+            })
+            .to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()

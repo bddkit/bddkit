@@ -467,7 +467,11 @@ async fn show_lists_installed_plugins_and_one_in_detail() {
     }
     let out = plugin(&dir, &github, &["show", "echo"]);
     assert!(out.status.success(), "{}", text(&out));
-    for part in ["groups:      echo", "concurrency: shared", "steps:       7"] {
+    for part in [
+        "groups:      echo",
+        "concurrency: shared",
+        "steps:       12",
+    ] {
         assert!(text(&out).contains(part), "{part}: {}", text(&out));
     }
     let out = plugin(&dir, &github, &["show", "nope"]);
