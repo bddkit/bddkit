@@ -23,3 +23,8 @@ Feature: Leaks on purpose
   Scenario: a secret that only the config names
     Given set variable "note" to "config-secret-value-6"
     Then variable "note" should be equal to "nothing"
+
+  Scenario: a secret that travels through a slot
+    Given set variable "secret_pin" to "pin-secret-value-1"
+    And set variable "copy" to "<<secret_pin>>"
+    Then variable "copy" should be equal to "nothing"

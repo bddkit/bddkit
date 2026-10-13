@@ -278,6 +278,18 @@ pub struct HttpState {
     /// credentials that have not been sent yet.
     signer: Option<hawk::Credentials>,
     redactor: Redactor,
+    /// `--evidence`: keep every exchange for the runner to emit. Nothing is
+    /// cloned while this is off.
+    collect: bool,
+    evidence: Vec<Evidenced>,
+}
+
+/// An exchange waiting to be emitted: the API it went to (`current` may change
+/// before the runner drains it) and how long it took.
+pub struct Evidenced {
+    pub api: String,
+    pub exchange: Exchange,
+    pub elapsed: Duration,
 }
 
 impl HttpState {
@@ -294,6 +306,8 @@ impl HttpState {
             replay: None,
             signer: None,
             redactor: Redactor::disabled(),
+            collect: false,
+            evidence: Vec::new(),
         };
         state.reset();
         state
@@ -312,6 +326,26 @@ impl HttpState {
         self.switch_to(default, headers);
         self.last = None;
         self.replay = None;
+        self.evidence.clear();
+    }
+
+    pub fn collect_evidence(&mut self) {
+        self.collect = true;
+    }
+
+    /// The exchanges stored since the last call, oldest first.
+    pub fn take_evidence(&mut self) -> Vec<Evidenced> {
+        std::mem::take(&mut self.evidence)
+    }
+
+    fn evidence_of(&mut self, api: &str, exchange: &Exchange, started: std::time::Instant) {
+        if self.collect {
+            self.evidence.push(Evidenced {
+                api: api.to_string(),
+                exchange: exchange.clone(),
+                elapsed: started.elapsed(),
+            });
+        }
     }
 
     /// Switch the pending request builder to another API. The previous exchange
@@ -454,10 +488,12 @@ impl HttpState {
             files: self.files.clone(),
             signer: self.signer.take(),
         };
+        let started = std::time::Instant::now();
         let exchange = self
             .execute(&recipe)
             .await
             .map_err(ReplayError::into_message)?;
+        self.evidence_of(&recipe.api, &exchange, started);
         self.last = Some(exchange);
         self.replay = Some(recipe);
         Ok(())
@@ -469,7 +505,9 @@ impl HttpState {
             .replay
             .clone()
             .ok_or_else(|| ReplayError::Fatal("request has not been sent".to_string()))?;
+        let started = std::time::Instant::now();
         let exchange = self.execute(&recipe).await?;
+        self.evidence_of(&recipe.api, &exchange, started);
         self.last = Some(exchange);
         Ok(())
     }

@@ -42,9 +42,86 @@ impl Artifacts {
     }
 }
 
+/// What a consumer needs before it has read a file; from the extension alone.
+pub fn media_type(name: &str) -> &'static str {
+    let extension = name.rsplit_once('.').map_or("", |(_, e)| e);
+    match extension.to_ascii_lowercase().as_str() {
+        "json" => "application/json",
+        "txt" | "log" => "text/plain",
+        "html" | "htm" => "text/html",
+        "xml" => "application/xml",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "application/yaml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
+impl Artifacts {
+    /// Writes `bytes` as `<root>/<counter>/<name>` and returns the path the
+    /// stream carries: relative to the root, forward slashes. The file is
+    /// complete when this returns, which is what lets an event point at it.
+    pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<String> {
+        let dir = self.next_dir();
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(name), bytes)?;
+        Ok(self.relative(&dir.join(name)).unwrap_or_default())
+    }
+
+    /// `path` as the stream writes it, when it lies under the root.
+    pub fn relative(&self, path: &Path) -> Option<String> {
+        let inside = path.strip_prefix(&self.root).ok()?;
+        // Lexical only: a `..` would name a file outside the root.
+        if !inside
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        Some(
+            inside
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/"),
+        )
+    }
+
+    /// Copies a file from outside the root in, under its own file name.
+    pub fn copy_in(&self, source: &Path) -> std::io::Result<String> {
+        let name = source
+            .file_name()
+            .map_or_else(|| "file".into(), |n| n.to_string_lossy());
+        let dir = self.next_dir();
+        std::fs::create_dir_all(&dir)?;
+        std::fs::copy(source, dir.join(&*name))?;
+        Ok(self.relative(&dir.join(&*name)).unwrap_or_default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_root_is_not_inside_it() {
+        let artifacts = Artifacts::new(Some("/evidence".into()), "r1").expect("resolves");
+        assert_eq!(
+            artifacts.relative(Path::new("/evidence/000003/a.png")),
+            Some("000003/a.png".into())
+        );
+        assert_eq!(
+            artifacts.relative(Path::new("/evidence/000003/../../etc/x")),
+            None
+        );
+        assert_eq!(artifacts.relative(Path::new("/elsewhere/a.png")), None);
+    }
 
     #[test]
     fn a_given_root_is_used_and_made_absolute() {

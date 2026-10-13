@@ -123,6 +123,21 @@ impl World {
         self.redactor = redactor;
     }
 
+    /// `--evidence`: this file's steps also write what they resolved, sent and read.
+    pub fn collect_evidence(&mut self) {
+        self.http.collect_evidence();
+        self.trace.collect_evidence(self.artifacts.clone());
+    }
+
+    /// Emits the exchanges stored since the last call as evidence of the
+    /// innermost step in flight.
+    pub fn flush_evidence(&mut self) {
+        for stored in self.http.take_evidence() {
+            self.trace
+                .http(&stored.api, &stored.exchange, stored.elapsed);
+        }
+    }
+
     /// The working directory of this feature file, created on first use.
     pub fn workspace_dir(&mut self) -> Result<&Path, String> {
         self.workspace.dir()

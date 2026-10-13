@@ -400,3 +400,47 @@ Feature: query timing
         "expected a `TIME: ... ms` line even when the query fails: {fail_output}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_statement_is_evidence_of_the_step_that_ran_it() {
+    let _g = setup().await;
+    let src = "\
+Feature: evidence
+  Scenario: insert and read back
+    Given I have \"companies\" with \"slug: <<unique(token)>>\"
+    Then I should have \"companies\" with \"id: <<last_insert_id_companies>>\"
+";
+    let mut command = feature_command(src);
+    let events =
+        std::env::temp_dir().join(format!("bddkit-db-evidence-{}.ndjson", std::process::id()));
+    let out = command
+        .arg("--events")
+        .arg(&events)
+        .arg("--evidence")
+        .output()
+        .expect("failed to run bddkit");
+    assert!(out.status.success(), "{}", combined(&out));
+
+    let stream: Vec<serde_json::Value> = std::fs::read_to_string(&events)
+        .expect("the stream exists")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+        .collect();
+    let sql: Vec<_> = stream
+        .iter()
+        .filter(|e| e["type"] == "evidence" && e["kind"] == "sql")
+        .collect();
+    assert_eq!(sql.len(), 2, "one per statement: {sql:?}");
+    for (event, step) in sql.iter().zip([0, 1]) {
+        assert_eq!(event["step"], step);
+        assert_eq!(event["group"], "db");
+        assert_eq!(event["resource"], "default");
+        assert!(event["content"]["duration_us"].is_u64());
+    }
+    assert!(
+        sql[0]["content"]["sql"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("INSERT"))
+    );
+    assert_eq!(sql[0]["content"]["binds"].as_array().map(Vec::len), Some(1));
+}

@@ -353,7 +353,8 @@ privacy:
 - **Some places are masked by value only.** A short sensitive value is hidden by position in the failure dump and in `Print response body`, and by value (so only when it is long enough) in a multipart text part, in the message of an assertion that quotes a body (`actual: …`), and in `Print response body as "<path>"`, whose sub-tree is cut out of the document and so has no position left.
 - **A form value holding `&` or `=` is cut there** when the dump's `name=value&…` body is scanned, so only the part before it is hidden by position; the whole value still joins the set if it is long enough.
 - **A DSN whose password holds a raw `/`, `#` or `?`** is mis-split by URL parsing, so the config walk registers the wrong, shorter password. Percent-encode such a password.
-- **Images are not filtered.** A screenshot of a password field ships as it is.
+- **Images are not filtered.** A screenshot of a password field ships as it is, and so does any file a plugin names in a diagnostic `path`: only text the host writes itself goes through the filter.
+- **Position is known for `json` only.** A plugin diagnostic of another kind, or a short secret passed on to a macro parameter that is not `secret`, is masked by value alone.
 - **A masked assertion is harder to debug.** Use `--reveal`.
 
 ## 8. Artifacts (package 4)

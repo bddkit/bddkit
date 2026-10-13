@@ -277,7 +277,7 @@ Reply:
 
 - `status` (required) — `"passed"`, `"not_yet"` or `"fatal"`. Anything else fails the parse and the step.
 - `vars` (optional, default `{}`) — string → string, written into the scenario's variables so later steps can read `<<uploaded_etag>>`. **Kept only when `status` is `passed`**; on `not_yet` and `fatal` they are dropped, so an intermediate observation cannot leak into the scenario.
-- `diagnostics` (optional, default `[]`) — evidence, rendered into the failure dump. **Kept only on the failure path**; a `passed` reply's diagnostics are discarded. There is currently no channel for evidence from a step that succeeded.
+- `diagnostics` (optional, default `[]`) — evidence, rendered into the failure dump. The console shows them only for a failure, and a `passed` reply's are dropped from the failure text; but with `bddkit run --events <path> --evidence` every reply's diagnostics, on any status, become `evidence` events in the stream. `content` and `path` are passed through (text over 16 KiB is written under the artifact root and referenced instead; a `path` is absolute or relative to this dispatch's `artifacts_dir`, and a file outside the artifact root is copied in), and the host adds `size` and `media_type`.
 - `error` (optional, default `null`) — the failure message. See section 5.
 
 **The host filters what you send back.** `error` and every diagnostic pass through bddkit's privacy filter before they are printed or written, so a value the tester has marked as secret (a `secret` step parameter, a variable with a privacy word in its name, a sensitive header, a password in the config) appears as `***` — including inside a message you quote it in. A diagnostic whose `kind` is `json` is also masked by name: a string or number under a key with `password`, `secret` or `token` as a word is hidden where it stands, and the value joins the file's set. You still receive the real values in `args`, the docstring and the table; masking never changes what a plugin is given. A plugin cannot declare its own secrets or mark a step argument sensitive yet.
@@ -353,7 +353,7 @@ Guard the trivial exports too. "Every export is guarded" is an invariant a reade
 
 ## 5. `passed | not_yet | fatal`
 
-- **`passed`** — the step succeeded. `vars` are published; `diagnostics` are dropped.
+- **`passed`** — the step succeeded. `vars` are published; `diagnostics` are not shown on the console, and reach the event stream only under `--evidence`.
 - **`fatal`** — the step failed and retrying cannot help. The scenario fails with `error` plus the rendered diagnostics.
 - **`not_yet`** — *one fresh observation says the condition is not met yet.* Only an assertion may answer this. An action that answers `not_yet` fails the scenario with "a plugin action answered not_yet, which only an assertion may do".
 

@@ -468,6 +468,11 @@ struct RunArgs {
     /// FIFO or /dev/fd/N [default: $BDDKIT_EVENTS]
     #[arg(long)]
     events: Option<PathBuf>,
+    /// Add evidence to the event stream: resolved values, HTTP exchanges, SQL
+    /// and plugin diagnostics, also of passing steps. Off by default because it
+    /// puts bodies and query parameters on disk. Requires --events
+    #[arg(long)]
+    evidence: bool,
     /// Root for the evidence files plugins write [default: $BDDKIT_ARTIFACTS_DIR,
     /// else <temp dir>/bddkit-<run id>]
     #[arg(long = "artifacts-dir")]
@@ -876,12 +881,16 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .try_for_each(report::prepare)?;
     // Opened once, here, and held: see `events::open`. Nothing is written to
     // it until the run has started, so every refusal below leaves it empty.
-    let events_file = cli
+    let events_path = cli
         .events
         .clone()
-        .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from))
-        .map(|path| events::open(&path))
-        .transpose()?;
+        .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from));
+    // `$BDDKIT_EVENTS` counts, so this is not clap's `requires`.
+    anyhow::ensure!(
+        !cli.evidence || events_path.is_some(),
+        "--evidence requires --events (or $BDDKIT_EVENTS)"
+    );
+    let events_file = events_path.map(|path| events::open(&path)).transpose()?;
     let config_path = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
         .path;
@@ -1012,6 +1021,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
                 "artifacts_dir": artifacts.root().display().to_string(),
+                "evidence": cli.evidence,
                 "concurrency": cfg.concurrency,
                 "privacy": {
                     "masking": !privacy.reveal,
@@ -1037,6 +1047,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
         cli.fail_fast,
     );
     ctx.events = events;
+    ctx.evidence = cli.evidence;
     ctx.redactor = privacy::Redactor::new(&privacy, privacy::recorded());
     let ctx = Arc::new(ctx);
 

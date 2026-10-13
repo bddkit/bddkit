@@ -23,7 +23,7 @@ cargo build
 | `bddkit.yaml` | the suite's config: the `exec` group, anchored at the repository root |
 | `macros.yaml` | `I run the masking fixture "<config>" with options "<options>"` |
 | `features/privacy.feature` | what must stay out of the console, the JUnit report and the stream |
-| `fixtures/masking/` | a project whose five scenarios fail on purpose, with a config per variation (default, `words_only`, a committed `reveal`) |
+| `fixtures/masking/` | a project whose six scenarios fail on purpose, with a config per variation (default, `words_only`, a committed `reveal`) |
 | `out/` | what the nested run wrote; git-ignored |
 
 The Rust acceptance tests in `tests/` are still the gate that needs no plugin download. This suite proves the same behaviour end to end, from the user's side of the binary.

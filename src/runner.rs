@@ -7,9 +7,10 @@ use crate::report::render_file;
 use crate::report::{FileResult, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepId, StepKind, StepTarget, dispatch};
 use crate::unique::Generator;
-use crate::vars::{VarStack, interpolate};
+use crate::vars::{VarStack, interpolate, interpolate_with};
 use crate::world::World;
 use anyhow::Result;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -18,20 +19,52 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+/// What a step's slots resolved to, as `step_started.vars` shows them:
+/// `[expression, value]`. A value is `***` in a `secret` parameter or under a
+/// sensitive name — by position, so a short one is hidden too — and the SQL
+/// NULL is the JSON `null`; the rest goes through the file's set.
+fn shown_slots(
+    slots: Vec<(String, String)>,
+    secret: bool,
+    vars: &VarStack,
+    redactor: &crate::privacy::Redactor,
+    out: &mut Vec<Value>,
+) {
+    for (expression, value) in slots {
+        let name = expression.split('(').next().unwrap_or_default();
+        let shown = if secret || vars.is_secret(name) {
+            redactor.show(true, &value).into()
+        } else if value == crate::vars::NULL_SENTINEL {
+            Value::Null
+        } else {
+            redactor.shown(name, &value).into()
+        };
+        out.push(json!([expression, shown]));
+    }
+}
+
+/// The interpolated arguments of a step and, beside them, the slots that
+/// produced them — from the same pass, because `<<unique()>>` would draw a new
+/// value on a second one.
 fn prepare(
     step: &ExpandedStep,
-    caps: Vec<String>,
+    caps: &[String],
     params: &[crate::steps::expression::Param],
     vars: &VarStack,
     redactor: &crate::privacy::Redactor,
     generator: &Generator,
-) -> Result<Args, String> {
+) -> Result<(Args, Vec<Value>), String> {
+    let mut shown = Vec::new();
     // Substitution applies to arguments, the doc string, and table cells —
     // never to the whole step text.
-    let caps = caps
-        .iter()
-        .map(|c| interpolate(c, vars, generator))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut resolved = Vec::with_capacity(caps.len());
+    let mut cap_slots = Vec::with_capacity(caps.len());
+    for c in caps {
+        let mut slots = Vec::new();
+        resolved.push(interpolate_with(c, vars, generator, &mut slots)?);
+        cap_slots.push(slots);
+    }
+    let caps = resolved;
     // A typed parameter matched either a literal of its type or a whole
     // `<<…>>` slot. Only a slot's value can still be the wrong type, and this
     // is the first point where that value exists (invariant 1).
@@ -41,11 +74,20 @@ fn prepare(
             redactor.secret(value);
         }
     }
+    // After every secret parameter is registered: a value given to one
+    // parameter and quoted by another is hidden in both.
+    for (i, slots) in cap_slots.into_iter().enumerate() {
+        let secret = params.get(i).is_some_and(|param| param.ty.secret);
+        shown_slots(slots, secret, vars, redactor, &mut shown);
+    }
+    let mut slots = Vec::new();
     let docstring = step
         .docstring
         .as_ref()
-        .map(|d| interpolate(d, vars, generator))
+        .map(|d| interpolate_with(d, vars, generator, &mut slots))
         .transpose()?;
+    shown_slots(slots, false, vars, redactor, &mut shown);
+    let mut slots = Vec::new();
     let table = step
         .table
         .as_ref()
@@ -53,16 +95,70 @@ fn prepare(
             rows.iter()
                 .map(|r| {
                     r.iter()
-                        .map(|c| interpolate(c, vars, generator))
+                        .map(|c| interpolate_with(c, vars, generator, &mut slots))
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
-    Ok(Args {
+    shown_slots(slots, false, vars, redactor, &mut shown);
+    Ok((
+        Args {
+            caps,
+            docstring,
+            table,
+        },
+        shown,
+    ))
+}
+
+/// A step matched against the registry, and its arguments interpolated — done
+/// before `step_started` so the event can carry the slots. `Include` is the
+/// one step that interpolates nothing here: it reads its raw captures.
+struct Resolved {
+    target: StepTarget,
+    caps: Vec<String>,
+    args: Option<Args>,
+    vars: Vec<Value>,
+}
+
+fn resolve(
+    world: &World,
+    reg: &Registry,
+    step: &ExpandedStep,
+    generator: &Generator,
+    depth: usize,
+) -> Result<Resolved, String> {
+    let Some((target, caps, params)) = reg.find_with_params(&step.text)? else {
+        return Err("unknown step".into());
+    };
+    if matches!(target, StepTarget::Macro(_)) {
+        if step.docstring.is_some() {
+            return Err("a macro call does not support a docstring".into());
+        }
+        if step.table.is_some() {
+            return Err("a macro call does not support a table".into());
+        }
+        if depth >= 16 {
+            return Err("macro nesting exceeds 16".into());
+        }
+    }
+    let is_include = matches!(
+        target,
+        StepTarget::Builtin {
+            id: StepId::Include | StepId::IncludeScenario,
+            ..
+        }
+    );
+    let interpolated = (!is_include)
+        .then(|| prepare(step, &caps, params, &world.vars, &world.redactor, generator))
+        .transpose()?;
+    let (args, vars) = interpolated.unzip();
+    Ok(Resolved {
+        target,
         caps,
-        docstring,
-        table,
+        args,
+        vars: vars.unwrap_or_default(),
     })
 }
 
@@ -81,13 +177,24 @@ fn execute_step<'a>(
     Box::pin(async move {
         let started = Instant::now();
         let warned = world.warnings.len();
+        let mut resolved = resolve(world, reg, step, generator, depth);
+        let vars = resolved
+            .as_mut()
+            .map(|r| std::mem::take(&mut r.vars))
+            .unwrap_or_default();
         world.trace.step_started(
             &step.keyword,
             &reg.display_text(&step.text, &world.redactor),
             origin,
             source,
+            vars,
         );
-        let result = run_step(world, reg, step, source, generator, depth).await;
+        let result = match resolved {
+            Ok(resolved) => run_step(world, reg, step, source, generator, depth, resolved).await,
+            Err(error) => Err(error),
+        };
+        // Still the innermost step in flight: this is whose exchanges they are.
+        world.flush_evidence();
         world
             .trace
             .step_finished(result.is_ok(), started.elapsed(), &world.warnings[warned..]);
@@ -102,16 +209,17 @@ async fn run_step(
     source: &std::path::Path,
     generator: &Generator,
     depth: usize,
+    resolved: Resolved,
 ) -> Result<(), String> {
-    let Some((target, caps, params)) = reg.find_with_params(&step.text)? else {
-        return Err("unknown step".into());
-    };
+    let Resolved {
+        target, caps, args, ..
+    } = resolved;
     match target {
         StepTarget::Builtin { id, kind } => {
             if matches!(id, StepId::Include | StepId::IncludeScenario) {
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
-            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
+            let args = args.expect("resolve interpolates every step but an include");
             if id == StepId::AttachFile {
                 // Needs the directory of the file the step is written in,
                 // which `dispatch` does not carry — same reason as Include.
@@ -138,10 +246,15 @@ async fn run_step(
                     let mut polling = Polling::new(&shown, &effective.polling);
                     let mut attempt = 0;
                     loop {
-                        match dispatch(world, id, &args, attempt).await {
+                        let outcome = dispatch(world, id, &args, attempt).await;
+                        // A replay stored an exchange: it is evidence before
+                        // the attempt it belongs to is reported.
+                        world.flush_evidence();
+                        match outcome {
                             Ok(()) => return Ok(()),
                             Err(AttemptError::Fatal(error)) => return Err(error),
                             Err(AttemptError::NotYet(error)) => {
+                                world.trace.attempt(attempt + 1, &error);
                                 polling.after_not_yet(&error).await?;
                                 attempt += 1;
                             }
@@ -151,21 +264,14 @@ async fn run_step(
             }
         }
         StepTarget::Macro(index) => {
-            if step.docstring.is_some() {
-                return Err("a macro call does not support a docstring".into());
-            }
-            if step.table.is_some() {
-                return Err("a macro call does not support a table".into());
-            }
-            if depth >= 16 {
-                return Err("macro nesting exceeds 16".into());
-            }
-
             let definition = reg.macro_def(index);
-            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
+            let args = args.expect("resolve interpolates every step but an include");
             world.vars.push_frame();
             for (param, value) in definition.compiled.params.iter().zip(args.caps) {
                 world.vars.set(&param.name, value);
+                if param.ty.secret {
+                    world.vars.mark_secret(&param.name);
+                }
             }
             if world.debug {
                 debug_eprintln!(
@@ -231,7 +337,7 @@ async fn run_step(
             // Arguments cross the boundary already interpolated: a plugin
             // never sees raw step text and never sees `<<variable>>`
             // syntax (invariant 1, restated at the FFI boundary).
-            let args = prepare(step, caps, params, &world.vars, &world.redactor, generator)?;
+            let args = args.expect("resolve interpolates every step but an include");
             let Some(plugins) = world.plugins.plugins().cloned() else {
                 return Err("this step is served by a plugin, but no plugin is loaded".into());
             };
@@ -263,12 +369,14 @@ async fn run_step(
             // `create_dir_all` after the first call.
             let workspace_dir = world.workspace_dir()?.display().to_string();
 
+            let mut attempts = 0;
             loop {
+                let dispatch_dir = world.artifacts.next_dir();
                 let request = serde_json::to_string(&DispatchRequest {
                     args: &args.caps,
                     docstring: args.docstring.as_ref(),
                     table: args.table.as_ref(),
-                    artifacts_dir: world.artifacts.next_dir().display().to_string(),
+                    artifacts_dir: dispatch_dir.display().to_string(),
                     workspace_dir: workspace_dir.clone(),
                     debug: world.debug,
                     options: OptionsJson::from(&effective),
@@ -309,17 +417,37 @@ async fn run_step(
                 world
                     .plugins
                     .record(&group, &instance, lib, handle, per_worker);
+                // Every secret this reply carries is registered before any of
+                // its diagnostics is written: a diagnostic may quote a value
+                // another one, or a published variable, marks as secret.
+                let mut result = result;
+                if matches!(result.status, Status::Passed) {
+                    // Variables are published only on success: an
+                    // intermediate observation must not leak into the
+                    // scenario.
+                    for (name, value) in std::mem::take(&mut result.vars) {
+                        world.vars.set(&name, value);
+                    }
+                }
+                for diagnostic in &result.diagnostics {
+                    if diagnostic.kind == "json"
+                        && let Some(content) = &diagnostic.content
+                    {
+                        world.redactor.register(&world.redactor.json_hits(content));
+                    }
+                }
+                // Whatever the status: the console shows diagnostics only of
+                // a failure, the stream of every reply.
+                for diagnostic in &result.diagnostics {
+                    let notes =
+                        world
+                            .trace
+                            .diagnostic(&group, &instance, &dispatch_dir, diagnostic);
+                    world.warnings.extend(notes);
+                }
 
                 match result.status {
-                    Status::Passed => {
-                        // Variables are published only on success: an
-                        // intermediate observation must not leak into the
-                        // scenario.
-                        for (name, value) in result.vars {
-                            world.vars.set(&name, value);
-                        }
-                        return Ok(());
-                    }
+                    Status::Passed => return Ok(()),
                     Status::Fatal => return Err(result.render_failure(&world.redactor)),
                     Status::NotYet if !assertion => {
                         return Err(format!(
@@ -332,9 +460,10 @@ async fn run_step(
                         // attempt, so not_yet is simply a failure.
                         None => return Err(result.render_failure(&world.redactor)),
                         Some(polling) => {
-                            polling
-                                .after_not_yet(&result.render_failure(&world.redactor))
-                                .await?
+                            let message = result.render_failure(&world.redactor);
+                            attempts += 1;
+                            world.trace.attempt(attempts, &message);
+                            polling.after_not_yet(&message).await?
                         }
                     },
                 }
@@ -552,6 +681,8 @@ pub struct RunContext {
     pub artifacts: Arc<crate::artifacts::Artifacts>,
     /// `--events`; `None` costs each emit site one branch.
     pub events: Option<Events>,
+    /// `--evidence`: the stream also carries what steps resolved, sent and read.
+    pub evidence: bool,
     /// The run-wide privacy vocabulary and the secrets known before the first
     /// request; each file forks it. `main` sets it; masks nothing until then.
     pub redactor: crate::privacy::Redactor,
@@ -589,6 +720,7 @@ impl RunContext {
             options,
             artifacts,
             events: None,
+            evidence: false,
             redactor: crate::privacy::Redactor::disabled(),
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
@@ -645,6 +777,9 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     );
     world.trace = Trace::new(ctx.events.clone(), &lf.path, &lf.feature.name);
     world.set_redactor(ctx.redactor.fork());
+    if ctx.evidence {
+        world.collect_evidence();
+    }
     let mut scenarios = Vec::new();
 
     let background: Vec<ExpandedStep> = lf

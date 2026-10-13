@@ -104,7 +104,9 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^the echo should fail with json$"#, "group": "echo", "kind": "assertion",
               "description": "fails with a JSON diagnostic holding a token" },
             { "pattern": r#"^the echo should fail quoting "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "assertion",
-              "description": "fails with an error that quotes its argument" }
+              "description": "fails with an error that quotes its argument" },
+            { "pattern": r#"^I echo evidence$"#, "group": "echo", "kind": "action",
+              "description": "passes, reporting a text, a file inside artifacts_dir and a file outside it as diagnostics" }
         ])
         .to_string()
     })
@@ -280,6 +282,27 @@ pub extern "C" fn bddkit_dispatch(
                 "error": format!("the echo quoted {}", args.first().cloned().unwrap_or_default()),
             })
             .to_string(),
+            6 => {
+                // One file the host already owns the directory of, one it does not.
+                let mut paths = Vec::new();
+                for (key, file) in [("artifacts_dir", "inside.txt"), ("workspace_dir", "outside.txt")] {
+                    let dir = std::path::Path::new(value[key].as_str().unwrap_or_default());
+                    let path = dir.join(file);
+                    if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, "marker")) {
+                        return serde_json::json!({"status": "fatal", "error": e.to_string()}).to_string();
+                    }
+                    paths.push(path.display().to_string());
+                }
+                serde_json::json!({
+                    "status": "passed",
+                    "diagnostics": [
+                        {"title": "echo state", "kind": "text", "content": format!("prefix={}", instance.prefix)},
+                        {"title": "inside", "kind": "text", "path": paths[0]},
+                        {"title": "outside", "kind": "text", "path": paths[1]}
+                    ]
+                })
+                .to_string()
+            }
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()

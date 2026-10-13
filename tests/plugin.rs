@@ -1559,3 +1559,92 @@ fn a_secret_reaches_a_plugin_unmasked_and_its_reply_is_masked() {
     assert!(stdout.contains("the echo quoted ***"), "{stdout}");
     assert!(!stdout.contains("plugin-arg-secret-1"), "{stdout}");
 }
+
+// ---- --evidence: what a plugin's reply puts into the event stream ----
+
+/// The events written by a run with `--events <dir>/events.ndjson --evidence`.
+fn evidence_stream(dir: &Path, extra: &[&str]) -> Vec<serde_json::Value> {
+    let mut args = vec!["--events", "events.ndjson", "--evidence"];
+    args.extend_from_slice(extra);
+    assert_green(&run_with(dir, &args, &[]));
+    std::fs::read_to_string(dir.join("events.ndjson"))
+        .expect("the stream exists")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+        .collect()
+}
+
+#[test]
+fn a_plugin_diagnostic_becomes_evidence_with_size_and_media_type() {
+    let dir = project(
+        "evidence-diagnostic",
+        "Feature: f\n  Scenario: s\n    When I echo evidence\n",
+        ECHO_GROUP,
+    );
+    let stream = evidence_stream(&dir, &["--artifacts-dir", "evidence"]);
+
+    let evidence: Vec<_> = stream.iter().filter(|e| e["type"] == "evidence").collect();
+    assert_eq!(evidence.len(), 3, "a PASSED reply's diagnostics count");
+    let text = evidence[0];
+    assert_eq!(
+        (text["group"].as_str(), text["resource"].as_str()),
+        (Some("echo"), Some("main"))
+    );
+    assert_eq!(text["title"], "echo state");
+    assert_eq!(text["kind"], "text");
+    assert_eq!(text["content"], "prefix=p-");
+    assert_eq!(text["step"], 0);
+
+    let inside = evidence[1];
+    assert_eq!(inside["path"], "000000/inside.txt", "relative to the root");
+    assert_eq!(inside["size"], 6);
+    assert_eq!(inside["media_type"], "text/plain");
+    assert!(inside.get("content").is_none());
+    assert!(dir.join("evidence/000000/inside.txt").is_file());
+}
+
+#[test]
+fn a_diagnostic_outside_the_root_is_copied_in() {
+    let dir = project(
+        "evidence-outside",
+        "Feature: f\n  Scenario: s\n    When I echo evidence\n",
+        ECHO_GROUP,
+    );
+    let stream = evidence_stream(&dir, &["--artifacts-dir", "evidence"]);
+
+    let outside = stream
+        .iter()
+        .find(|e| e["title"] == "outside")
+        .expect("the outside diagnostic");
+    let path = outside["path"].as_str().expect("a path");
+    assert!(
+        !Path::new(path).is_absolute() && !path.contains('\\'),
+        "{path}"
+    );
+    assert!(path.ends_with("/outside.txt"), "{path}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("evidence").join(path)).expect("copied in"),
+        "marker"
+    );
+}
+
+#[test]
+fn a_plugin_not_yet_is_an_attempt() {
+    let dir = project(
+        "evidence-attempt",
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass within \"5\" seconds, checking every \"20\" milliseconds\n    Then the echo counter should reach 3\n",
+        ECHO_GROUP,
+    );
+    let stream = evidence_stream(&dir, &[]);
+
+    let attempts: Vec<_> = stream.iter().filter(|e| e["type"] == "attempt").collect();
+    let numbered: Vec<_> = attempts.iter().map(|e| e["n"].as_u64()).collect();
+    assert_eq!(numbered, [Some(1), Some(2)]);
+    assert!(
+        attempts[0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("counter is 1 of 3")),
+        "{}",
+        attempts[0]
+    );
+}
