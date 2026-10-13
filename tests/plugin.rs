@@ -1686,7 +1686,7 @@ fn a_declared_media_type_replaces_the_guess_and_declared_secrets_are_masked() {
         .expect("the quote");
     assert_eq!(quote["content"], "token ***");
     let raw = std::fs::read_to_string(dir.join("events.ndjson")).expect("stream");
-    assert!(!raw.contains("declared-secret-1"), "{raw}");
+    assert!(!raw.contains("declared-secret-value"), "{raw}");
 }
 
 #[test]

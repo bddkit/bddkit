@@ -337,9 +337,9 @@ pub extern "C" fn bddkit_dispatch(
                 }
                 serde_json::json!({
                     "status": "passed",
-                    "secrets": ["declared-secret-1"],
+                    "secrets": ["declared-secret-value"],
                     "diagnostics": [
-                        {"title": "quote", "kind": "text", "content": "token declared-secret-1"},
+                        {"title": "quote", "kind": "text", "content": "token declared-secret-value"},
                         {"title": "shot", "kind": "image", "path": path.display().to_string(),
                          "media_type": "image/png"}
                     ]
