@@ -139,6 +139,7 @@ impl Library {
         check_field_groups(name, &manifest)?;
         check_field_types(name, &manifest)?;
         check_implicit_groups(name, &manifest)?;
+        check_secret_groups(name, &steps)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -202,7 +203,13 @@ impl Library {
             )
         }
         .with_context(|| format!("plugin {:?} returned nothing from dispatch", self.name))?;
-        serde_json::from_str(&reply).with_context(|| self.malformed("dispatch", &reply))
+        serde_json::from_str(&reply).or_else(|error| {
+            let message = self.malformed("dispatch", &reply);
+            // The message quotes the reply, secrets included: hand them to the
+            // host as a failing result rather than lose them in an `Err`.
+            DispatchResult::salvage(&reply, message.clone())
+                .ok_or_else(|| anyhow::Error::new(error).context(message))
+        })
     }
 
     pub fn drop_instance(&self, handle: u64) -> Result<Result<(), String>> {
@@ -324,6 +331,31 @@ fn check_implicit_groups(name: &str, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+/// `secret_groups` counts capture groups from 1, as a regex does. An index no
+/// group has would silently protect nothing, so it is refused at load. A
+/// pattern that does not compile is left to the registry, which names it.
+///
+/// A pure predicate over the already-parsed step list, like its neighbours.
+fn check_secret_groups(name: &str, steps: &[StepSpec]) -> Result<()> {
+    for step in steps.iter().filter(|step| !step.secret_groups.is_empty()) {
+        let Ok(pattern) = regex::Regex::new(&step.pattern) else {
+            continue;
+        };
+        let groups = pattern.captures_len() - 1;
+        if let Some(bad) = step
+            .secret_groups
+            .iter()
+            .find(|g| !(1..=groups).contains(*g))
+        {
+            bail!(
+                "plugin {name:?} marks capture group {bad} of {:?} as secret, but the pattern has {groups} (groups count from 1)",
+                step.pattern
+            );
+        }
+    }
+    Ok(())
+}
+
 /// A declared `type` the host does not know is refused here rather than
 /// silently read as a string, for the reason the key exists at all: a string
 /// is what a boolean field already got, and what its `validate_config` already
@@ -429,6 +461,24 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_group_no_pattern_group_has_is_refused() {
+        let step = |groups: &str| -> Vec<StepSpec> {
+            serde_json::from_str(&format!(
+                r#"[{{"pattern":"^a \"(.*)\" \"(.*)\"$","group":"w","kind":"action","secret_groups":{groups}}}]"#
+            ))
+            .expect("steps parse")
+        };
+        check_secret_groups("widget", &step("[1,2]")).expect("both groups exist");
+        for bad in ["[0]", "[3]"] {
+            let error = check_secret_groups("widget", &step(bad)).expect_err("refused");
+            assert!(
+                error.to_string().contains("groups count from 1"),
+                "{bad}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn loads_the_fixture_and_reads_its_manifest() {
         let lib = Library::load("echo", &fixture()).expect("loads");
         assert_eq!(lib.manifest.name, "echo");
@@ -446,7 +496,7 @@ mod tests {
     #[test]
     fn lists_the_steps() {
         let lib = Library::load("echo", &fixture()).expect("loads");
-        assert_eq!(lib.steps.len(), 7);
+        assert_eq!(lib.steps.len(), 12);
         assert!(!lib.steps[0].is_assertion());
         assert!(lib.steps[1].is_assertion());
         assert_eq!(lib.steps[0].group, "echo");

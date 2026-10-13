@@ -777,8 +777,10 @@ pub type Found<'a> = (StepTarget, Vec<String>, &'a [expression::Param]);
 struct Entry {
     target: StepTarget,
     regex: Regex,
-    /// One per capture group of an entry declared as an expression. A plugin
-    /// or group-switch regex has none: its captures are never type-checked.
+    /// One per capture group of an entry declared as an expression. A
+    /// group-switch regex has none; a plugin's has them only up to its last
+    /// secret group (`expression::plugin_params`). Captures of either are
+    /// never type-checked.
     params: Vec<expression::Param>,
 }
 
@@ -807,7 +809,7 @@ impl Registry {
     /// registry yet is indistinguishable from a typo.
     pub fn with_macros_and_plugins(
         catalog: MacroCatalog,
-        plugin_steps: &[(usize, usize, String, bool)],
+        plugin_steps: &[(usize, usize, String, bool, Vec<usize>)],
         plugin_groups: &[String],
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
@@ -832,8 +834,8 @@ impl Registry {
             entries,
             macros: catalog.definitions,
         };
-        for (lib, step, pattern, assertion) in plugin_steps {
-            registry.add_plugin_step(*lib, *step, pattern, *assertion)?;
+        for (lib, step, pattern, assertion, secret_groups) in plugin_steps {
+            registry.add_plugin_step(*lib, *step, pattern, *assertion, secret_groups)?;
         }
         registry.add_use_group_step(plugin_groups)?;
         registry.validate_macros()?;
@@ -892,7 +894,7 @@ impl Registry {
         let (Some((entry, captures)), None) = (matches.next(), matches.next()) else {
             return std::borrow::Cow::Borrowed(text);
         };
-        let spans: Vec<(usize, usize)> = entry
+        let mut spans: Vec<(usize, usize)> = entry
             .params
             .iter()
             .enumerate()
@@ -904,9 +906,19 @@ impl Registry {
         if spans.is_empty() {
             return std::borrow::Cow::Borrowed(text);
         }
+        // A plugin's regex can nest its groups, which a builtin's flat
+        // `{name:secret}` never does: merge overlaps into one `***`.
+        spans.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for (start, end) in spans {
+            match merged.last_mut() {
+                Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
         let mut shown = String::with_capacity(text.len());
         let mut copied = 0;
-        for (start, end) in spans {
+        for (start, end) in merged {
             shown.push_str(&text[copied..start]);
             shown.push_str(crate::privacy::MASK);
             copied = end;
@@ -942,6 +954,7 @@ impl Registry {
         step: usize,
         pattern: &str,
         assertion: bool,
+        secret_groups: &[usize],
     ) -> Result<(), String> {
         let re = Regex::new(pattern)
             .map_err(|e| format!("invalid plugin step pattern {pattern:?}: {e}"))?;
@@ -952,7 +965,7 @@ impl Registry {
                 assertion,
             },
             regex: re,
-            params: Vec::new(),
+            params: expression::plugin_params(secret_groups),
         });
         Ok(())
     }
@@ -1455,7 +1468,7 @@ mod tests {
     #[test]
     fn a_plugin_step_carries_no_parameter_types() {
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, false)
+        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, false, &[])
             .expect("valid pattern");
         let (_, _, params) = reg
             .find_with_params(r#"I upload file "a""#)
@@ -1465,10 +1478,65 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_secret_group_is_hidden_like_a_secret_parameter() {
+        let mut reg = Registry::new().expect("registry");
+        reg.add_plugin_step(
+            0,
+            1,
+            r#"^I sign in as "([^"]*)" with "([^"]*)"$"#,
+            false,
+            &[2],
+        )
+        .expect("valid pattern");
+        let redactor = crate::privacy::Redactor::new(
+            &crate::privacy::Privacy::default(),
+            crate::privacy::Secrets::new(7),
+        );
+        let shown = |text: &str| reg.display_text(text, &redactor).into_owned();
+        assert_eq!(
+            shown(r#"I sign in as "ann" with "hunter2""#),
+            r#"I sign in as "ann" with "***""#
+        );
+        assert_eq!(
+            shown(r#"I sign in as "ann" with "<<pw>>""#),
+            r#"I sign in as "ann" with "<<pw>>""#
+        );
+        let (_, _, params) = reg
+            .find_with_params(r#"I sign in as "ann" with "x""#)
+            .unwrap()
+            .expect("matches");
+        assert_eq!(
+            params.iter().map(|p| p.ty.secret).collect::<Vec<_>>(),
+            [false, true]
+        );
+    }
+
+    #[test]
+    fn nested_plugin_secret_groups_are_masked_once_and_do_not_panic() {
+        let mut reg = Registry::new().expect("registry");
+        reg.add_plugin_step(0, 1, r#"^I use "((\w+):(\w+))"$"#, false, &[1, 2])
+            .expect("valid pattern");
+        let redactor = crate::privacy::Redactor::new(
+            &crate::privacy::Privacy::default(),
+            crate::privacy::Secrets::new(7),
+        );
+        assert_eq!(
+            reg.display_text(r#"I use "ann:pw""#, &redactor),
+            r#"I use "***""#
+        );
+    }
+
+    #[test]
     fn a_plugin_step_is_found_like_any_other() {
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)" to "([^"]*)"$"#, false)
-            .expect("valid pattern");
+        reg.add_plugin_step(
+            0,
+            1,
+            r#"^I upload file "([^"]*)" to "([^"]*)"$"#,
+            false,
+            &[],
+        )
+        .expect("valid pattern");
         let (target, caps) = reg
             .find(r#"I upload file "report.pdf" to "backups""#)
             .expect("no ambiguity")
@@ -1488,7 +1556,7 @@ mod tests {
     fn an_invalid_plugin_pattern_is_rejected_at_registration() {
         let mut reg = Registry::new().expect("registry");
         let error = reg
-            .add_plugin_step(0, 0, "^I upload file \"([^\"]*$", false)
+            .add_plugin_step(0, 0, "^I upload file \"([^\"]*$", false, &[])
             .expect_err("unbalanced group");
         assert!(error.contains("plugin"), "{error}");
     }
@@ -1499,7 +1567,7 @@ mod tests {
         // every match, and validate::check runs `find` over every selected step
         // before the first request.
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 0, r#"^the response code is (\d+)$"#, true)
+        reg.add_plugin_step(0, 0, r#"^the response code is (\d+)$"#, true, &[])
             .expect("valid pattern");
         let error = reg
             .find("the response code is 200")
@@ -1714,6 +1782,7 @@ mod tests {
                 1,
                 r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
                 false,
+                Vec::new(),
             )],
             &[],
         )

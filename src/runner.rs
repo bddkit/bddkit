@@ -380,6 +380,7 @@ async fn run_step(
                     workspace_dir: workspace_dir.clone(),
                     debug: world.debug,
                     options: OptionsJson::from(&effective),
+                    evidence: world.trace.evidence_on(),
                 })
                 .map_err(|error| format!("failed to encode the plugin request: {error}"))?;
 
@@ -417,10 +418,15 @@ async fn run_step(
                 world
                     .plugins
                     .record(&group, &instance, lib, handle, per_worker);
-                // Every secret this reply carries is registered before any of
-                // its diagnostics is written: a diagnostic may quote a value
-                // another one, or a published variable, marks as secret.
+                // Every secret this reply carries is registered before
+                // anything else is read from it, on any status: the error,
+                // a diagnostic or a `not_yet` message may quote one.
                 let mut result = result;
+                for secret in &result.secrets {
+                    world.redactor.secret(secret);
+                }
+                // A diagnostic may also quote a value another one, or a
+                // published variable, marks as secret.
                 if matches!(result.status, Status::Passed) {
                     // Variables are published only on success: an
                     // intermediate observation must not leak into the
@@ -1157,15 +1163,16 @@ mod tests {
     /// which is how a plugin that answers `not_yet` from an ACTION is built:
     /// the registry, not the reply, is what says a step is an assertion.
     fn echo_registry(plugins: &crate::plugin::Plugins, force_action: Option<usize>) -> Registry {
-        let steps: Vec<(usize, usize, String, bool)> = plugins
+        let steps: Vec<_> = plugins
             .steps()
             .into_iter()
-            .map(|(lib, index, pattern, assertion)| {
+            .map(|(lib, index, pattern, assertion, secret_groups)| {
                 (
                     lib,
                     index,
                     pattern,
                     assertion && force_action != Some(index),
+                    secret_groups,
                 )
             })
             .collect();

@@ -255,8 +255,9 @@ impl Plugins {
         })
     }
 
-    /// `(lib index, step index, pattern, is assertion)` for registry loading.
-    pub fn steps(&self) -> Vec<(usize, usize, String, bool)> {
+    /// `(lib index, step index, pattern, is assertion, secret groups)` for
+    /// registry loading.
+    pub fn steps(&self) -> Vec<(usize, usize, String, bool, Vec<usize>)> {
         let mut out = Vec::new();
         for (lib_index, lib) in self.libs.iter().enumerate() {
             for (step_index, step) in lib.steps.iter().enumerate() {
@@ -265,6 +266,7 @@ impl Plugins {
                     step_index,
                     step.pattern.clone(),
                     step.is_assertion(),
+                    step.secret_groups.clone(),
                 ));
             }
         }
@@ -821,7 +823,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 7);
+        assert_eq!(plugins.step_count(), 12);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

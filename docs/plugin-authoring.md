@@ -45,7 +45,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 
 ## 3. The ABI
 
-`ABI_VERSION` is **1**. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`.
+`ABI_VERSION` is **2**. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional and all described below: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. A plugin built for generation 1 is refused at load — bump the number the plugin returns and rebuild.
 
 | Symbol | Signature | Required |
 |---|---|---|
@@ -62,7 +62,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 
 A missing required symbol fails the load with a message naming the symbol. **Returning NULL from any of the string-returning exports is an error**, reported as "plugin `<name>` returned nothing from `<call>`" — there is no reply shape that means "nothing to say"; say it with an envelope.
 
-At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `1`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim, or declares an `implicit_instance` for one; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below); call `bddkit_validate_config` once per instance — every one the config declares, plus the one synthesized from `implicit_instance` for a group the config has no section for. Nothing else is called until a scenario reaches a step.
+At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `2`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim, or declares an `implicit_instance` for one; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim, or whose `secret_groups` names a capture group its pattern does not have; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below); call `bddkit_validate_config` once per instance — every one the config declares, plus the one synthesized from `implicit_instance` for a group the config has no section for. Nothing else is called until a scenario reaches a step.
 
 Three questions can be asked about a `resources.<group>` entry, and each has its own mechanism. Together they state the boundary this document draws: the host knows *that* a group has a config, the plugin knows *what* it means, and only the plugin can find out whether it works.
 
@@ -74,7 +74,7 @@ Three questions can be asked about a `resources.<group>` entry, and each has its
 
 ### `bddkit_abi_version`
 
-Returns `1`. This is the one call made before the version is known, so it is an unavoidable act of faith on both sides: export it with exactly this signature.
+Returns `2`. This is the one call made before the version is known, so it is an unavoidable act of faith on both sides: export it with exactly this signature.
 
 ### `bddkit_manifest`
 
@@ -147,6 +147,7 @@ An **array** at the top level:
 - `group` (string, required) — must be one the manifest claims.
 - `kind` (string, required) — `"action"` or `"assertion"`. Only an assertion may answer `not_yet`, and only an assertion consumes an armed eventual-assertion modifier.
 - `description` (string, optional) — one line stating the step's effect, shown by `bddkit steps list --config <file> -v`. Localizing it is your job, not the host's: bddkit never translates a plugin's text. Omit it and the step lists without a description.
+- `secret_groups` (array of integers, optional, default `[]`) — the capture groups of `pattern` that hold a secret, **counted from 1 like the regex groups themselves**: `[2]` is the second `(…)`, which arrives as `args[1]`. The host treats such a group as it treats a `{name:secret}` parameter of a built-in step: a literal in it is written `***` in the step text the console, the reports and the stream show (a value that came through a `<<variable>>` is left as written), its value is registered with the privacy filter, and its slot is `***` in `step_started.vars`. A number no group has is refused at load, since it would protect nothing. The groups are unnamed, so this is the only way to say it.
 
 **Name your capture groups.** `bddkit steps list` renders a pattern as a template by replacing each group with its name, so `(?P<bucket>[^"]+)` reads as `<bucket>` while a bare `([^"]+)` degrades to `<value1>`. Named groups stay addressable by index, so nothing about dispatch changes.
 
@@ -239,11 +240,12 @@ Request:
   "artifacts_dir": "/tmp/bddkit-3n2k9a0f1x7q/000007",
   "workspace_dir": "/tmp/bddkit-3n2k9a0f1x7q/workspace/000004",
   "debug": false,
-  "options": { "polling": { "timeout_secs": 30, "interval_ms": 100 } }
+  "options": { "polling": { "timeout_secs": 30, "interval_ms": 100 } },
+  "evidence": false
 }
 ```
 
-All seven keys are always present; `docstring` and `table` are `null` when the step carries neither.
+All eight keys are always present; `docstring` and `table` are `null` when the step carries neither.
 
 - `args` — the regex capture groups in order, **already interpolated**: `<<variable>>`, `<<unique()>>` and `<<null>>` have been resolved before the payload was built. A plugin never sees raw step text and never sees bddkit's variable syntax.
 - `docstring` — the step's doc string, interpolated, or `null`.
@@ -251,6 +253,7 @@ All seven keys are always present; `docstring` and `table` are `null` when the s
 - `artifacts_dir` — a fresh, unique directory path for this one dispatch, under the run's artifact root, `<root>/<six-digit counter>` — `<temp dir>/bddkit-<run id>` unless the tester passed `--artifacts-dir` (or set `BDDKIT_ARTIFACTS_DIR`), in which case the evidence you write there is what they archive. Always an absolute path. **The host does not create it.** Call `create_dir_all` before writing, and write nothing if you have nothing to write — most dispatches never touch it.
 - `workspace_dir` — the working directory of the feature file this call belongs to, for files the run produces rather than evidence about a failure. **The host has already created it**, unlike `artifacts_dir`. It is the same directory for every dispatch in one feature file and a different one in every other file, so a plugin can accept a bare file name from a tester without two files colliding on it. It is shared with the host's own steps, so a file written by one and read by the other needs no path in the feature text. Nothing deletes it: a failed run's files stay inspectable.
 - `debug` — true while the scenario is inside `I am in debug mode`. It resets at the scenario boundary.
+- `evidence` — true when the run writes the evidence of a passing step too (`bddkit run --events <path> --evidence`), so a plugin may attach a screenshot or a response that nobody would read otherwise. When it is false, a `passed` reply's diagnostics are dropped, and producing them is wasted work. Sent on every attempt of a polled assertion.
 - `options` — the polling options resolved for this instance, after the global → instance cascade and after any armed eventual-assertion modifier. Informational: **the retry loop is the host's**, see section 5.
 
 Reply:
@@ -260,6 +263,7 @@ Reply:
   "status": "passed",
   "vars": { "uploaded_etag": "d41d8cd9" },
   "diagnostics": [],
+  "secrets": [],
   "error": null
 }
 ```
@@ -277,12 +281,15 @@ Reply:
 
 - `status` (required) — `"passed"`, `"not_yet"` or `"fatal"`. Anything else fails the parse and the step.
 - `vars` (optional, default `{}`) — string → string, written into the scenario's variables so later steps can read `<<uploaded_etag>>`. **Kept only when `status` is `passed`**; on `not_yet` and `fatal` they are dropped, so an intermediate observation cannot leak into the scenario.
-- `diagnostics` (optional, default `[]`) — evidence, rendered into the failure dump. The console shows them only for a failure, and a `passed` reply's are dropped from the failure text; but with `bddkit run --events <path> --evidence` every reply's diagnostics, on any status, become `evidence` events in the stream. `content` and `path` are passed through (text over 16 KiB is written under the artifact root and referenced instead; a `path` is absolute or relative to this dispatch's `artifacts_dir`, and a file outside the artifact root is copied in), and the host adds `size` and `media_type`.
+- `diagnostics` (optional, default `[]`) — evidence, rendered into the failure dump. The console shows them only for a failure, and a `passed` reply's are dropped from the failure text; but with `bddkit run --events <path> --evidence` every reply's diagnostics, on any status, become `evidence` events in the stream. `content` and `path` are passed through (text over 16 KiB is written under the artifact root and referenced instead; a `path` is absolute or relative to this dispatch's `artifacts_dir`, and a file outside the artifact root is copied in), and the host adds `size`, and `media_type` unless the diagnostic names one (below).
+- `secrets` (optional, default `[]`) — strings the host adds to its privacy filter, **on every status**: a failing reply is where a value is most likely to be quoted. They are registered before anything else in the reply is read, so `error`, the diagnostics and a `not_yet` message are masked too. The filter's `privacy.min_length` applies as to any value: a shorter one is not added (only position can hide it). Use it for what you know is sensitive and the host cannot — a signed URL, an access key you generated.
 - `error` (optional, default `null`) — the failure message. See section 5.
 
-**The host filters what you send back.** `error` and every diagnostic pass through bddkit's privacy filter before they are printed or written, so a value the tester has marked as secret (a `secret` step parameter, a variable with a privacy word in its name, a sensitive header, a password in the config) appears as `***` — including inside a message you quote it in. A diagnostic whose `kind` is `json` is also masked by name: a string or number under a key with `password`, `secret` or `token` as a word is hidden where it stands, and the value joins the file's set. You still receive the real values in `args`, the docstring and the table; masking never changes what a plugin is given. A plugin cannot declare its own secrets or mark a step argument sensitive yet.
+**The host filters what you send back.** `error` and every diagnostic pass through bddkit's privacy filter before they are printed or written, so a value the tester has marked as secret (a `secret` step parameter, a variable with a privacy word in its name, a sensitive header, a password in the config) appears as `***` — including inside a message you quote it in. A diagnostic whose `kind` is `json` is also masked by name: a string or number under a key with `password`, `secret` or `token` as a word is hidden where it stands, and the value joins the file's set. You still receive the real values in `args`, the docstring and the table; masking never changes what a plugin is given. Mark your own secrets with the reply's `secrets`, and a step argument with the step's `secret_groups`.
 
-A diagnostic is `{"title", "kind", "content", "path"}`: `title` and `kind` are required strings, `content` and `path` are optional. `kind` is free-form text — `text`, `json`, `http` and `image` are the conventional values, and an unrecognised one degrades to "print it as text" rather than failing the parse. The host renders each as `--- <title> (<kind>) ---`, then `content`, then `path`, appended to `error`.
+**Files you write are not filtered.** The host masks text; it cannot read a PNG. A screenshot of a password field ships as it is, and the plugin owns that — it knows what it drew. The host does not hand you the secret set to filter with: that would put values you never produced into your hands.
+
+A diagnostic is `{"title", "kind", "content", "path", "media_type"}`: `title` and `kind` are required strings, the rest are optional. `media_type` is the type of the file at `path` (`image/png`); omit it and the host guesses from the extension, `application/octet-stream` when it has no idea. It is read only together with a `path`: a diagnostic carrying inline `content` has no file for it to describe. `kind` is free-form text — `text`, `json`, `http` and `image` are the conventional values, and an unrecognised one degrades to "print it as text" rather than failing the parse. The host renders each as `--- <title> (<kind>) ---`, then `content`, then `path`, appended to `error`.
 
 ### `bddkit_drop_instance`
 

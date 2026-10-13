@@ -140,6 +140,31 @@ pub struct Param {
     check: Option<Regex>,
 }
 
+/// The parameters of a plugin step, whose regex has unnamed groups: one per
+/// group up to the last secret one, `secret` where the manifest says so and
+/// `text` elsewhere. Nothing is type-checked (`check` is `None`); the list
+/// exists so the runner and `Registry::display_text` treat a plugin's secret
+/// group exactly as a `{name:secret}` of a builtin. `secret_groups` is 1-based.
+pub fn plugin_params(secret_groups: &[usize]) -> Vec<Param> {
+    let ty = |name| {
+        TYPES
+            .iter()
+            .find(|ty| ty.name == name)
+            .expect("a known type")
+    };
+    (1..=secret_groups.iter().copied().max().unwrap_or(0))
+        .map(|group| Param {
+            name: format!("group {group}"),
+            ty: ty(if secret_groups.contains(&group) {
+                "secret"
+            } else {
+                "text"
+            }),
+            check: None,
+        })
+        .collect()
+}
+
 impl Param {
     /// The post-interpolation half of a typed parameter: the step matched a
     /// literal of the type or a whole `<<…>>` slot, and only the slot's value

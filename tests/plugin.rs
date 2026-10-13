@@ -1648,3 +1648,137 @@ fn a_plugin_not_yet_is_an_attempt() {
         attempts[0]
     );
 }
+
+// ---- #90: what a plugin can say about evidence and secrets ----
+
+#[test]
+fn a_plugin_is_told_whether_evidence_is_wanted() {
+    let feature = "Feature: f\n  Scenario: s\n    When I echo the evidence hint\n    Then variable \"echo_hint\" should be equal to \"EXPECTED\"\n";
+    let off = project(
+        "hint-off",
+        &feature.replace("EXPECTED", "false"),
+        ECHO_GROUP,
+    );
+    assert_green(&run(&off));
+
+    // The flag is on for every attempt, so one step is enough to see it.
+    let on = project("hint-on", &feature.replace("EXPECTED", "true"), ECHO_GROUP);
+    evidence_stream(&on, &[]);
+}
+
+#[test]
+fn a_declared_media_type_replaces_the_guess_and_declared_secrets_are_masked() {
+    let dir = project(
+        "declared-secret",
+        "Feature: f\n  Scenario: s\n    When I echo a declared secret and a typed file\n",
+        ECHO_GROUP,
+    );
+    let stream = evidence_stream(&dir, &["--artifacts-dir", "evidence"]);
+
+    let shot = stream
+        .iter()
+        .find(|e| e["title"] == "shot")
+        .expect("the shot");
+    assert_eq!(shot["media_type"], "image/png", "`.bin` would be a guess");
+    let quote = stream
+        .iter()
+        .find(|e| e["title"] == "quote")
+        .expect("the quote");
+    assert_eq!(quote["content"], "token ***");
+    let raw = std::fs::read_to_string(dir.join("events.ndjson")).expect("stream");
+    assert!(!raw.contains("declared-secret-1"), "{raw}");
+}
+
+#[test]
+fn a_secret_a_failing_reply_declares_is_masked_in_its_own_error() {
+    let dir = project(
+        "declared-secret-on-fatal",
+        "Feature: f\n  Scenario: s\n    Then the echo should fail declaring \"fatal-secret-1\" secret\n",
+        ECHO_GROUP,
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("the echo leaked ***"), "{stdout}");
+    assert!(!stdout.contains("fatal-secret-1"), "{stdout}");
+}
+
+#[test]
+fn a_step_spec_secret_group_is_hidden_in_the_step_and_in_what_the_plugin_quotes() {
+    let dir = project(
+        "secret-group",
+        "Feature: f\n  Scenario: s\n    Given set variable \"pw\" to \"group-secret-1\"\n    Then I echo \"ann\" with password \"<<pw>>\"\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("the echo was given ***"), "{stdout}");
+    assert!(!stdout.contains("group-secret-1"), "{stdout}");
+    // `pw` is not a sensitive name: only the step spec's flag hides the slot.
+    let raw = std::fs::read_to_string(dir.join("events.ndjson")).expect("stream");
+    assert!(raw.contains(r#"[["pw","***"]]"#), "{raw}");
+
+    // A literal in the group is hidden in the step text itself.
+    let literal = project(
+        "secret-group-literal",
+        "Feature: f\n  Scenario: s\n    Then I echo \"ann\" with password \"pw1\"\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&literal, &["--events", "events.ndjson"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("with password \"***\""), "{stdout}");
+    assert!(!stdout.contains("\"pw1\""), "{stdout}");
+    let raw = std::fs::read_to_string(literal.join("events.ndjson")).expect("stream");
+    assert!(raw.contains(r#"with password \"***\""#), "{raw}");
+    assert!(!raw.contains(r#"\"pw1\""#), "{raw}");
+}
+
+#[test]
+fn a_not_yet_reply_declares_secrets_and_sees_the_evidence_flag_on_every_attempt() {
+    let dir = project(
+        "declared-secret-not-yet",
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass within \"1\" seconds, checking every \"20\" milliseconds\n    Then the echo should not be ready yet declaring \"notyet-secret-1\" secret\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let stream: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("events.ndjson"))
+        .expect("stream")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("json"))
+        .collect();
+    let attempts: Vec<_> = stream.iter().filter(|e| e["type"] == "attempt").collect();
+    assert!(attempts.len() > 1, "polling replayed the step");
+    for attempt in attempts {
+        // Masked at emit time, so only an early registration keeps it clean.
+        assert_eq!(
+            attempt["message"], "not ready *** evidence=true",
+            "{attempt}"
+        );
+    }
+}
+
+#[test]
+fn a_declared_secret_shorter_than_min_length_is_not_registered() {
+    let dir = project(
+        "declared-secret-short",
+        "Feature: f\n  Scenario: s\n    Then the echo should fail declaring \"short\" secret\n",
+        ECHO_GROUP,
+    );
+    let stdout = String::from_utf8_lossy(&run(&dir).stdout).into_owned();
+    assert!(stdout.contains("the echo leaked short"), "{stdout}");
+}
+
+#[test]
+fn a_secret_group_no_pattern_group_has_stops_the_run_at_load() {
+    let dir = project(
+        "secret-group-bad-index",
+        "Feature: f\n  Scenario: s\n    Then the echo should fail\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &[], &[("BDDKIT_ECHO_FIXTURE_BAD_SECRET_GROUP", "1")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("groups count from 1"), "{stderr}");
+}
