@@ -5590,3 +5590,360 @@ async fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
         "{stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `run --events --evidence`
+// ---------------------------------------------------------------------------
+
+/// One scenario of `steps`, run with the evidence on; the stream it wrote.
+fn evidence_run(name: &str, base: &str, steps: &str, extra: &[&str]) -> Vec<Value> {
+    let cfg = write_events_project(
+        name,
+        base,
+        &[("e.feature", &format!("Feature: e\n  Scenario: s\n{steps}"))],
+        None,
+    );
+    let mut args = vec!["--evidence"];
+    args.extend_from_slice(extra);
+    run_with_events(&cfg, &args).1
+}
+
+fn step_text<'a>(stream: &'a [Value], text: &str) -> &'a Value {
+    of_type(stream, "step_started")
+        .into_iter()
+        .find(|e| e["text"].as_str().is_some_and(|t| t.contains(text)))
+        .unwrap_or_else(|| panic!("no step {text:?} in {stream:?}"))
+}
+
+#[test]
+fn evidence_requires_events() {
+    let cfg = write_events_project("evidence-alone", "", &[], None);
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--evidence", "--config"])
+        .arg(&cfg)
+        .env_remove("BDDKIT_EVENTS")
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--evidence requires --events"), "{stderr}");
+
+    // The variable counts as `--events`; the check is not clap's `requires`.
+    let events = cfg.with_file_name("from-env.ndjson");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--evidence", "--config"])
+        .arg(&cfg)
+        .env("BDDKIT_EVENTS", &events)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(2), "no feature files");
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("requires --events"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_evidence_the_stream_holds_only_lifecycle_events() {
+    let base = common::spawn().await;
+    let cfg = write_events_project(
+        "no-evidence",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"<<unique(token)>>\"\n    When I request \"/ping\"\n    Then the response code is 200\n",
+        )],
+        None,
+    );
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+
+    let lifecycle = [
+        "run_started",
+        "file_started",
+        "scenario_started",
+        "step_started",
+        "step_finished",
+        "step_skipped",
+        "scenario_finished",
+        "file_finished",
+        "run_finished",
+    ];
+    for event in &stream {
+        assert!(
+            lifecycle.contains(&event["type"].as_str().expect("type")),
+            "{event}"
+        );
+        assert!(event.get("vars").is_none(), "{event}");
+    }
+    assert_eq!(stream[0]["evidence"], false);
+}
+
+#[test]
+fn a_step_reports_its_resolved_slots_beside_the_raw_text() {
+    let stream = evidence_run(
+        "evidence-vars",
+        "",
+        "    Given set variable \"who\" to \"ann\"\n    And set variable \"greeting\" to \"hi <<who>>\"\n",
+        &[],
+    );
+    assert_eq!(stream[0]["evidence"], true);
+    let step = step_text(&stream, "\"greeting\"");
+    assert_eq!(step["text"], "set variable \"greeting\" to \"hi <<who>>\"");
+    assert_eq!(step["vars"], json!([["who", "ann"]]));
+    assert!(
+        step_text(&stream, "\"who\"").get("vars").is_none(),
+        "no slot, no key"
+    );
+}
+
+#[test]
+fn a_repeated_slot_appears_once_per_occurrence() {
+    let stream = evidence_run(
+        "evidence-repeated",
+        "",
+        "    Given set variable \"pair\" to \"<<unique(token)>>|<<unique(token)>>\"\n    Then variable \"pair\" should not be equal to \"x\"\n",
+        &[],
+    );
+    let vars = step_text(&stream, "\"pair\" to")["vars"]
+        .as_array()
+        .expect("vars")
+        .clone();
+    assert_eq!(vars.len(), 2);
+    assert_eq!(vars[0][0], "unique(token)");
+    assert_eq!(vars[1][0], "unique(token)");
+    assert_ne!(vars[0][1], vars[1][1], "a new value each time");
+}
+
+#[test]
+fn a_null_slot_is_reported_as_json_null() {
+    let stream = evidence_run(
+        "evidence-null",
+        "",
+        "    Given set variable \"n\" to \"<<null>>\"\n",
+        &[],
+    );
+    assert_eq!(step_text(&stream, "\"n\"")["vars"], json!([["null", null]]));
+}
+
+#[test]
+fn a_secret_slot_is_masked_in_vars() {
+    let stream = evidence_run(
+        "evidence-secret-slot",
+        "",
+        // `ab` is shorter than `min_length`: only position can hide it.
+        "    Given set variable \"my_secret\" to \"ab\"\n    And set variable \"copy\" to \"<<my_secret>>\"\n    And set variable \"k\" to \"long-key-value-1\"\n    And I sign the next request with Hawk id \"<<k>>\" and key \"<<k>>\"\n",
+        &[],
+    );
+    assert_eq!(
+        step_text(&stream, "\"copy\"")["vars"],
+        json!([["my_secret", "***"]]),
+        "a sensitive name"
+    );
+    assert_eq!(
+        step_text(&stream, "Hawk")["vars"],
+        json!([["k", "***"], ["k", "***"]]),
+        "a secret parameter, and a value another parameter also quotes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_http_exchange_is_evidence_of_the_step_that_sent_it() {
+    let base = common::spawn().await;
+    let stream = evidence_run(
+        "evidence-http",
+        &base,
+        "    Given set variable \"a\" to \"1\"\n    When I request \"/ping\"\n    Then the response code is 200\n",
+        &[],
+    );
+
+    let evidence = of_type(&stream, "evidence");
+    assert_eq!(evidence.len(), 1, "{stream:?}");
+    let e = evidence[0];
+    assert_eq!(e["step"], 1, "the request, not the assertion after it");
+    assert_eq!(
+        (
+            e["group"].as_str(),
+            e["resource"].as_str(),
+            e["kind"].as_str()
+        ),
+        (Some("api"), Some("stub"), Some("http"))
+    );
+    assert_eq!(e["content"]["method"], "GET");
+    assert_eq!(e["content"]["status"], 200);
+    assert!(
+        e["content"]["url"]
+            .as_str()
+            .expect("url")
+            .ends_with("/ping")
+    );
+    assert!(e["content"]["duration_us"].is_u64());
+    assert!(e["content"]["response"]["body"].is_string());
+    // In the timeline: after the step starts, before it finishes.
+    let at = |kind: &str, step: u64| {
+        stream
+            .iter()
+            .position(|x| x["type"] == kind && x["step"] == step)
+            .expect("event")
+    };
+    let position = stream.iter().position(|x| x == e).expect("evidence");
+    assert!(at("step_started", 1) < position && position < at("step_finished", 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_masked_header_keeps_its_name_in_the_evidence() {
+    let base = common::spawn().await;
+    let stream = evidence_run(
+        "evidence-header",
+        &base,
+        "    Given the \"Authorization\" request header is \"Bearer s3cret-credential\"\n    When I request \"/ping\"\n",
+        &[],
+    );
+    let headers = &of_type(&stream, "evidence")[0]["content"]["request"]["headers"];
+    assert!(
+        headers
+            .as_array()
+            .expect("headers")
+            .iter()
+            .any(|pair| pair == &json!(["Authorization", "***"])),
+        "{headers}"
+    );
+    assert!(
+        !of_type(&stream, "evidence")
+            .iter()
+            .any(|e| e.to_string().contains("s3cret")),
+        "{stream:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sensitive_field_is_masked_in_the_evidence_of_the_step_that_received_it() {
+    let base = common::spawn().await;
+    let stream = evidence_run(
+        "evidence-field",
+        &base,
+        // `pw` is shorter than `min_length`: only its position hides it.
+        "    Given the request body is:\n      \"\"\"\n      {\"user\": \"ann\", \"password\": \"pw\"}\n      \"\"\"\n    When I request \"/echo\" using HTTP POST\n",
+        &[],
+    );
+    let content = &of_type(&stream, "evidence")[0]["content"];
+    for body in [&content["request"]["body"], &content["response"]["body"]] {
+        let body = body.as_str().expect("an inline body");
+        assert!(body.contains("ann"), "{body}");
+        assert!(body.contains("***") && !body.contains("\"pw\""), "{body}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_polling_replay_is_a_new_exchange_and_an_attempt() {
+    let (base, calls) = spawn_eventual_post_stub(Some(2)).await;
+    let stream = evidence_run(
+        "evidence-polling",
+        &base,
+        "    Given the request body is:\n      \"\"\"\n      {\"request\": \"saved\"}\n      \"\"\"\n    When I request \"/eventual\" using HTTP POST\n    And I expect the next assertion to pass within \"2\" seconds, checking every \"25\" milliseconds\n    Then the response body equals JSON:\n      \"\"\"\n      {\"state\": \"ready\", \"payload\": {\"request\": \"saved\"}}\n      \"\"\"\n",
+        &[],
+    );
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let kinds: Vec<_> = stream
+        .iter()
+        .filter(|e| e["type"] == "evidence" || e["type"] == "attempt")
+        .map(|e| (e["type"].as_str().expect("type"), e["step"].as_u64()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("evidence", Some(1)),
+            ("attempt", Some(3)),
+            ("evidence", Some(3))
+        ],
+        "the send, the first mismatch, the replay that passed"
+    );
+    let attempt = of_type(&stream, "attempt")[0];
+    assert_eq!(attempt["n"], 1);
+    assert!(
+        attempt["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("pending")),
+        "{attempt}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evidence_inside_a_macro_attaches_to_the_innermost_step() {
+    let base = common::spawn().await;
+    let cfg = write_events_project(
+        "evidence-macro",
+        &base,
+        &[(
+            "m.feature",
+            "Feature: m\n  Scenario: s\n    Given I ping the service\n",
+        )],
+        Some("- step: 'I ping the service'\n  do:\n    - I request \"/ping\"\n"),
+    );
+    let (_, stream, _) = run_with_events(&cfg, &["--evidence"]);
+
+    let evidence = of_type(&stream, "evidence");
+    assert_eq!(evidence.len(), 1, "{stream:?}");
+    assert_eq!(evidence[0]["step"], 1, "the body step, not the caller (0)");
+}
+
+/// A POST of `size` bytes to the stub, which echoes it, with the artifact root
+/// inside the project. The evidence event of the request, and the root.
+fn long_body_run(name: &str, base: &str, size: usize) -> (Value, std::path::PathBuf) {
+    let cfg = write_events_project(name, base, &[], None);
+    std::fs::write(
+        cfg.with_file_name("features/e.feature"),
+        format!(
+            "Feature: e\n  Scenario: s\n    Given the request body is:\n      \"\"\"\n      {{\"note\": \"{}\"}}\n      \"\"\"\n    When I request \"/echo\" using HTTP POST\n",
+            "x".repeat(size)
+        ),
+    )
+    .expect("feature");
+    let root = cfg.with_file_name("evidence");
+    let (_, stream, _) = run_with_events(
+        &cfg,
+        &[
+            "--evidence",
+            "--artifacts-dir",
+            root.to_str().expect("UTF-8"),
+        ],
+    );
+    (of_type(&stream, "evidence")[0].clone(), root)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_over_the_limit_is_written_to_a_file_and_referenced() {
+    let base = common::spawn().await;
+    let (event, root) = long_body_run("evidence-long", &base, 20_000);
+
+    let request = &event["content"]["request"]["body"];
+    let path = request["path"].as_str().expect("a file reference");
+    assert!(!path.starts_with('/') && !path.contains('\\'), "{path}");
+    assert_eq!(request["media_type"], "application/json");
+    let written = std::fs::read_to_string(root.join(path)).expect("the file exists");
+    assert_eq!(request["size"], written.len());
+    assert!(written.len() > 16 * 1024 && written.contains("xxxx"));
+    // Per body: the response is long too and is its own file.
+    let response = &event["content"]["response"]["body"];
+    assert_ne!(response["path"], request["path"]);
+
+    let (event, _) = long_body_run("evidence-short", &base, 100);
+    assert!(
+        event["content"]["request"]["body"].is_string(),
+        "a short body stays in the event"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_referenced_file_is_complete_when_its_event_is_read() {
+    let base = common::spawn().await;
+    let (event, root) = long_body_run("evidence-complete", &base, 40_000);
+    for side in ["request", "response"] {
+        let body = &event["content"][side]["body"];
+        let on_disk = std::fs::metadata(root.join(body["path"].as_str().expect("path")))
+            .expect("exists")
+            .len();
+        assert_eq!(body["size"], on_disk, "{side}");
+    }
+}

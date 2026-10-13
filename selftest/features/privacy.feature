@@ -61,3 +61,12 @@ Feature: Secrets stay out of what bddkit prints and writes
     When I run the masking fixture "bddkit" with options ""
     And I run the command "grep step_started selftest/out/events.ndjson"
     Then the command output contains "pin-secret-value-1"
+
+  Scenario: --evidence writes the resolved slots and still hides the secret
+    # `vars` shows what a slot resolved to; the one under a privacy word is `***`.
+    When I run the masking fixture "bddkit" with options "--evidence"
+    And I run the command "grep '\"vars\"' selftest/out/events.ndjson"
+    Then the command output contains "***"
+    And the command output does not contain "pin-secret-value-1"
+    When I run the command "grep -v step_started selftest/out/events.ndjson"
+    Then the command output does not contain "query-token-value-5"
