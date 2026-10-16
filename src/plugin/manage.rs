@@ -2,6 +2,7 @@
 //! Fetching and unpacking is `install.rs`; the lock file format is `lock.rs`.
 
 use crate::dirs::{self, Env, Layer, Os};
+use crate::plugin::abi::ABI_VERSION;
 use crate::plugin::install::{self, Sources};
 use crate::plugin::library::Library;
 use crate::plugin::lock;
@@ -185,24 +186,39 @@ impl Context {
 
     pub async fn install(&self, arg: &str, layer: Option<&str>) -> Result<i32> {
         let spec = install::Spec::parse(arg)?;
-        let repo = if spec.is_repo() {
-            spec.target.clone()
+        let indexed = if spec.is_repo() {
+            None
         } else {
-            install::fetch_index(&self.client, &self.sources)
+            let entry = install::fetch_index(&self.client, &self.sources)
                 .await?
                 .into_iter()
                 .find(|entry| entry.name == spec.target)
-                .map(|entry| entry.repo)
                 .with_context(|| {
                     format!(
                         "no plugin {:?} in the index: `bddkit plugin list` shows what is there, and owner/repo installs one that is not",
                         spec.target
                     )
-                })?
+                })?;
+            Some(entry)
         };
+        let repo = indexed
+            .as_ref()
+            .map_or_else(|| spec.target.clone(), |entry| entry.repo.clone());
         let version = match spec.version {
-            Some(version) => version,
-            None => install::latest_version(&self.client, &self.sources.github, &repo).await?,
+            Some(version) => {
+                let github = &self.sources.github;
+                match install::release_abi(&self.client, github, &repo, &version).await? {
+                    Some(abi) if abi != ABI_VERSION => bail!(
+                        "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+                    ),
+                    _ => version,
+                }
+            }
+            None => {
+                install::host_release(&self.client, &self.sources.github, &repo, indexed.as_ref())
+                    .await?
+                    .map_err(anyhow::Error::msg)?
+            }
         };
         let target = self.install_target(layer)?;
         let name = self.install_into(&target, &repo, &version).await?;
@@ -251,6 +267,11 @@ impl Context {
     ) -> Result<i32> {
         self.check_layer_flag(layer)?;
         let mut failed = false;
+        // A dead index only costs the shortcut: every entry then falls back to
+        // asking its own release, which is the same answer one request slower.
+        let index = install::fetch_index(&self.client, &self.sources)
+            .await
+            .unwrap_or_default();
         let mut matched: std::collections::HashSet<String> = std::collections::HashSet::new();
         for target in self.targets(layer) {
             for entry in lock::read_file(&target.lock)? {
@@ -264,8 +285,22 @@ impl Context {
                     continue;
                 };
                 let outcome = async {
-                    let latest =
-                        install::latest_version(&self.client, &self.sources.github, source).await?;
+                    let indexed = index.iter().find(|e| &e.repo == source);
+                    let latest = match install::host_release(
+                        &self.client,
+                        &self.sources.github,
+                        source,
+                        indexed,
+                    )
+                    .await?
+                    {
+                        Ok(latest) => latest,
+                        Err(why) => {
+                            return Ok(format!(
+                                "up to date for ABI {ABI_VERSION} ({current}): {why}"
+                            ));
+                        }
+                    };
                     if &latest == current {
                         return Ok(format!("up to date ({current})"));
                     }

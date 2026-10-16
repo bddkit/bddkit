@@ -60,7 +60,12 @@ fn guard(envelope_kind: &str, body: impl FnOnce() -> String) -> *mut c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_abi_version() -> u32 {
-    2
+    // Set on the CHILD by a test (`Command::env`): a library built for another
+    // ABI, without a second build of the fixture.
+    std::env::var("BDDKIT_ECHO_FIXTURE_ABI")
+        .ok()
+        .and_then(|abi| abi.parse().ok())
+        .unwrap_or(2)
 }
 
 #[unsafe(no_mangle)]

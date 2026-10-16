@@ -387,7 +387,9 @@ A plugin that genuinely cannot be shared declares `per_worker` and then runs at 
 
 `bddkit plugin install <name>[@<version>]` installs a plugin from the index into your `.bddkit/` chain; `owner/repo[@<version>]` installs one that is not in it, taking its name from the manifest rather than from the argument. No version installs the latest release. The index URL is `$BDDKIT_PLUGIN_REGISTRY` (default the `bddkit/bddkit` registry file) and the GitHub base is `$BDDKIT_GITHUB_URL` (default `https://github.com`) — override either to point at a mirror, a private index, or a GitHub Enterprise instance.
 
-`bddkit plugin update [<name>…]` moves every plugin `install` put there to its latest release, or only the names given; `--dry-run` prints what would move without moving it.
+`bddkit plugin update [<name>…]` moves every plugin `install` put there to its newest release built for this bddkit's ABI, or only the names given; a newer release for another ABI is reported (`up to date (0.1.0): … targets plugin ABI 3`), never installed; `--dry-run` prints what would move without moving it.
+
+**Only releases the host can load are installed.** The plugin ABI is compared by equality at load, so a release built for another ABI would be refused on every run. Each release says which ABI it targets in an asset `bddkit-plugin.json`, `{"abi": 2}` (see Publishing a plugin). `install <name>` takes the release listed under the host's ABI in the index's `abi` map (`"2": 0.2.0`) and, if the map has none, refuses and names the ABIs it does list; an index entry with no map, `owner/repo`, and `name@version` read the release's `bddkit-plugin.json` and refuse a mismatch before downloading anything. A release that publishes no such asset is downloaded and checked by the library itself (`bddkit_abi_version`); on a mismatch the new files are removed and the lock and any installed version are left as they were. An ABI bump therefore always means a new plugin release.
 
 `bddkit plugin remove <name>` unregisters a plugin and deletes the files `install` put there.
 
@@ -482,9 +484,11 @@ Each archive holds exactly one dynamic library for its target (`lib*.so`, `lib*.
 
 Attach `<asset>.sha256` beside each archive, in plain `sha256sum` output (`<hex>  <file name>`). It is checked against the download before anything is written, and it comes from the same release as the archive — it guards the download's integrity, not who built it.
 
+Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the plugin ABI the library was built for (`bddkit_abi_version`): `{"abi": 2}`. Without it `install` has to download the archive to find out.
+
 `bddkit-exec`'s release workflow is a working template for all of this.
 
-To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`.
+To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"2": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand.
 
 ## 8. Footguns
 

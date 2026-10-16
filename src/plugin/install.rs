@@ -2,9 +2,11 @@
 //! and checksum, and the one library inside. Lock files and layers are
 //! `manage.rs`'s business, not this module's.
 
+use crate::plugin::abi::ABI_VERSION;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -85,6 +87,10 @@ pub struct IndexEntry {
     pub repo: String,
     #[serde(default)]
     pub description: String,
+    /// Newest release per plugin ABI (`"2": 0.2.0`). Empty means the index
+    /// does not say, which is not the same as "no release for this ABI".
+    #[serde(default)]
+    pub abi: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -301,6 +307,69 @@ pub async fn latest_version(client: &reqwest::Client, github: &str, repo: &str) 
     let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
     check_segment("version", &version).with_context(|| format!("{repo} released tag {tag:?}"))?;
     Ok(version)
+}
+
+/// The ABI a release declares in its `bddkit-plugin.json` asset (`{"abi": 2}`),
+/// or `None` when it publishes none — the 404 is the answer, not a failure.
+pub async fn release_abi(
+    client: &reqwest::Client,
+    github: &str,
+    repo: &str,
+    version: &str,
+) -> Result<Option<u32>> {
+    #[derive(Deserialize)]
+    struct Declared {
+        abi: u32,
+    }
+    let url = format!("{github}/{repo}/releases/download/v{version}/bddkit-plugin.json");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        bail!("GET {url}: {}", response.status());
+    }
+    let declared: Declared = serde_json::from_slice(&response.bytes().await?)
+        .with_context(|| format!("malformed {url}"))?;
+    Ok(Some(declared.abi))
+}
+
+/// The newest release of `repo` the host can load: `Ok(Ok(version))`, or
+/// `Ok(Err(why))` when it has none yet — a refusal for `install`, a report for
+/// `update`. The index's `abi` map answers without a request; a repository
+/// outside the index, or an entry with no map, is asked through the latest
+/// release's `bddkit-plugin.json`. A release that declares nothing passes here
+/// and is checked against the library itself after download (`Library::load`).
+pub async fn host_release(
+    client: &reqwest::Client,
+    github: &str,
+    repo: &str,
+    indexed: Option<&IndexEntry>,
+) -> Result<std::result::Result<String, String>> {
+    if let Some(entry) = indexed.filter(|entry| !entry.abi.is_empty()) {
+        return Ok(entry
+            .abi
+            .get(&ABI_VERSION.to_string())
+            .cloned()
+            .ok_or_else(|| {
+                let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
+                format!(
+                    "{repo} has no release for plugin ABI {ABI_VERSION} yet (this bddkit speaks {ABI_VERSION}); the index has releases for ABI {}",
+                    have.join(", ")
+                )
+            }));
+    }
+    let latest = latest_version(client, github, repo).await?;
+    Ok(match release_abi(client, github, repo, &latest).await? {
+        Some(abi) if abi != ABI_VERSION => Err(format!(
+            "{repo} {latest} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+        )),
+        _ => Ok(latest),
+    })
 }
 
 pub struct Download {
