@@ -1,7 +1,8 @@
 # The plugin index `bddkit plugin list` and `bddkit plugin install <name>`
 # read. A plugin gets here by a pull request adding one entry; `name` must be
 # the plugin manifest's own name, and `repo` must publish releases following
-# the convention in docs/plugin-authoring.md, section 7.
+# the convention in docs/plugin-authoring.md, section 7. An optional `abi` map
+# ("2": 0.2.0) names the newest release per plugin ABI.
 plugin:
   - name: appium
     repo: bddkit/bddkit-appium

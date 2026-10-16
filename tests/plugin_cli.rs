@@ -51,6 +51,14 @@ impl Stub {
         );
     }
 
+    /// The `bddkit-plugin.json` asset a plugin release publishes.
+    fn declare_abi(&self, repo: &str, version: &str, abi: u32) {
+        self.set(
+            &format!("/{repo}/releases/download/v{version}/bddkit-plugin.json"),
+            Reply::Body(format!("{{\"abi\": {abi}}}").into_bytes()),
+        );
+    }
+
     fn latest(&self, repo: &str, version: &str) {
         self.set(
             &format!("/{repo}/releases/latest"),
@@ -476,4 +484,131 @@ async fn show_lists_installed_plugins_and_one_in_detail() {
     }
     let out = plugin(&dir, &github, &["show", "nope"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+}
+
+/// `plugin()` with the fixture library reporting `abi` to the host.
+fn plugin_with_lib_abi(dir: &Path, github: &str, args: &[&str], abi: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .arg("plugin")
+        .args(args)
+        .arg("--bddkit-dir")
+        .arg(dir)
+        .env("BDDKIT_PLUGIN_REGISTRY", format!("{github}/registry.yaml"))
+        .env("BDDKIT_GITHUB_URL", github)
+        .env("BDDKIT_ECHO_FIXTURE_ABI", abi)
+        .env_remove("BDDKIT_CONFIG")
+        .env_remove("BDDKIT_DIR")
+        .current_dir(dir)
+        .output()
+        .expect("run bddkit")
+}
+
+const ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n      \"3\": 0.2.0\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_install_picks_the_release_for_the_host_abi() {
+    let (stub, github) = spawn().await;
+    stub.index(ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    // The latest release is for a newer ABI; the index says which one fits.
+    stub.latest("bddkit/echo-plugin", "0.2.0");
+    let dir = temp("abi-pick");
+
+    let out = plugin(&dir, &github, &["install", "echo"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_without_the_host_abi_names_the_abis_it_has() {
+    let (stub, github) = spawn().await;
+    stub.index(
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"3\": 0.2.0\n",
+    );
+    let dir = temp("abi-none");
+
+    let out = plugin(&dir, &github, &["install", "echo"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("no release for plugin ABI 2"),
+        "{}",
+        text(&out)
+    );
+    assert!(text(&out).contains("ABI 3"), "{}", text(&out));
+    assert!(!dir.join("plugins.yaml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_install_refuses_a_release_for_another_abi_before_downloading() {
+    let (stub, github) = spawn().await;
+    // Declared ABI 3, and NOT published: a download would be a 404, so the
+    // ABI message proves the refusal came first.
+    stub.declare_abi("someone/echo-plugin", "0.3.0", 3);
+    let dir = temp("abi-declared");
+
+    let out = plugin(&dir, &github, &["install", "someone/echo-plugin@0.3.0"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("targets plugin ABI 3"),
+        "{}",
+        text(&out)
+    );
+    assert!(!dir.join("plugins").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_abi_release_is_checked_after_download_and_removed_on_mismatch() {
+    let (stub, github) = spawn().await;
+    stub.publish("someone/echo-plugin", "0.3.0");
+    let dir = temp("abi-unknown");
+
+    let out = plugin_with_lib_abi(
+        &dir,
+        &github,
+        &["install", "someone/echo-plugin@0.3.0"],
+        "3",
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("built for ABI version 3"),
+        "{}",
+        text(&out)
+    );
+    assert!(!dir.join("plugins.yaml").exists());
+    assert!(!dir.join("plugins/echo-plugin/0.3.0").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_update_does_not_move_to_a_newer_abi() {
+    let (stub, github) = spawn().await;
+    let dir = temp("abi-update");
+    installed(&dir, &github, &stub, "0.1.0");
+    // 0.2.0 exists but is built for ABI 3, in a repository the index
+    // describes by a map that stops at 0.1.0.
+    stub.index(&ABI_INDEX.replace("\"3\": 0.2.0\n", ""));
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.latest("bddkit/echo-plugin", "0.2.0");
+
+    let out = plugin(&dir, &github, &["update"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("up to date (0.1.0)"), "{}", text(&out));
+    let lock = std::fs::read_to_string(dir.join("plugins.yaml")).expect("lock");
+    assert!(lock.contains("version: 0.1.0"), "{lock}");
+    assert!(dir.join("plugins/echo-plugin/0.1.0").is_dir());
+    assert!(!dir.join("plugins/echo-plugin/0.2.0").exists());
+
+    // Without a map the release itself is asked, with the same outcome.
+    stub.index(INDEX);
+    stub.declare_abi("bddkit/echo-plugin", "0.2.0", 3);
+    let out = plugin(&dir, &github, &["update"]);
+    assert!(
+        text(&out).contains("targets plugin ABI 3"),
+        "{}",
+        text(&out)
+    );
+    assert!(!dir.join("plugins/echo-plugin/0.2.0").exists());
 }
