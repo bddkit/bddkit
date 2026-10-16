@@ -405,6 +405,85 @@ impl Context {
         Ok(0)
     }
 
+    /// Version directories under the data directory of every layer `plugin
+    /// install` may write (not project) that nothing references. A reference
+    /// is a path inside it in any lock file of the chain or in that file's
+    /// `.before-upgrade` backup, which is what `upgrade --rollback` restores.
+    /// Only the shape `install` makes qualifies: a real directory holding
+    /// exactly one regular file, a dynamic library. A symlink, a dev build
+    /// with more files, anything else is not bddkit's to delete.
+    pub(crate) fn unreferenced(&self) -> Result<Vec<PathBuf>> {
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let mut used = Vec::new();
+        for target in self.targets(None) {
+            let backup = crate::upgrade::sibling_of_backup(&target.lock);
+            for file in [&target.lock, &backup] {
+                used.extend(lock::read_file(file)?.iter().map(|e| real(&e.path)));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for target in self.targets(None) {
+            if target.label.starts_with("project") || !seen.insert(target.data.clone()) {
+                continue;
+            }
+            for repo in subdirs(&target.data.join("plugins")) {
+                for dir in subdirs(&repo) {
+                    let dir_real = real(&dir);
+                    if is_install_shape(&dir) && !used.iter().any(|p| p.starts_with(&dir_real)) {
+                        out.push(dir);
+                    }
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    pub fn prune(&self, dry_run: bool, yes: bool) -> Result<i32> {
+        use std::io::IsTerminal;
+        if !dry_run && !yes && !std::io::stdin().is_terminal() {
+            bail!(
+                "there is no terminal to confirm on: pass --yes, or --dry-run to see the list only"
+            );
+        }
+        let stale = self.unreferenced()?;
+        if stale.is_empty() {
+            println!("nothing to prune");
+            return Ok(0);
+        }
+        let sizes: Vec<u64> = stale.iter().map(|d| size(d)).collect();
+        for (dir, bytes) in stale.iter().zip(&sizes) {
+            println!("{} ({})", dir.display(), human(*bytes));
+        }
+        println!("{} version(s), {}", stale.len(), human(sizes.iter().sum()));
+        if dry_run {
+            return Ok(0);
+        }
+        if !yes && !crate::upgrade::confirm("remove them?")? {
+            println!("nothing removed");
+            return Ok(0);
+        }
+        // One directory the user cannot write (the shared layer) must not
+        // keep the others from going: report it and carry on.
+        let mut failed = 0;
+        for dir in &stale {
+            if let Err(error) = std::fs::remove_dir_all(dir) {
+                eprintln!("error: could not delete {}: {error}", dir.display());
+                failed += 1;
+            } else if let Some(repo) = dir.parent() {
+                // Like `remove_version_dir`: the repo directory goes once empty.
+                let _ = std::fs::remove_dir(repo);
+            }
+        }
+        println!(
+            "removed {} of {} version(s)",
+            stale.len() - failed,
+            stale.len()
+        );
+        Ok(i32::from(failed > 0))
+    }
+
     pub async fn show(&self, name: Option<&str>) -> Result<i32> {
         let effective = lock::load(&dirs::candidates(&self.layers, "plugins"))?;
         let Some(name) = name else {
@@ -491,6 +570,49 @@ impl Context {
             );
         }
         Ok(0)
+    }
+}
+
+/// What `install` leaves in a version directory: one regular file, the library.
+fn is_install_shape(dir: &Path) -> bool {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let files: Vec<_> = read.flatten().collect();
+    matches!(files.as_slice(), [e]
+        if e.file_type().is_ok_and(|t| t.is_file())
+            && e.file_name().to_string_lossy().ends_with(std::env::consts::DLL_SUFFIX))
+}
+
+/// Real (non-symlink) subdirectories of `dir`; a missing `dir` has none.
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+fn size(dir: &Path) -> u64 {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    read.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn human(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 20 => format!("{:.1} MiB", b as f64 / (1u64 << 20) as f64),
+        b if b >= 1 << 10 => format!("{:.1} KiB", b as f64 / 1024.0),
+        b => format!("{b} B"),
     }
 }
 
