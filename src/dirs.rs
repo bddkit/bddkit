@@ -134,7 +134,18 @@ pub fn project(config_dir: &Path) -> Result<Option<PathBuf>> {
 pub fn data_dir(os: Os, env: &Env, layer: &Layer) -> PathBuf {
     match (layer.name, os) {
         ("shared", Os::Linux) => PathBuf::from("/usr/local/lib/bddkit"),
-        ("user", Os::Linux | Os::MacOs) => env
+        ("user", _) => user_data(os, env).unwrap_or_else(|| layer.dir.clone()),
+        _ => layer.dir.clone(),
+    }
+}
+
+/// The user layer's data directory, computed from the environment alone:
+/// `--bddkit-dir` replaces the layer chain, but the install receipt and the
+/// previous binary belong to the user and must stay findable under it.
+pub fn user_data(os: Os, env: &Env) -> Option<PathBuf> {
+    match os {
+        Os::Windows => user(os, env),
+        Os::Linux | Os::MacOs => env
             .xdg_data_home
             .as_ref()
             .map(|dir| dir.join("bddkit"))
@@ -142,9 +153,7 @@ pub fn data_dir(os: Os, env: &Env, layer: &Layer) -> PathBuf {
                 env.home
                     .as_ref()
                     .map(|home| home.join(".local/share/bddkit"))
-            })
-            .unwrap_or_else(|| layer.dir.clone()),
-        _ => layer.dir.clone(),
+            }),
     }
 }
 

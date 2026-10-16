@@ -60,6 +60,21 @@ irm https://raw.githubusercontent.com/bddkit/bddkit/main/install.ps1 | iex
 
 Installs a prebuilt binary from the [latest release](https://github.com/bddkit/bddkit/releases/latest) — Linux (x86_64/aarch64), macOS (x86_64/aarch64) or Windows (x86_64) — into `~/.local/bin` (`%LOCALAPPDATA%\bddkit\bin` on Windows). `install.sh` also works from Git Bash, MSYS2 and Cygwin: it hands off to `install.ps1`. No prebuilt binary for your platform: `cargo install --git https://github.com/bddkit/bddkit`.
 
+### Upgrading
+
+`bddkit upgrade` replaces the binary with a newer release and, when the new release speaks a different plugin ABI, moves every plugin bddkit installed to a release built for it — all together, or nothing changes. It only replaces a binary `install.sh` or `install.ps1` put there (they record it in `install.json` in the user data directory); a `cargo install` build, a package or a container image is refused with the right alternative.
+
+```sh
+bddkit upgrade --check          # the plan: what would change, changing nothing
+bddkit upgrade                  # to the latest release (asks first; --yes where there is no terminal)
+bddkit upgrade --version 0.4.1  # a given release, older ones included
+bddkit upgrade --rollback       # the previous binary and lock files, back
+```
+
+The new release is downloaded, checksummed and asked for its version and plugin ABI before anything is replaced, and each new plugin version is installed beside the old one and loaded by the NEW binary. A plugin with no release for the new ABI stops the upgrade; `--force` goes ahead and leaves it as it is. Hand-written lock entries and everything in a project layer (`.bddkit/` in your repository) are listed, never changed. Nothing is deleted, so `--rollback` can restore it all; if the new binary will not start, the previous one is kept as `previous/bddkit` in the user data directory and `previous/bddkit upgrade --rollback` does the same. Rollback puts the lock files back exactly as they were before the upgrade, so a `plugin install` or `update` made since is undone too.
+
+Nothing checks for a newer release on its own: `run` and `doctor` open no socket for it. In CI pin the version instead of upgrading: `curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh -s -- --version 0.4.1`, or `BDDKIT_VERSION=0.4.1`.
+
 ## Quick start
 
 ```bash

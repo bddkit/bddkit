@@ -3,6 +3,12 @@
 # Cygwin) it hands off to install.ps1.
 #
 #   curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh -s -- --version 0.4.1
+#
+# A release is pinned with --version <x> or BDDKIT_VERSION=<x> (the flag wins),
+# which is what CI should do. The binary's path is recorded in install.json in
+# the user data directory: it is how `bddkit upgrade` knows this binary is its to
+# replace.
 #
 # Adapted from starship's install.sh (MIT): https://github.com/starship/starship
 
@@ -89,11 +95,43 @@ resolve_latest_tag() {
 }
 
 BIN_DIR="${BDDKIT_INSTALL_DIR:-$HOME/.local/bin}"
+# The receipt below records this path, and `upgrade` compares it to the running
+# binary: a relative one would only be right from the directory it was typed in.
+case "$BIN_DIR" in
+/*) ;;
+*) BIN_DIR="$PWD/$BIN_DIR" ;;
+esac
+
+VERSION="${BDDKIT_VERSION:-}"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--version)
+		[ $# -ge 2 ] || {
+			error "--version needs a value"
+			exit 1
+		}
+		VERSION="$2"
+		shift 2
+		;;
+	--version=*)
+		VERSION="${1#--version=}"
+		shift
+		;;
+	*)
+		error "Unknown option: $1"
+		exit 1
+		;;
+	esac
+done
 
 # No sh install for Windows: install.ps1 owns the zip, the checksum and the user
 # PATH, so hand off to it rather than keep a second copy of that logic here.
 case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*)
+	if [ -n "$VERSION" ]; then
+		error "install.ps1 installs the latest release only: --version / BDDKIT_VERSION cannot be passed through."
+		exit 1
+	fi
 	PS1_CMD="irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex"
 	for ps in pwsh powershell; do
 		if has "$ps"; then
@@ -107,6 +145,13 @@ MINGW* | MSYS* | CYGWIN*)
 	;;
 esac
 
+case "$VERSION" in
+*[!A-Za-z0-9._+-]*)
+	error "Not a release version: ${VERSION}"
+	exit 1
+	;;
+esac
+
 TARGET="$(detect_target)"
 if ! is_supported "$TARGET"; then
 	error "No prebuilt bddkit binary for ${TARGET}."
@@ -115,8 +160,12 @@ if ! is_supported "$TARGET"; then
 	exit 1
 fi
 
-info "Resolving latest release…"
-TAG="$(resolve_latest_tag)"
+if [ -n "$VERSION" ]; then
+	TAG="v${VERSION#v}"
+else
+	info "Resolving latest release…"
+	TAG="$(resolve_latest_tag)"
+fi
 
 NAME="bddkit-${TAG}-${TARGET}"
 BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
@@ -151,6 +200,14 @@ tar -xzf "$ARCHIVE" -C "$UNPACK_DIR"
 cp "${UNPACK_DIR}/${NAME}/bddkit" "${BIN_DIR}/bddkit"
 chmod +x "${BIN_DIR}/bddkit"
 rm -rf "$UNPACK_DIR" "$ARCHIVE" "${ARCHIVE}.sha256"
+
+# The receipt lives where `bddkit` looks for the user layer's data: the same
+# $XDG_DATA_HOME / ~/.local/share rule on Linux and macOS.
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/bddkit"
+mkdir -p "$DATA_DIR"
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+printf '{"path":"%s","version":"%s","target":"%s"}\n' \
+	"$(json_escape "${BIN_DIR}/bddkit")" "${TAG#v}" "$TARGET" >"${DATA_DIR}/install.json"
 
 completed "bddkit ${TAG} installed to ${BIN_DIR}/bddkit"
 

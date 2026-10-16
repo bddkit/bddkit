@@ -2,7 +2,6 @@
 //! and checksum, and the one library inside. Lock files and layers are
 //! `manage.rs`'s business, not this module's.
 
-use crate::plugin::abi::ABI_VERSION;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -170,16 +169,39 @@ pub fn verify_sha256(archive: &[u8], sha_file: &str) -> Result<String> {
 /// named `../../x.so` cannot land outside `dest`. Zero or several libraries is
 /// a malformed release, refused rather than guessed at.
 pub fn extract_library(archive: &[u8], asset: &str, dest: &Path) -> Result<PathBuf> {
+    extract_one(archive, asset, dest, "plugin library", library_name)
+}
+
+/// The same, for the `bddkit` executable inside a bddkit release, made
+/// executable: `fs::write` creates the file without the archive's mode.
+pub fn extract_binary(archive: &[u8], asset: &str, dest: &Path) -> Result<PathBuf> {
+    let path = extract_one(archive, asset, dest, "bddkit executable", binary_name)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to make {} executable", path.display()))?;
+    }
+    Ok(path)
+}
+
+fn extract_one(
+    archive: &[u8],
+    asset: &str,
+    dest: &Path,
+    what: &str,
+    accept: fn(&str) -> Option<String>,
+) -> Result<PathBuf> {
     let found = if asset.ends_with(".zip") {
-        zip_libraries(archive)
+        zip_entries(archive, accept)
     } else {
-        tar_libraries(archive)
+        tar_entries(archive, accept)
     }
     .with_context(|| format!("failed to read {asset}"))?;
     let (file, bytes) = match <[_; 1]>::try_from(found) {
         Ok([one]) => one,
         Err(found) => bail!(
-            "{asset} must hold exactly one plugin library, found {}: {:?}",
+            "{asset} must hold exactly one {what}, found {}: {:?}",
             found.len(),
             found.iter().map(|(name, _)| name).collect::<Vec<_>>()
         ),
@@ -199,7 +221,16 @@ fn library_name(entry: &str) -> Option<String> {
         .then(|| file.to_string())
 }
 
-fn tar_libraries(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+/// The file-name part of an archive entry, if it is this host's `bddkit`.
+fn binary_name(entry: &str) -> Option<String> {
+    let file = Path::new(entry).file_name()?.to_str()?;
+    (file == format!("bddkit{}", std::env::consts::EXE_SUFFIX)).then(|| file.to_string())
+}
+
+fn tar_entries(
+    archive: &[u8],
+    accept: fn(&str) -> Option<String>,
+) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
@@ -207,7 +238,7 @@ fn tar_libraries(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         if !entry.header().entry_type().is_file() {
             continue;
         }
-        if let Some(name) = library_name(&entry.path()?.to_string_lossy()) {
+        if let Some(name) = accept(&entry.path()?.to_string_lossy()) {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             out.push((name, bytes));
@@ -216,12 +247,15 @@ fn tar_libraries(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(out)
 }
 
-fn zip_libraries(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+fn zip_entries(
+    archive: &[u8],
+    accept: fn(&str) -> Option<String>,
+) -> Result<Vec<(String, Vec<u8>)>> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))?;
     let mut out = Vec::new();
     for index in 0..zip.len() {
         let mut file = zip.by_index(index)?;
-        let name = match library_name(file.name()) {
+        let name = match accept(file.name()) {
             Some(name) if file.is_file() => name,
             _ => continue,
         };
@@ -338,8 +372,9 @@ pub async fn release_abi(
     Ok(Some(declared.abi))
 }
 
-/// The newest release of `repo` the host can load: `Ok(Ok(version))`, or
-/// `Ok(Err(why))` when it has none yet — a refusal for `install`, a report for
+/// The newest release of `repo` that speaks plugin ABI `abi` — the running
+/// host's `ABI_VERSION`, or the one `bddkit upgrade` is moving to:
+/// `Ok(Ok(version))`, or `Ok(Err(why))` when it has none yet — a refusal for `install`, a report for
 /// `update`. The index's `abi` map answers without a request; a repository
 /// outside the index, or an entry with no map, is asked through the latest
 /// release's `bddkit-plugin.json`. A release that declares nothing passes here
@@ -349,24 +384,21 @@ pub async fn host_release(
     github: &str,
     repo: &str,
     indexed: Option<&IndexEntry>,
+    abi: u32,
 ) -> Result<std::result::Result<String, String>> {
     if let Some(entry) = indexed.filter(|entry| !entry.abi.is_empty()) {
-        return Ok(entry
-            .abi
-            .get(&ABI_VERSION.to_string())
-            .cloned()
-            .ok_or_else(|| {
-                let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
-                format!(
-                    "{repo} has no release for plugin ABI {ABI_VERSION} yet (this bddkit speaks {ABI_VERSION}); the index has releases for ABI {}",
-                    have.join(", ")
-                )
-            }));
+        return Ok(entry.abi.get(&abi.to_string()).cloned().ok_or_else(|| {
+            let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
+            format!(
+                "{repo} has no release for plugin ABI {abi} yet; the index has releases for ABI {}",
+                have.join(", ")
+            )
+        }));
     }
     let latest = latest_version(client, github, repo).await?;
     Ok(match release_abi(client, github, repo, &latest).await? {
-        Some(abi) if abi != ABI_VERSION => Err(format!(
-            "{repo} {latest} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+        Some(declared) if declared != abi => Err(format!(
+            "{repo} {latest} targets plugin ABI {declared}, not {abi}"
         )),
         _ => Ok(latest),
     })
@@ -584,6 +616,23 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).expect("read"), b"ELF");
         assert!(!dest.join("README.md").exists(), "nothing else is unpacked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bddkit_executable_is_extracted_and_made_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dest = temp("tar-bin");
+        let archive = tar_gz(&[
+            ("bddkit-v1-t/README.md", b"readme"),
+            ("bddkit-v1-t/bddkit", b"#!/bin/sh"),
+            (&format!("bddkit-v1-t/{}", lib("widget")), b"ELF"),
+        ]);
+        let path = extract_binary(&archive, "b.tar.gz", &dest).expect("extracts");
+        assert_eq!(path, dest.join("bddkit"));
+        assert_eq!(std::fs::read(&path).expect("read"), b"#!/bin/sh");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "fs::write drops the archive's mode");
     }
 
     #[test]
