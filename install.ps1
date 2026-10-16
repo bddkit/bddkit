@@ -50,10 +50,20 @@ if ($expected -ne $actual) {
 }
 
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+# The receipt records this path and `upgrade` compares it to the running binary,
+# so a relative BDDKIT_INSTALL_DIR must not be written as typed.
+$BinDir = (Resolve-Path $BinDir).Path
 $UnpackDir = Join-Path $env:TEMP "bddkit-unpack-$Tag"
 Expand-Archive -Path $Archive -DestinationPath $UnpackDir -Force
 Copy-Item (Join-Path $UnpackDir "$Name\bddkit.exe") (Join-Path $BinDir "bddkit.exe") -Force
 Remove-Item $UnpackDir, $Archive, $Checksum -Recurse -ErrorAction SilentlyContinue
+
+# The receipt is how `bddkit upgrade` knows this binary is its to replace. UTF-8
+# without a BOM: Set-Content -Encoding utf8 writes one on Windows PowerShell 5.1.
+$DataDir = Join-Path $env:LOCALAPPDATA "bddkit"
+New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+$Receipt = @{ path = (Join-Path $BinDir "bddkit.exe"); version = $Tag.TrimStart("v"); target = $Target } | ConvertTo-Json
+[System.IO.File]::WriteAllText((Join-Path $DataDir "install.json"), $Receipt, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host "$([char]0x2713) bddkit $Tag installed to $BinDir\bddkit.exe" -ForegroundColor Green
 

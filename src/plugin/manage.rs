@@ -10,24 +10,33 @@ use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
 
 /// One lock file an install can write, and where its libraries go.
-struct Target {
+#[derive(Clone)]
+pub(crate) struct Target {
     /// The candidate label `doctor` prints: `user`, `project.local`, …
-    label: String,
-    lock: PathBuf,
+    pub(crate) label: String,
+    pub(crate) lock: PathBuf,
     /// The layer's data directory; libraries go under `<data>/plugins/`.
-    data: PathBuf,
+    pub(crate) data: PathBuf,
     /// Project and override lock files record a path relative to themselves,
     /// so the directory stays relocatable; shared and user record it absolute.
     relative: bool,
 }
 
+/// An unpacked release that nothing has loaded or registered yet.
+#[derive(Clone)]
+pub(crate) struct Fetched {
+    pub(crate) lib_path: PathBuf,
+    sha256: String,
+    host: &'static str,
+}
+
 pub struct Context {
-    os: Os,
-    env: Env,
+    pub(crate) os: Os,
+    pub(crate) env: Env,
     layers: Vec<Layer>,
     config_dir: PathBuf,
-    client: reqwest::Client,
-    sources: Sources,
+    pub(crate) client: reqwest::Client,
+    pub(crate) sources: Sources,
 }
 
 impl Context {
@@ -96,9 +105,11 @@ impl Context {
         Ok(self.target(&layer, local))
     }
 
-    /// Download, verify, unpack, load, and only then write the lock entry —
-    /// nothing is registered that `run` would refuse. Returns the plugin's
-    /// name, which comes from its manifest and is never guessed.
+    /// Download, verify and unpack a release into
+    /// `<data>/plugins/<repo>/<version>/`, and stop there: not loaded, not in
+    /// any lock file. `plugin install` goes on to load and register it;
+    /// `bddkit upgrade` hands it to the staged binary instead, because this
+    /// process may speak another ABI than the plugin does.
     ///
     /// `repo` and `version` are validated here, at the one place all three of
     /// their origins converge — the CLI argument (`install`), an index
@@ -106,20 +117,64 @@ impl Context {
     /// (`update`) — before either becomes a directory name under
     /// `<data>/plugins/<repo>/<version>/`, the pre-clean below deletes without
     /// an `owned()` guard.
-    async fn install_into(&self, target: &Target, repo: &str, version: &str) -> Result<String> {
+    pub(crate) async fn fetch_into(
+        &self,
+        target: &Target,
+        repo: &str,
+        version: &str,
+    ) -> Result<Fetched> {
         install::check_repo(repo)?;
         install::check_segment("version", version)?;
         let host = install::host_target()?;
         let download =
             install::download(&self.client, &self.sources.github, repo, version, host).await?;
-        let dir = target
-            .data
-            .join("plugins")
-            .join(install::repo_basename(repo))
-            .join(version);
+        let dir = version_dir(target, repo, version);
         // A reinstall of the same version starts clean, not beside a stale file.
         let _ = std::fs::remove_dir_all(&dir);
         let lib_path = install::extract_library(&download.bytes, &download.asset, &dir)?;
+        Ok(Fetched {
+            lib_path,
+            sha256: download.sha256,
+            host,
+        })
+    }
+
+    /// The lock entry for a fetched release of the plugin the manifest calls
+    /// `name`. A path is stored as the target's file wants it.
+    pub(crate) fn record(
+        target: &Target,
+        name: &str,
+        repo: &str,
+        version: &str,
+        fetched: &Fetched,
+    ) -> Result<lock::Record> {
+        let lock_dir = target.lock.parent().unwrap_or(Path::new("."));
+        let path = if target.relative {
+            fetched
+                .lib_path
+                .strip_prefix(lock_dir)
+                .unwrap_or(&fetched.lib_path)
+                .to_path_buf()
+        } else {
+            std::path::absolute(&fetched.lib_path)?
+        };
+        Ok(lock::Record {
+            name: name.to_string(),
+            path,
+            version: version.to_string(),
+            source: repo.to_string(),
+            sha256: fetched.sha256.clone(),
+            target: fetched.host.to_string(),
+        })
+    }
+
+    /// Fetch, load, and only then write the lock entry — nothing is
+    /// registered that `run` would refuse. Returns the plugin's name, which
+    /// comes from its manifest and is never guessed.
+    async fn install_into(&self, target: &Target, repo: &str, version: &str) -> Result<String> {
+        let fetched = self.fetch_into(target, repo, version).await?;
+        let lib_path = fetched.lib_path.clone();
+        let dir = version_dir(target, repo, version);
         let name = match Library::load(repo, &lib_path) {
             Ok(lib) => {
                 let name = lib.manifest.name.clone();
@@ -140,25 +195,9 @@ impl Context {
         let previous = lock::read_file(&target.lock)?
             .into_iter()
             .find(|entry| entry.name == name);
-        let lock_dir = target.lock.parent().unwrap_or(Path::new("."));
-        let path = if target.relative {
-            lib_path
-                .strip_prefix(lock_dir)
-                .unwrap_or(&lib_path)
-                .to_path_buf()
-        } else {
-            std::path::absolute(&lib_path)?
-        };
         lock::upsert(
             &target.lock,
-            &lock::Record {
-                name: name.clone(),
-                path,
-                version: version.to_string(),
-                source: repo.to_string(),
-                sha256: download.sha256,
-                target: host.to_string(),
-            },
+            &Self::record(target, &name, repo, version, &fetched)?,
         )?;
         if let Some(previous) = previous
             && previous.path.parent() != Some(dir.as_path())
@@ -214,11 +253,15 @@ impl Context {
                     _ => version,
                 }
             }
-            None => {
-                install::host_release(&self.client, &self.sources.github, &repo, indexed.as_ref())
-                    .await?
-                    .map_err(anyhow::Error::msg)?
-            }
+            None => install::host_release(
+                &self.client,
+                &self.sources.github,
+                &repo,
+                indexed.as_ref(),
+                ABI_VERSION,
+            )
+            .await?
+            .map_err(anyhow::Error::msg)?,
         };
         let target = self.install_target(layer)?;
         let name = self.install_into(&target, &repo, &version).await?;
@@ -237,7 +280,7 @@ impl Context {
 
     /// Every lock file of the chain, lowest precedence first — the order and
     /// labels of `dirs::candidates` — narrowed to `layer` when given.
-    fn targets(&self, layer: Option<&str>) -> Vec<Target> {
+    pub(crate) fn targets(&self, layer: Option<&str>) -> Vec<Target> {
         self.layers
             .iter()
             .flat_map(|layer| [self.target(layer, false), self.target(layer, true)])
@@ -291,6 +334,7 @@ impl Context {
                         &self.sources.github,
                         source,
                         indexed,
+                        ABI_VERSION,
                     )
                     .await?
                     {
@@ -450,6 +494,15 @@ impl Context {
     }
 }
 
+/// `<data>/plugins/<repo>/<version>/`: where one release of one plugin lives.
+pub(crate) fn version_dir(target: &Target, repo: &str, version: &str) -> PathBuf {
+    target
+        .data
+        .join("plugins")
+        .join(install::repo_basename(repo))
+        .join(version)
+}
+
 /// Whether `entry` is a library `plugin install` itself wrote into this
 /// target's data directory — the only files `remove`/`update` ever delete.
 /// True only when BOTH hold: `entry.source` is set (a hand-written entry
@@ -476,7 +529,7 @@ fn owned(target: &Target, entry: &lock::LockEntry) -> bool {
 
 /// Deletes `<…>/plugins/<repo>/<version>/` and then `<repo>/` if that left it
 /// empty (`remove_dir` refuses a non-empty directory, which is the point).
-fn remove_version_dir(lib: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_version_dir(lib: &Path) -> std::io::Result<()> {
     let Some(version_dir) = lib.parent() else {
         return Ok(());
     };

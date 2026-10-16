@@ -1,4 +1,4 @@
-//! `bddkit plugin …` end to end: the real binary against an axum stub that
+//! `bddkit plugin …` and `bddkit upgrade` end to end: the real binary against an axum stub that
 //! plays both the plugin index and GitHub Releases, installing the echo
 //! fixture packed as a release archive. Everything lands in a temporary
 //! `--bddkit-dir` unless a test is about the layer chain itself.
@@ -59,6 +59,29 @@ impl Stub {
         );
     }
 
+    /// Publishes release `v<version>` of bddkit itself, whose executable is a
+    /// shell script that answers like a binary built for plugin ABI `abi` and
+    /// whose `plugin check` exits with `check_exit`. Never the real binary:
+    /// `upgrade` replaces what it is given, and tests share the built one.
+    fn publish_bddkit(&self, version: &str, abi: u32, check_exit: i32) {
+        let name = format!("bddkit-v{version}-{}", host_target());
+        let script = format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n\"version --json\") echo '{{\"version\":\"{version}\",\"target\":\"{}\",\"plugin_abi\":{abi}}}' ;;\n\"plugin check\") if [ {check_exit} -ne 0 ]; then echo refused >&2; exit {check_exit}; fi; echo echo ;;\n*) echo staged-bddkit-{version} ;;\nesac\n",
+            host_target()
+        );
+        let archive = pack_files(&name, &[("bddkit", script.as_bytes())]);
+        let asset = format!("{name}.tar.gz");
+        let sha = format!("{:x}  {asset}\n", Sha256::digest(&archive));
+        let base = format!("/bddkit/bddkit/releases/download/v{version}/{asset}");
+        self.set(&base, Reply::Body(archive));
+        self.set(&format!("{base}.sha256"), Reply::Body(sha.into_bytes()));
+        self.latest("bddkit/bddkit", version);
+        self.set(
+            &format!("/bddkit/bddkit/releases/tag/v{version}"),
+            Reply::Body(b"release".to_vec()),
+        );
+    }
+
     fn latest(&self, repo: &str, version: &str) {
         self.set(
             &format!("/{repo}/releases/latest"),
@@ -107,18 +130,20 @@ fn lib_file() -> String {
 
 fn pack(top: &str) -> Vec<u8> {
     let lib = std::fs::read(common::build_fixture_plugin()).expect("fixture");
+    pack_files(top, &[(&lib_file(), lib.as_slice())])
+}
+
+/// A release archive: `files` and a README under one top directory.
+fn pack_files(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     let mut builder = tar::Builder::new(gz);
-    for (name, data) in [
-        (lib_file(), lib.as_slice()),
-        ("README.md".to_string(), b"readme".as_slice()),
-    ] {
+    for (name, data) in files.iter().chain(&[("README.md", b"readme".as_slice())]) {
         let mut header = tar::Header::new_gnu();
         header.set_size(data.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
         builder
-            .append_data(&mut header, format!("{top}/{name}"), data)
+            .append_data(&mut header, format!("{top}/{name}"), *data)
             .expect("append");
     }
     builder.into_inner().expect("tar").finish().expect("gz")
@@ -611,4 +636,598 @@ async fn plugin_update_does_not_move_to_a_newer_abi() {
         text(&out)
     );
     assert!(!dir.join("plugins/echo-plugin/0.2.0").exists());
+}
+
+// ---- bddkit upgrade ----
+
+const CURRENT: &str = env!("CARGO_PKG_VERSION");
+
+/// A copy of the built binary that the install receipt names, with its own
+/// user data directory and a plugin directory (`--bddkit-dir`). The built
+/// binary itself is never replaced: other tests are running it.
+struct Sandbox {
+    root: PathBuf,
+    bin: PathBuf,
+    plug: PathBuf,
+    original: Vec<u8>,
+}
+
+/// Each sandbox holds a copy of the (debug-sized) binary: leaving a dozen of
+/// them per run is how a temp filesystem fills up.
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+impl Sandbox {
+    fn new(name: &str) -> Self {
+        let root = temp(name);
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("mkdir");
+        let bin = bin_dir.join("bddkit");
+        std::fs::copy(env!("CARGO_BIN_EXE_bddkit"), &bin).expect("copy binary");
+        let plug = root.join("plug");
+        std::fs::create_dir_all(&plug).expect("mkdir");
+        let sandbox = Self {
+            original: std::fs::read(&bin).expect("read copy"),
+            root,
+            bin,
+            plug,
+        };
+        sandbox.write_receipt(CURRENT);
+        sandbox
+    }
+
+    fn data(&self) -> PathBuf {
+        self.root.join("xdg/bddkit")
+    }
+
+    fn write_receipt(&self, version: &str) {
+        std::fs::create_dir_all(self.data()).expect("mkdir");
+        std::fs::write(
+            self.data().join("install.json"),
+            serde_json::json!({"path": self.bin, "version": version, "target": host_target()})
+                .to_string(),
+        )
+        .expect("receipt");
+    }
+
+    fn receipt_version(&self) -> String {
+        let raw = std::fs::read_to_string(self.data().join("install.json")).expect("receipt");
+        serde_json::from_str::<serde_json::Value>(&raw).expect("json")["version"]
+            .as_str()
+            .expect("version")
+            .to_string()
+    }
+
+    fn command(&self, bin: &Path, github: &str, args: &[&str]) -> Command {
+        let mut command = Command::new(bin);
+        command
+            .arg("upgrade")
+            .args(args)
+            .env("BDDKIT_PLUGIN_REGISTRY", format!("{github}/registry.yaml"))
+            .env("BDDKIT_GITHUB_URL", github)
+            .env("XDG_DATA_HOME", self.root.join("xdg"))
+            .env("XDG_CONFIG_HOME", self.root.join("cfg"))
+            .env("HOME", self.root.join("home"))
+            .env_remove("BDDKIT_CONFIG")
+            .env_remove("BDDKIT_DIR")
+            .stdin(std::process::Stdio::null())
+            .current_dir(&self.root);
+        command
+    }
+
+    /// `bddkit upgrade <args> --bddkit-dir <plug>` run as the sandboxed binary.
+    fn upgrade(&self, github: &str, args: &[&str]) -> Output {
+        self.upgrade_as(&self.bin, github, args)
+    }
+
+    fn upgrade_as(&self, bin: &Path, github: &str, args: &[&str]) -> Output {
+        let mut command = self.command(bin, github, args);
+        command.arg("--bddkit-dir").arg(&self.plug);
+        output_retrying(&mut command)
+    }
+
+    /// Installs echo 0.1.0 into the plugin directory with the real binary.
+    fn install_echo(&self, github: &str, stub: &Stub) {
+        installed(&self.plug, github, stub, "0.1.0");
+    }
+
+    fn lock(&self) -> String {
+        std::fs::read_to_string(self.plug.join("plugins.yaml")).unwrap_or_default()
+    }
+
+    fn bin_text(&self) -> Vec<u8> {
+        std::fs::read(&self.bin).expect("read bin")
+    }
+
+    /// Nothing but the binary beside it: no staging directory left behind.
+    fn bin_dir_is_clean(&self) -> bool {
+        std::fs::read_dir(self.bin.parent().unwrap())
+            .unwrap()
+            .count()
+            == 1
+    }
+}
+
+/// A freshly copied executable can be "text file busy" for an instant if a
+/// parallel test forked while it was open for writing; that is not a failure.
+fn output_retrying(command: &mut Command) -> Output {
+    for _ in 0..40 {
+        match command.output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other.expect("run bddkit"),
+        }
+    }
+    panic!("the sandboxed binary stayed busy");
+}
+
+/// Echo 0.1.0 installed for ABI 2 and a 0.2.0 for ABI 3 published, with a
+/// bddkit 99.0.0 for ABI 3 as the latest release.
+fn abi_upgrade_ready(sandbox: &Sandbox, github: &str, stub: &Stub, check_exit: i32) {
+    sandbox.install_echo(github, stub);
+    stub.index(ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit("99.0.0", 3, check_exit);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn version_json_reports_the_plugin_abi() {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["version", "--json"])
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "{}", text(&out));
+    let info: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(info["version"], CURRENT);
+    assert_eq!(info["plugin_abi"], 2);
+    assert_eq!(info["target"], host_target());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upgrade_refuses_a_binary_without_a_matching_receipt() {
+    let (_stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-receipt");
+
+    // No receipt at all.
+    std::fs::remove_file(sandbox.data().join("install.json")).expect("rm");
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("install.sh"), "{}", text(&out));
+    assert!(text(&out).contains("cargo install"), "{}", text(&out));
+
+    // A receipt for another binary.
+    std::fs::create_dir_all(sandbox.data()).expect("mkdir");
+    std::fs::write(
+        sandbox.data().join("install.json"),
+        serde_json::json!({"path": "/somewhere/else/bddkit", "version": CURRENT, "target": host_target()})
+            .to_string(),
+    )
+    .expect("receipt");
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("will not replace"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upgrade_check_changes_nothing() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-check");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let lock = sandbox.lock();
+
+    // `--check` asks for no confirmation, so it needs neither --yes nor a terminal.
+    let out = sandbox.upgrade(&github, &["--check"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains(&format!("bddkit {CURRENT} → 99.0.0")),
+        "{}",
+        text(&out)
+    );
+    assert!(text(&out).contains("echo 0.1.0 → 0.2.0"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+    assert!(!sandbox.plug.join("plugins/echo-plugin/0.2.0").exists());
+    assert!(!sandbox.data().join("previous").exists());
+    assert_eq!(sandbox.receipt_version(), CURRENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_terminal_upgrade_requires_yes() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-yes");
+    stub.publish_bddkit("99.0.0", 2, 0);
+
+    let out = sandbox.upgrade(&github, &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("--yes"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_same_abi_upgrade_replaces_only_the_binary() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-same-abi");
+    sandbox.install_echo(&github, &stub);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.latest("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit("99.0.0", 2, 0);
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let bin = String::from_utf8(sandbox.bin_text()).expect("the staged script");
+    assert!(bin.contains("staged-bddkit-99.0.0"), "{bin}");
+    assert_eq!(sandbox.lock(), lock, "plugins are left alone");
+    assert_eq!(
+        std::fs::read(sandbox.data().join("previous/bddkit")).expect("kept"),
+        sandbox.original
+    );
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abi_upgrade_switches_every_installed_plugin_with_the_binary() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-abi");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("echo 0.1.0 → 0.2.0"), "{}", text(&out));
+    assert!(
+        sandbox.lock().contains("version: 0.2.0"),
+        "{}",
+        sandbox.lock()
+    );
+    // Side by side: nothing was deleted, which is what makes rollback possible.
+    for version in ["0.1.0", "0.2.0"] {
+        assert!(
+            sandbox
+                .plug
+                .join("plugins/echo-plugin")
+                .join(version)
+                .join(lib_file())
+                .is_file(),
+            "{version}"
+        );
+    }
+    let backup =
+        std::fs::read_to_string(sandbox.plug.join("plugins.yaml.before-upgrade")).expect("backup");
+    assert!(backup.contains("version: 0.1.0"), "{backup}");
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+    assert_ne!(sandbox.bin_text(), sandbox.original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abi_upgrade_with_a_plugin_lacking_a_release_changes_nothing() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-blocked");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    // The index knows no release of echo for ABI 3.
+    stub.index(&ABI_INDEX.replace("      \"3\": 0.2.0\n", ""));
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("echo (override)"), "{}", text(&out));
+    assert!(text(&out).contains("--force"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+    assert!(!sandbox.plug.join("plugins/echo-plugin/0.2.0").exists());
+    assert!(!sandbox.data().join("previous").exists());
+    assert_eq!(sandbox.receipt_version(), CURRENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn force_upgrades_and_leaves_the_blocking_plugin() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-force");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    stub.index(&ABI_INDEX.replace("      \"3\": 0.2.0\n", ""));
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes", "--force"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_ne!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock, "the blocking plugin stays as it was");
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_the_new_binary_refuses_changes_nothing() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-check-refused");
+    abi_upgrade_ready(&sandbox, &github, &stub, 3);
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("refuses it"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+    assert!(
+        !sandbox.plug.join("plugins/echo-plugin/0.2.0").exists(),
+        "the directory this run created is removed"
+    );
+    assert!(sandbox.plug.join("plugins/echo-plugin/0.1.0").is_dir());
+    assert!(!sandbox.data().join("previous/pending.json").exists());
+
+    // --force treats the refusal like a missing release: the plugin stays.
+    let out = sandbox.upgrade(&github, &["--yes", "--force"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("left as it is: echo"), "{}", text(&out));
+    assert_eq!(sandbox.lock(), lock);
+    assert_ne!(sandbox.bin_text(), sandbox.original);
+    assert!(!sandbox.plug.join("plugins/echo-plugin/0.2.0").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_that_publishes_nothing_newer_blocks_an_abi_upgrade() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-no-newer");
+    // No index map, no bddkit-plugin.json, and the latest release is the one
+    // installed: nothing says it can be loaded under ABI 3.
+    sandbox.install_echo(&github, &stub);
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    stub.publish_bddkit("99.0.0", 3, 0);
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("newest release"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert_eq!(sandbox.receipt_version(), CURRENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_check_prints_the_manifest_name_and_refuses_another_abi() {
+    let lib = common::build_fixture_plugin();
+    let run = |abi: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command.args(["plugin", "check"]).arg(&lib);
+        if let Some(abi) = abi {
+            command.env("BDDKIT_ECHO_FIXTURE_ABI", abi);
+        }
+        command.output().expect("run")
+    };
+    let out = run(None);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "echo");
+
+    let out = run(Some("3"));
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("built for ABI version 3"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_checksum_mismatch_changes_nothing() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-checksum");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let asset = format!("bddkit-v99.0.0-{}.tar.gz", host_target());
+    stub.set(
+        &format!("/bddkit/bddkit/releases/download/v99.0.0/{asset}.sha256"),
+        Reply::Body(format!("{:064}  {asset}\n", 0).into_bytes()),
+    );
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("checksum mismatch"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+    assert!(!sandbox.data().join("previous").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hand_written_and_project_entries_are_listed_not_changed() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-listed");
+    stub.index(ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit("99.0.0", 3, 0);
+
+    // The user layer: one entry bddkit installed, one a person wrote.
+    let user = sandbox.root.join("cfg/bddkit");
+    std::fs::create_dir_all(&user).expect("mkdir");
+    let installed_path = sandbox
+        .root
+        .join("xdg/bddkit/plugins/echo-plugin/0.1.0")
+        .join(lib_file());
+    std::fs::write(
+        user.join("plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n    version: 0.1.0\n    source: bddkit/echo-plugin\n  - name: mine\n    path: /opt/libmine.so\n",
+            installed_path.display()
+        ),
+    )
+    .expect("user lock");
+    // A project layer with an installed-looking entry of its own.
+    let project = sandbox.root.join("proj");
+    std::fs::create_dir_all(project.join(".bddkit")).expect("mkdir");
+    std::fs::write(project.join("bddkit.yaml"), "paths: []\n").expect("config");
+    let project_lock = "plugin:\n  - name: other\n    path: plugins/libother.so\n    version: 0.1.0\n    source: bddkit/other\n";
+    std::fs::write(project.join(".bddkit/plugins.yaml"), project_lock).expect("project lock");
+
+    let config = project.join("bddkit.yaml");
+    let mut command = sandbox.command(&sandbox.bin, &github, &["--yes", "--config"]);
+    command.arg(&config);
+    let out = output_retrying(&mut command);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("mine (user): hand-written"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("other (project): project layer"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join(".bddkit/plugins.yaml")).unwrap(),
+        project_lock
+    );
+    let user_lock = std::fs::read_to_string(user.join("plugins.yaml")).unwrap();
+    assert!(user_lock.contains("version: 0.2.0"), "{user_lock}");
+    assert!(user_lock.contains("/opt/libmine.so"), "{user_lock}");
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rollback_restores_the_binary_and_the_locks() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-rollback");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let lock = sandbox.lock();
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_ne!(sandbox.lock(), lock);
+
+    // The new binary here is a script that cannot roll anything back, which is
+    // exactly the case the kept binary exists for: it runs the rollback itself.
+    let previous = sandbox.data().join("previous/bddkit");
+    let out = sandbox.upgrade_as(&previous, &github, &["--rollback"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert_eq!(sandbox.receipt_version(), CURRENT);
+    assert!(!sandbox.data().join("previous").exists());
+    assert!(!sandbox.plug.join("plugins.yaml.before-upgrade").exists());
+
+    let out = sandbox.upgrade(&github, &["--rollback"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("nothing to roll back"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_file_that_cannot_be_written_is_refused_before_anything_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-readonly");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let lock = sandbox.plug.join("plugins.yaml");
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).expect("chmod");
+    // A superuser writes anyway; there is nothing to prove then.
+    if std::fs::OpenOptions::new().append(true).open(&lock).is_ok() {
+        return;
+    }
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("cannot write"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert!(!sandbox.plug.join("plugins/echo-plugin/0.2.0").exists());
+    assert!(!sandbox.data().join("previous/pending.json").exists());
+    assert!(sandbox.bin_dir_is_clean(), "staging left behind");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_latest_release_is_not_a_silent_downgrade() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-older");
+    stub.latest("bddkit/bddkit", "0.0.1");
+    stub.set(
+        "/bddkit/bddkit/releases/tag/v0.0.1",
+        Reply::Body(b"release".to_vec()),
+    );
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("is older than"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_lock_files_moving_one_release_share_its_directory() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-shared-dir");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let entry = sandbox.lock();
+    std::fs::write(sandbox.plug.join("plugins.local.yaml"), &entry).expect("local lock");
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    for file in ["plugins.yaml", "plugins.local.yaml"] {
+        let lock = std::fs::read_to_string(sandbox.plug.join(file)).unwrap();
+        assert!(lock.contains("version: 0.2.0"), "{file}:\n{lock}");
+    }
+    assert!(
+        sandbox
+            .plug
+            .join("plugins/echo-plugin/0.2.0")
+            .join(lib_file())
+            .is_file()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_directory_something_else_uses_is_never_wiped() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-in-use");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let used = sandbox.plug.join("plugins/echo-plugin/0.2.0");
+    std::fs::create_dir_all(&used).expect("mkdir");
+    std::fs::write(used.join("keep"), "mine").expect("file");
+    std::fs::write(
+        sandbox.plug.join("plugins.local.yaml"),
+        // Relative to the lock file, as a hand-written project entry would be.
+        "plugin:\n  - name: mine\n    path: plugins/echo-plugin/0.2.0/keep\n",
+    )
+    .expect("local lock");
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("already used by mine"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(std::fs::read_to_string(used.join("keep")).unwrap(), "mine");
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rollback_that_stopped_halfway_can_be_run_again() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-rollback-retry");
+    abi_upgrade_ready(&sandbox, &github, &stub, 0);
+    let lock = sandbox.lock();
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    // The state a first attempt leaves when it died after restoring the lock:
+    // the backup is gone, the record is still there.
+    std::fs::rename(
+        sandbox.plug.join("plugins.yaml.before-upgrade"),
+        sandbox.plug.join("plugins.yaml"),
+    )
+    .expect("restore the lock by hand");
+
+    let previous = sandbox.data().join("previous/bddkit");
+    let out = sandbox.upgrade_as(&previous, &github, &["--rollback"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+    assert_eq!(sandbox.receipt_version(), CURRENT);
 }

@@ -58,6 +58,11 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
+# Windows cannot rename over its own running executable; `bddkit upgrade` asks
+# this crate to do the swap there. Unix renames the file in place.
+[target.'cfg(windows)'.dependencies]
+self-replace = "1"
+
 [dev-dependencies]
 axum = "0.8"
 

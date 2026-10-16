@@ -28,6 +28,7 @@ mod runner;
 mod srp;
 mod steps;
 mod unique;
+mod upgrade;
 mod validate;
 mod vars;
 mod world;
@@ -71,8 +72,45 @@ enum Command {
     Resource(ResourceArgs),
     /// Find, install, update and remove plugins
     Plugin(PluginArgs),
+    /// Replace bddkit and its plugins with another release, with a way back
+    Upgrade(UpgradeArgs),
     /// Print the version, and where to look next
-    Version,
+    Version {
+        /// Machine-readable: version, target and plugin ABI
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Args)]
+#[command(after_help = "Examples:
+  bddkit upgrade --check          what would change, changing nothing
+  bddkit upgrade                  to the latest release
+  bddkit upgrade --version 0.4.1  to a given release, older ones included
+  bddkit upgrade --rollback       back to the version the last upgrade replaced")]
+struct UpgradeArgs {
+    /// Show the plan, change nothing
+    #[arg(long, conflicts_with = "rollback")]
+    check: bool,
+    /// Upgrade to this release instead of the latest
+    #[arg(long = "version", value_name = "VERSION", conflicts_with = "rollback")]
+    target_version: Option<String>,
+    /// Restore the binary and lock files the last upgrade replaced
+    #[arg(long)]
+    rollback: bool,
+    /// Upgrade even when a plugin has no release for the new ABI, leaving it as it is
+    #[arg(long)]
+    force: bool,
+    /// Do not ask: required where there is no terminal
+    #[arg(long, short = 'y')]
+    yes: bool,
+    /// Only used to find the project's `.bddkit/` [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Use this directory only, skipping the shared, user and project layers
+    /// (overrides $BDDKIT_DIR)
+    #[arg(long = "bddkit-dir")]
+    bddkit_dir: Option<PathBuf>,
 }
 
 const LAYERS: [&str; 6] = [
@@ -140,6 +178,9 @@ enum PluginCommand {
     },
     /// Show installed plugins, or one plugin in detail
     Show { name: Option<String> },
+    /// Load a library and print its plugin name (what `upgrade` asks the new binary)
+    #[command(hide = true)]
+    Check { path: PathBuf },
 }
 
 /// Every failure here is exit 1: nothing ran, but there is no run whose
@@ -156,6 +197,15 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
         return Ok(0);
     };
     let outcome: Result<i32> = async {
+        if let PluginCommand::Check { path } = &command {
+            // `ManuallyDrop` for the reason `Library::load` gives: never unloaded.
+            let lib = std::mem::ManuallyDrop::new(plugin::library::Library::load(
+                &path.file_name().unwrap_or_default().to_string_lossy(),
+                path,
+            )?);
+            println!("{}", lib.manifest.name);
+            return Ok(0);
+        }
         // Located, never parsed: only the project layer's anchor is needed.
         let config_dir = match config::resolve_config_path(args.config.as_deref())? {
             Some(resolved) => config_dir(&resolved.path).to_path_buf(),
@@ -175,7 +225,36 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
             } => ctx.update(&names, layer.as_deref(), dry_run).await,
             PluginCommand::Remove { name, layer } => ctx.remove(&name, layer.as_deref()).await,
             PluginCommand::Show { name } => ctx.show(name.as_deref()).await,
+            PluginCommand::Check { .. } => unreachable!("answered before the layers are read"),
         }
+    }
+    .await;
+    Ok(outcome.unwrap_or_else(|error| {
+        eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
+        1
+    }))
+}
+
+/// Every failure is exit 1, like `plugin`: nothing ran that a 2 would date.
+async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
+    let outcome: Result<i32> = async {
+        let config_dir = match config::resolve_config_path(args.config.as_deref())? {
+            Some(resolved) => config_dir(&resolved.path).to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        let ctx =
+            plugin::manage::Context::new(dirs::Env::from_process(args.bddkit_dir), &config_dir)?;
+        upgrade::run(
+            &ctx,
+            &upgrade::Options {
+                check: args.check,
+                version: args.target_version,
+                rollback: args.rollback,
+                force: args.force,
+                yes: args.yes,
+            },
+        )
+        .await
     }
     .await;
     Ok(outcome.unwrap_or_else(|error| {
@@ -658,7 +737,20 @@ async fn main() {
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
-        Command::Version => {
+        Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
+        Command::Version { json: true } => {
+            let target = plugin::install::host_target().unwrap_or("unknown");
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "target": target,
+                    "plugin_abi": plugin::abi::ABI_VERSION,
+                })
+            );
+            (Ok(0), "nothing printed")
+        }
+        Command::Version { json: false } => {
             use clap::CommandFactory;
             // Rendered, never re-formatted from `LONG_VERSION` by hand: the
             // subcommand and `--version` cannot drift apart if they cannot be
