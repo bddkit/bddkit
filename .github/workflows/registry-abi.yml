@@ -1,0 +1,41 @@
+name: Plugin index ABI map
+
+# Keeps the `abi` map in plugin-registry.yaml current (bddkit/bddkit#122): the
+# newest release per plugin ABI, so `plugin install <name>` needs no GitHub API
+# call. The pull request is opened with this repository's own GITHUB_TOKEN, so no
+# plugin repository holds a token for bddkit/bddkit. A PR opened with that token
+# does not trigger ci.yml, which is why the script checks the file itself before
+# anything is written. Requires Settings > Actions > "Allow GitHub Actions to
+# create and approve pull requests".
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: update the abi map
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: pip install pyyaml
+      - run: python3 .github/scripts/test_update_registry_abi.py
+      - run: python3 .github/scripts/update_registry_abi.py
+      - name: Open a pull request when the map changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git diff --quiet plugin-registry.yaml && exit 0
+          branch=chore/registry-abi-map
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git commit -am "chore: update the plugin index's ABI map"
+          git push --force origin "$branch"
+          gh pr view "$branch" >/dev/null 2>&1 ||
+            gh pr create --head "$branch" --title "chore: update the plugin index's ABI map" \
+              --body "Daily run of \`registry-abi.yml\`: newest release per plugin ABI, each checked to declare the ABI it is listed under."
