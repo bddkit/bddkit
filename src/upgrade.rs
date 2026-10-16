@@ -105,7 +105,7 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn sibling_of_backup(lock: &Path) -> PathBuf {
+pub(crate) fn sibling_of_backup(lock: &Path) -> PathBuf {
     let mut name = lock.as_os_str().to_os_string();
     name.push(".before-upgrade");
     PathBuf::from(name)
@@ -138,7 +138,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn confirm(question: &str) -> Result<bool> {
+pub(crate) fn confirm(question: &str) -> Result<bool> {
     print!("{question} [y/N] ");
     std::io::stdout().flush()?;
     let mut line = String::new();
@@ -368,6 +368,13 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
             planned.target.label,
             crate::plugin::abi::ABI_VERSION,
             info.plugin_abi
+        );
+    }
+    // Versions this upgrade can still roll back to are not listed here, so
+    // what is left comes from earlier upgrades.
+    if ctx.unreferenced().is_ok_and(|stale| !stale.is_empty()) {
+        println!(
+            "plugin versions from earlier upgrades remain on disk; `bddkit plugin prune` removes them"
         );
     }
     Ok(0)

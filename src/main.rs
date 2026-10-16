@@ -176,6 +176,15 @@ enum PluginCommand {
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
         layer: Option<String>,
     },
+    /// Delete plugin versions that no lock file points into any more
+    Prune {
+        /// List what would be deleted and its size, delete nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete without asking (required when there is no terminal)
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show installed plugins, or one plugin in detail
     Show { name: Option<String> },
     /// Load a library and print its plugin name (what `upgrade` asks the new binary)
@@ -224,6 +233,7 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
                 dry_run,
             } => ctx.update(&names, layer.as_deref(), dry_run).await,
             PluginCommand::Remove { name, layer } => ctx.remove(&name, layer.as_deref()).await,
+            PluginCommand::Prune { dry_run, yes } => ctx.prune(dry_run, yes),
             PluginCommand::Show { name } => ctx.show(name.as_deref()).await,
             PluginCommand::Check { .. } => unreachable!("answered before the layers are read"),
         }
