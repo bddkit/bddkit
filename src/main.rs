@@ -993,9 +993,9 @@ async fn run(cli: RunArgs) -> Result<i32> {
         "--evidence requires --events (or $BDDKIT_EVENTS)"
     );
     let events_file = events_path.map(|path| events::open(&path)).transpose()?;
-    let config_path = config::resolve_config_path(cli.config.as_deref())?
-        .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?
-        .path;
+    let resolved = config::resolve_config_path(cli.config.as_deref())?
+        .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
+    let config_path = resolved.path;
     let cfg = config::load(&config_path, cli.env.as_deref())?;
     let privacy = privacy::Privacy::from_sources(
         Some(&cfg.privacy),
@@ -1123,6 +1123,12 @@ async fn run(cli: RunArgs) -> Result<i32> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
                 "artifacts_dir": artifacts.root().display().to_string(),
+                "config": feature::display_path(&config_path),
+                "config_source": resolved.source,
+                "selection": {
+                    "tags": cli.tags,
+                    "paths": cli.paths.iter().map(|p| feature::display_path(p)).collect::<Vec<_>>(),
+                },
                 "evidence": cli.evidence,
                 "concurrency": cfg.concurrency,
                 "privacy": {

@@ -7,7 +7,7 @@
 //! so a slow reader of a FIFO cannot change a test's timing.
 
 use crate::artifacts::{Artifacts, media_type};
-use crate::feature::display_path;
+use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
 use crate::http::Exchange;
 use crate::plugin::abi::Diagnostic;
 use crate::privacy::{Redactor, mask_ranges};
@@ -251,31 +251,116 @@ impl Trace {
         self.redactor = redactor;
     }
 
-    /// Emits `file_started`.
-    pub fn new(events: Option<Events>, path: &Path, name: &str) -> Self {
+    /// Emits `file_started`. The redactor comes first because the event already
+    /// carries source text a secret may be written in.
+    pub fn new(events: Option<Events>, lf: &LoadedFeature, redactor: Redactor) -> Self {
         let Some(events) = events else {
             return Self::off();
         };
-        let file = display_path(path);
-        events.emit("file_started", json!({"file": file, "name": name}));
-        Self {
-            events: Some(events),
-            file,
+        let trace = Self {
+            events: Some(events.clone()),
+            file: display_path(&lf.path),
+            redactor,
             ..Self::off()
+        };
+        let feature = &lf.feature;
+        let mut fields = json!({
+            "file": trace.file,
+            "name": trace.redactor.mask(&feature.name),
+            "tags": trace.tags(lf.own_tags(feature.position.line).iter().map(|(name, _)| name.as_str())),
+        });
+        trace.put(
+            &mut fields,
+            "description",
+            lf.description(feature.position.line).unwrap_or(""),
+        );
+        if let Some(background) = &feature.background {
+            fields["background"] = trace.element(
+                background.position.line,
+                &background.name,
+                lf.description(background.position.line).unwrap_or(""),
+            );
+        }
+        events.emit("file_started", fields);
+        trace
+    }
+
+    /// Inserts `text`, masked, unless nothing is left of it: the stream leaves
+    /// out a field that would be empty rather than writing `""` or `null`.
+    fn put(&self, fields: &mut Value, key: &str, text: &str) {
+        let text = self.redactor.mask(text);
+        if !text.is_empty() {
+            fields[key] = text.into();
         }
     }
 
-    pub fn scenario_started(&mut self, name: &str, line: usize, example: Option<usize>) {
+    /// `{"line", "name", "description"}` of a background, rule or examples block.
+    fn element(&self, line: usize, name: &str, description: &str) -> Value {
+        let mut element = json!({"line": line});
+        self.put(&mut element, "name", name);
+        self.put(&mut element, "description", description);
+        element
+    }
+
+    /// Tag names as a reader of the source sees them, with the `@`.
+    fn tags<'a>(&self, names: impl Iterator<Item = &'a str>) -> Vec<String> {
+        names
+            .map(|name| self.redactor.mask(&format!("@{name}")))
+            .collect()
+    }
+
+    pub fn scenario_started(
+        &mut self,
+        lf: &LoadedFeature,
+        sc: ScenarioRef<'_>,
+        ex: &ExpandedScenario,
+    ) {
         let Some(events) = &self.events else { return };
         self.scenario = self.scenarios;
         self.scenarios += 1;
         self.steps = 0;
         self.open.clear();
+        let tags = lf.effective_tags(sc).into_iter().map(|(name, _)| name);
         let mut fields = json!({
-            "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(name), "line": line,
+            "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(&ex.name),
+            "line": ex.line, "tags": self.tags(tags),
         });
-        if let Some(example) = example {
+        if let Some(example) = ex.example {
             fields["example"] = example.into();
+        }
+        self.put(
+            &mut fields,
+            "description",
+            lf.description(ex.line).unwrap_or(""),
+        );
+        if let Some(rule) = sc.rule {
+            let mut element = self.element(
+                rule.position.line,
+                &rule.name,
+                lf.description(rule.position.line).unwrap_or(""),
+            );
+            if let Some(bg) = &rule.background {
+                element["background"] = self.element(
+                    bg.position.line,
+                    &bg.name,
+                    lf.description(bg.position.line).unwrap_or(""),
+                );
+            }
+            fields["rule"] = element;
+        }
+        let block = ex.examples_line.and_then(|line| {
+            sc.scenario
+                .examples
+                .iter()
+                .find(|e| e.position.line == line)
+        });
+        if let Some(block) = block {
+            let line = block.position.line;
+            fields["examples"] = self.element(
+                line,
+                block.name.as_deref().unwrap_or(""),
+                lf.description(line).unwrap_or(""),
+            );
         }
         events.emit("scenario_started", fields);
     }

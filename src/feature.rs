@@ -21,6 +21,9 @@ pub struct ExpandedScenario {
     /// 0-based row ordinal across the outline's `Examples` tables; `None` for
     /// a plain scenario. Rows share `line`, so this is what tells them apart.
     pub example: Option<usize>,
+    /// The line of the `Examples` block the row came from; `None` for a plain
+    /// scenario. Rows of different blocks of one outline share `line`.
+    pub examples_line: Option<usize>,
     pub steps: Vec<ExpandedStep>,
 }
 
@@ -29,16 +32,8 @@ pub struct LoadedFeature {
     pub path: PathBuf,
     pub feature: Feature,
     /// Descriptions as written, by the line of their element's keyword.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the event stream in a later commit")
-    )]
     descriptions: BTreeMap<usize, String>,
     /// Each element's own tags as `(name without "@", line)`, by keyword line.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the event stream in a later commit")
-    )]
     tags: BTreeMap<usize, Vec<(String, usize)>>,
 }
 
@@ -395,20 +390,12 @@ impl LoadedFeature {
 
     /// The description written under the element whose keyword is on `line`
     /// (`position.line` of a feature, background, rule, scenario or examples).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the event stream in a later commit")
-    )]
     pub fn description(&self, line: usize) -> Option<&str> {
         self.descriptions.get(&line).map(String::as_str)
     }
 
     /// The tags written directly above the element whose keyword is on `line`
     /// (feature, rule, scenario or examples), each with the line it is written on.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the event stream in a later commit")
-    )]
     pub fn own_tags(&self, line: usize) -> &[(String, usize)] {
         self.tags.get(&line).map_or(&[], Vec::as_slice)
     }
@@ -416,10 +403,6 @@ impl LoadedFeature {
     /// What a scenario is tagged with as the filter sees it: its own tags, then
     /// its rule's, then the feature's — the order `from_text` merges them in. A name
     /// written at two levels is listed once, with the line of the first.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the event stream in a later commit")
-    )]
     pub fn effective_tags(&self, sc: ScenarioRef<'_>) -> Vec<(&str, usize)> {
         let lines = [
             Some(sc.scenario.position.line),
@@ -520,6 +503,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
             name: sc.name.clone(),
             line: sc.position.line,
             example: None,
+            examples_line: None,
             steps: base,
         }];
     }
@@ -548,6 +532,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
                 name: format!("{} [{}]", sc.name, row.join(", ")),
                 line: sc.position.line,
                 example: Some(out.len()),
+                examples_line: Some(ex.position.line),
                 steps,
             });
         }
