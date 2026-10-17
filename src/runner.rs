@@ -1086,7 +1086,6 @@ pub async fn run_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::parse_str;
     use crate::macros::MacroCatalog;
     use crate::unique::UniqueKind;
     use std::path::PathBuf;
@@ -1349,10 +1348,8 @@ mod tests {
     }
 
     async fn run_in(feature: &str, context: Arc<RunContext>) -> FileResult {
-        let loaded = LoadedFeature {
-            path: PathBuf::from("macro.feature"),
-            feature: parse_str(feature).unwrap(),
-        };
+        let loaded = LoadedFeature::from_text(PathBuf::from("macro.feature"), feature)
+            .expect("gherkin parses");
         run_file(Arc::new(loaded), context).await
     }
 
@@ -1360,13 +1357,11 @@ mod tests {
     /// compiler: if the file-run future stops being Send, the test won't build.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_run_can_be_spawned_onto_another_thread() {
-        let loaded = LoadedFeature {
-            path: PathBuf::from("spawnable.feature"),
-            feature: parse_str(
-                "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
-            )
-            .expect("gherkin parses"),
-        };
+        let loaded = LoadedFeature::from_text(
+            PathBuf::from("spawnable.feature"),
+            "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )
+        .expect("gherkin parses");
         let ctx = context(Registry::new().expect("built-in patterns compile"));
 
         let result = tokio::spawn(run_file(Arc::new(loaded), ctx))
@@ -1884,17 +1879,13 @@ Feature: eventual assertion
 
     mod chains {
         use super::super::*;
-        use crate::feature::parse_str;
         use std::path::PathBuf;
         use std::sync::Arc;
 
         pub(super) fn file(path: &str, tags: &str) -> Arc<LoadedFeature> {
             let src =
                 format!("{tags}Feature: f\n  Scenario: s\n    Then the response code is 200\n");
-            Arc::new(LoadedFeature {
-                path: PathBuf::from(path),
-                feature: parse_str(&src).expect("gherkin parses"),
-            })
+            Arc::new(LoadedFeature::from_text(PathBuf::from(path), &src).expect("gherkin parses"))
         }
 
         #[test]
@@ -2049,10 +2040,10 @@ Feature: eventual assertion
             .expect("an examples table")
             .rows
             .push(Vec::new());
-        let lf = Arc::new(LoadedFeature {
-            path: PathBuf::from("bad.feature"),
+        let lf = Arc::new(LoadedFeature::without_source(
+            PathBuf::from("bad.feature"),
             feature,
-        });
+        ));
         let mut ctx = Arc::into_inner(context(Registry::new().expect("builtin steps register")))
             .expect("one owner");
         ctx.events = Some(events.clone());
