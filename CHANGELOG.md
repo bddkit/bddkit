@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/bddkit/bddkit/compare/v0.3.1...v0.3.2) - 2026-10-17
+
+### Added
+
+- bddkit plugin prune removes plugin versions no lock references (bddkit/bddkit#124)
+- bddkit upgrade moves the binary and its plugins together, with rollback (bddkit/bddkit#123)
+- daily job that keeps the plugin index's ABI map current (bddkit/bddkit#122)
+
+### Fixed
+
+- run, validate and include scenarios written inside Rule: blocks (bddkit/bddkit#107)
+
 ## [0.3.1](https://github.com/bddkit/bddkit/compare/v0.3.0...v0.3.1) - 2026-10-16
 
 ### Fixed
