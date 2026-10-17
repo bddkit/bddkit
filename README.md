@@ -259,6 +259,10 @@ And Print table:
 
 Under `concurrency` greater than 1 this output is not part of a file's atomic report, so two files' lines can interleave; run with `concurrency: 1` while debugging.
 
+### Rules
+
+`Rule:` blocks are supported. A scenario inside a rule runs after the feature's own scenarios, in file order, and runs the feature's Background first and then the rule's own Background. It carries its own tags, its rule's and its feature's, so `--tag` sees all three, and a `@serial` or `@priority` tag on a rule schedules the whole file, as one on a scenario does. `I include` can name a scenario inside a rule, and an include with no name counts the scenarios inside rules toward its "exactly one".
+
 ### Including other feature files
 
 Scenarios often follow the same setup steps, and duplicating them across files gets tedious. `I include "<file>"` pulls one scenario from another feature file and runs it inline, with access to the same HTTP state, database connection, and plugin instances — giving the caller a chance to reuse setup work and inspect what it left behind. Variables are isolated: the included scenario runs in a fresh `VarStack`, so the caller's globals are invisible inside it, and only variables declared via the `@exports` tag come back.

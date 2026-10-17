@@ -1,5 +1,5 @@
 use crate::events::{Events, Origin, Trace};
-use crate::feature::{ExpandedStep, LoadedFeature, expand_outlines};
+use crate::feature::{ExpandedStep, LoadedFeature, ScenarioRef, expand_outlines};
 use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
 use crate::polling::{AttemptError, Polling};
@@ -528,7 +528,8 @@ fn run_include<'a>(
         crate::include::check_literal(path_literal)?;
         let resolved = crate::include::resolve(path_literal, &base_dir)?;
         let included = crate::feature::load(&resolved).map_err(|e| e.to_string())?;
-        let scenario = crate::include::select_scenario(&included, scenario_name)?;
+        let ScenarioRef { scenario, rule } =
+            crate::include::select_scenario(&included, scenario_name)?;
         let exports = crate::feature::exports_of(&included, scenario)?;
 
         // build_scenario validates the with: table's shape (exactly one data row) —
@@ -569,12 +570,7 @@ fn run_include<'a>(
             }
         }
 
-        let background: Vec<ExpandedStep> = included
-            .feature
-            .background
-            .as_ref()
-            .map(|bg| bg.steps.iter().map(crate::feature::to_step).collect())
-            .unwrap_or_default();
+        let background = included.background_steps(rule);
 
         let mut fresh = VarStack::new();
         fresh.set_redactor(world.vars.redactor());
@@ -788,21 +784,15 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     }
     let mut scenarios = Vec::new();
 
-    let background: Vec<ExpandedStep> = lf
-        .feature
-        .background
-        .as_ref()
-        .map(|bg| bg.steps.iter().map(crate::feature::to_step).collect())
-        .unwrap_or_default();
-
     // The generator handle is cloned once: inside the loop `&world.generator`
     // would conflict with the later `&mut world` in the dispatch call.
     let generator = world.generator.clone();
 
-    for sc in &lf.feature.scenarios {
+    for ScenarioRef { scenario: sc, rule } in lf.scenarios() {
         if !ctx.filter.matches(&sc.tags) {
             continue;
         }
+        let background = lf.background_steps(rule);
         for ex in expand_outlines(sc) {
             world.reset_scenario();
             // The FFI half of the scenario reset. It is here rather than in

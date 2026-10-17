@@ -65,14 +65,16 @@ fn strip_at(tag: &str) -> &str {
     tag.strip_prefix('@').unwrap_or(tag)
 }
 
-/// All tags of a file: above `Feature:` and above each scenario. `load` mixes
-/// the feature's tags into the scenarios, but a feature with no scenarios must
-/// also be readable, so both sources are listed explicitly.
+/// All tags of a file: above `Feature:`, above each `Rule:` and above each
+/// scenario. `load` mixes the outer tags into the scenarios, but a feature or
+/// rule with no scenarios must also be readable, so every source is listed
+/// explicitly.
 fn all_tags(lf: &LoadedFeature) -> impl Iterator<Item = &String> {
     lf.feature
         .tags
         .iter()
-        .chain(lf.feature.scenarios.iter().flat_map(|sc| &sc.tags))
+        .chain(lf.feature.rules.iter().flat_map(|rule| &rule.tags))
+        .chain(lf.scenarios().flat_map(|sc| &sc.scenario.tags))
 }
 
 static SERIAL_TAG: std::sync::LazyLock<regex::Regex> =
@@ -167,14 +169,46 @@ pub fn exports_of(lf: &LoadedFeature, sc: &gherkin::Scenario) -> Result<Vec<Stri
     Ok(out)
 }
 
+/// A scenario with the `Rule:` it is written under, if any. The scenario's
+/// `tags` are already the effective set (`load` merged the rule's and the
+/// feature's into them).
+#[derive(Debug, Clone, Copy)]
+pub struct ScenarioRef<'a> {
+    pub scenario: &'a gherkin::Scenario,
+    pub rule: Option<&'a gherkin::Rule>,
+}
+
 impl LoadedFeature {
+    /// Every scenario in file order: those outside any rule, then each rule's.
+    /// The one way to walk a feature — nothing reads `feature.scenarios` directly.
+    pub fn scenarios(&self) -> impl Iterator<Item = ScenarioRef<'_>> {
+        let outside = self.feature.scenarios.iter().map(|scenario| ScenarioRef {
+            scenario,
+            rule: None,
+        });
+        let inside = self.feature.rules.iter().flat_map(|rule| {
+            rule.scenarios.iter().map(move |scenario| ScenarioRef {
+                scenario,
+                rule: Some(rule),
+            })
+        });
+        outside.chain(inside)
+    }
+
+    /// The feature's Background steps, then the rule's own (as Cucumber does).
+    pub fn background_steps(&self, rule: Option<&gherkin::Rule>) -> Vec<ExpandedStep> {
+        self.feature
+            .background
+            .iter()
+            .chain(rule.and_then(|r| r.background.as_ref()))
+            .flat_map(|bg| bg.steps.iter().map(to_step))
+            .collect()
+    }
+
     /// Whether the file has at least one scenario passing the filter. Expanding
     /// a Scenario Outline does not change tags, so this can be checked before that.
     pub fn has_selected_scenario(&self, filter: &TagFilter) -> bool {
-        self.feature
-            .scenarios
-            .iter()
-            .any(|sc| filter.matches(&sc.tags))
+        self.scenarios().any(|sc| filter.matches(&sc.scenario.tags))
     }
 }
 
@@ -299,6 +333,13 @@ pub fn load(path: &Path) -> Result<LoadedFeature> {
     let feature_tags = feature.tags.clone();
     for sc in &mut feature.scenarios {
         sc.tags.extend(feature_tags.iter().cloned());
+    }
+    // A rule's scenario carries its own tags, its rule's and its feature's.
+    for rule in &mut feature.rules {
+        for sc in &mut rule.scenarios {
+            sc.tags.extend(rule.tags.iter().cloned());
+            sc.tags.extend(feature_tags.iter().cloned());
+        }
     }
     Ok(LoadedFeature {
         path: path.to_path_buf(),

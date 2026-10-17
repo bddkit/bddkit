@@ -1,6 +1,6 @@
 use crate::feature::{
-    ExpandedScenario, ExpandedStep, LoadedFeature, display_path, scenario_placeholders, substitute,
-    to_step,
+    ExpandedScenario, ExpandedStep, LoadedFeature, ScenarioRef, display_path,
+    scenario_placeholders, substitute, to_step,
 };
 use std::path::{Path, PathBuf};
 
@@ -62,13 +62,13 @@ pub fn resolve(path_literal: &str, base_dir: &Path) -> Result<PathBuf, String> {
 pub fn select_scenario<'a>(
     included: &'a LoadedFeature,
     scenario_name: Option<&str>,
-) -> Result<&'a gherkin::Scenario, String> {
+) -> Result<ScenarioRef<'a>, String> {
     let path = display_path(&included.path);
     match scenario_name {
-        None => match included.feature.scenarios.as_slice() {
-            [only] => Ok(only),
+        None => match included.scenarios().collect::<Vec<_>>().as_slice() {
+            [only] => Ok(*only),
             scenarios => {
-                let names: Vec<&str> = scenarios.iter().map(|s| s.name.as_str()).collect();
+                let names: Vec<&str> = scenarios.iter().map(|s| s.scenario.name.as_str()).collect();
                 Err(format!(
                     "I include {path:?}: the file must contain exactly one scenario \
                      to be included without naming one, but it has {}: {}",
@@ -78,14 +78,12 @@ pub fn select_scenario<'a>(
             }
         },
         Some(name) => {
-            let matches: Vec<&gherkin::Scenario> = included
-                .feature
-                .scenarios
-                .iter()
-                .filter(|s| s.name == name)
+            let matches: Vec<ScenarioRef> = included
+                .scenarios()
+                .filter(|s| s.scenario.name == name)
                 .collect();
             match matches.as_slice() {
-                [only] => Ok(only),
+                [only] => Ok(*only),
                 [] => Err(format!(
                     "I include {path:?} scenario {name:?}: no scenario with that name"
                 )),
@@ -291,7 +289,7 @@ mod tests {
         );
         let lf = crate::feature::load(&path).unwrap();
         let sc = select_scenario(&lf, None).unwrap();
-        assert_eq!(sc.name, "only");
+        assert_eq!(sc.scenario.name, "only");
     }
 
     #[test]
@@ -304,7 +302,21 @@ mod tests {
         );
         let lf = crate::feature::load(&path).unwrap();
         let sc = select_scenario(&lf, Some("b")).unwrap();
-        assert_eq!(sc.name, "b");
+        assert_eq!(sc.scenario.name, "b");
+    }
+
+    #[test]
+    fn select_scenario_sees_scenarios_inside_a_rule() {
+        let dir = temp_test_dir("select-scenario-rule");
+        let path = write_feature(
+            &dir,
+            "rule.feature",
+            "Feature: f\n  Rule: r\n    Scenario: in\n      Given x\n",
+        );
+        let lf = crate::feature::load(&path).unwrap();
+        assert_eq!(select_scenario(&lf, None).unwrap().scenario.name, "in");
+        let named = select_scenario(&lf, Some("in")).unwrap();
+        assert_eq!(named.rule.unwrap().name, "r");
     }
 
     #[test]

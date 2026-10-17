@@ -125,28 +125,47 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
 /// are not — a typo in something that never runs must not fail the run.
 fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
     let mut all_steps: Vec<SelectedStep> = Vec::new();
-    if let Some(bg) = &lf.feature.background {
-        for s in &bg.steps {
-            all_steps.push(SelectedStep {
-                text: s.value.clone(),
-                line: s.position.line,
-                has_docstring: s.docstring.is_some(),
-                table: s.table.as_ref().map(|t| t.rows.clone()),
-            });
+    let mut push = |text: String, line, has_docstring, table| {
+        all_steps.push(SelectedStep {
+            text,
+            line,
+            has_docstring,
+            table,
+        });
+    };
+    let from_background = |bg: &gherkin::Background| {
+        bg.steps
+            .iter()
+            .map(|s| {
+                (
+                    s.value.clone(),
+                    s.position.line,
+                    s.docstring.is_some(),
+                    s.table.as_ref().map(|t| t.rows.clone()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for (text, line, doc, table) in lf.feature.background.iter().flat_map(from_background) {
+        push(text, line, doc, table);
+    }
+    // A rule's Background, like a filtered-out scenario, only counts when
+    // something under that rule will run.
+    for rule in &lf.feature.rules {
+        if !rule.scenarios.iter().any(|sc| filter.matches(&sc.tags)) {
+            continue;
+        }
+        for (text, line, doc, table) in rule.background.iter().flat_map(from_background) {
+            push(text, line, doc, table);
         }
     }
-    for sc in &lf.feature.scenarios {
+    for sc in lf.scenarios().map(|r| r.scenario) {
         if !filter.matches(&sc.tags) {
             continue;
         }
         for ex in expand_outlines(sc) {
             for st in ex.steps {
-                all_steps.push(SelectedStep {
-                    text: st.text,
-                    line: st.line,
-                    has_docstring: st.docstring.is_some(),
-                    table: st.table,
-                });
+                push(st.text, st.line, st.docstring.is_some(), st.table);
             }
         }
     }
@@ -236,7 +255,8 @@ fn check_include_recursive(
     let resolved = crate::include::resolve(path_literal, base_dir)?;
     let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
     let included = crate::feature::load(&resolved).map_err(|e| e.to_string())?;
-    let scenario = crate::include::select_scenario(&included, scenario_name)?;
+    let crate::feature::ScenarioRef { scenario, rule } =
+        crate::include::select_scenario(&included, scenario_name)?;
     crate::feature::exports_of(&included, scenario)?;
     let node = (canonical, scenario.name.clone());
     if let Some(pos) = stack.iter().position(|n| n == &node) {
@@ -252,12 +272,7 @@ fn check_include_recursive(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let background: Vec<crate::feature::ExpandedStep> = included
-        .feature
-        .background
-        .as_ref()
-        .map(|bg| bg.steps.iter().map(crate::feature::to_step).collect())
-        .unwrap_or_default();
+    let background = included.background_steps(rule);
 
     stack.push(node);
     for step in background.iter().chain(expanded.steps.iter()) {
