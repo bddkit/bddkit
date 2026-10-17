@@ -3727,6 +3727,100 @@ async fn a_secret_in_a_description_is_masked_in_the_stream() {
 }
 
 #[test]
+fn the_cucumber_json_report_carries_descriptions_tags_and_the_feature_line() {
+    let cfg = write_events_project(
+        "descriptions-json",
+        "",
+        &[(
+            "a.feature",
+            "# language: en\n@ft @dup\nFeature: Reported\n  Feature text.\n  Scenario: Described\n    What it is for.\n    Given set variable \"a\" to \"1\"\n  @own @dup\n  Scenario Outline: Row\n    Outline text.\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 1 |\n      | 2 |\n  Scenario: Bare\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let json = cfg.with_file_name("cucumber.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--cucumber-json")
+        .arg(&json)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("report")).expect("json");
+
+    let feature = &report[0];
+    assert_eq!(feature["line"], 3, "the keyword line, not 1");
+    assert_eq!(feature["description"], "Feature text.");
+    let ft = serde_json::json!([{"name": "@ft", "line": 2}, {"name": "@dup", "line": 2}]);
+    assert_eq!(feature["tags"], ft);
+
+    let elements = feature["elements"].as_array().expect("elements");
+    let by = |prefix: &str| -> Vec<&Value> {
+        elements
+            .iter()
+            .filter(|e| e["name"].as_str().is_some_and(|n| n.starts_with(prefix)))
+            .collect()
+    };
+    assert_eq!(by("Described")[0]["description"], "What it is for.");
+    assert_eq!(
+        by("Described")[0]["tags"],
+        ft,
+        "inherited, with their own lines"
+    );
+
+    // Every row of an outline carries the outline's text and tags; a name
+    // written at two levels is listed once, on the line of the closest.
+    let rows = by("Row");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["description"], "Outline text.");
+        assert_eq!(
+            row["tags"],
+            serde_json::json!([
+                {"name": "@own", "line": 8}, {"name": "@dup", "line": 8}, {"name": "@ft", "line": 2}
+            ])
+        );
+    }
+
+    // Cucumber's own formatter writes "" for no description.
+    assert_eq!(by("Bare")[0]["description"], "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_description_is_masked_in_the_json_report_with_the_final_set_but_not_rewritten_in_the_stream()
+ {
+    let base = common::spawn().await;
+    let feature = "Feature: Late\n  Scenario: first\n    Quotes late-value-98765 before it is known.\n    Given set variable \"x\" to \"1\"\n  Scenario: second\n    Given set variable \"secret_late\" to \"late-value-98765\"\n";
+    let cfg = masking_project("mask-description-json", &base, feature, "", "");
+    let json = cfg.with_file_name("cucumber.json");
+    let events = cfg.with_file_name("events.ndjson");
+    let (code, _, stderr) = run_masking(
+        &cfg,
+        &[
+            "--cucumber-json",
+            json.to_str().expect("utf-8"),
+            "--events",
+            events.to_str().expect("utf-8"),
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{stderr}");
+
+    let report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("report")).expect("json");
+    assert_eq!(
+        report[0]["elements"][0]["description"],
+        "Quotes *** before it is known."
+    );
+    // The stream is never rewritten: the value was not a secret yet.
+    assert_eq!(
+        of_type(&read_stream(&events), "scenario_started")[0]["description"],
+        "Quotes late-value-98765 before it is known."
+    );
+}
+
+#[test]
 fn run_started_carries_the_config_and_the_selection() {
     let cfg = write_events_project(
         "run-started-selection",

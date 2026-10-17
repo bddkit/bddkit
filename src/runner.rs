@@ -4,7 +4,7 @@ use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
 use crate::polling::{AttemptError, Polling};
 use crate::report::render_file;
-use crate::report::{FileResult, ScenarioResult, StepResult, StepStatus};
+use crate::report::{FileResult, ReportTag, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepId, StepKind, StepTarget, dispatch};
 use crate::unique::Generator;
 use crate::vars::{VarStack, interpolate, interpolate_with};
@@ -882,6 +882,8 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             scenarios.push(ScenarioResult {
                 name: world.redactor.mask(&ex.name),
                 line: ex.line,
+                description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
+                tags: report_tags(&world.redactor, lf.effective_tags(scenario_ref)),
                 failure,
                 steps,
                 duration,
@@ -903,6 +905,10 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     // more with the file's final set.
     for scenario in &mut scenarios {
         scenario.name = world.redactor.mask(&scenario.name);
+        scenario.description = world.redactor.mask(&scenario.description);
+        for tag in &mut scenario.tags {
+            tag.name = world.redactor.mask(&tag.name);
+        }
         scenario.failure = scenario
             .failure
             .take()
@@ -917,9 +923,41 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         }
     }
 
+    file_result(&lf, &world.redactor, scenarios)
+}
+
+/// `(name, line)` pairs as a report shows them: with the `@`, and masked.
+fn report_tags<'a>(
+    redactor: &crate::privacy::Redactor,
+    tags: impl IntoIterator<Item = (&'a str, usize)>,
+) -> Vec<ReportTag> {
+    tags.into_iter()
+        .map(|(name, line)| ReportTag {
+            name: redactor.mask(&format!("@{name}")),
+            line,
+        })
+        .collect()
+}
+
+/// The file's result, with the feature's own description and tags masked by
+/// `redactor` as it stands now.
+fn file_result(
+    lf: &LoadedFeature,
+    redactor: &crate::privacy::Redactor,
+    scenarios: Vec<ScenarioResult>,
+) -> FileResult {
+    let line = lf.feature.position.line;
     FileResult {
         path: lf.path.clone(),
         name: lf.feature.name.clone(),
+        line,
+        description: redactor.mask(lf.description(line).unwrap_or("")),
+        tags: report_tags(
+            redactor,
+            lf.own_tags(line)
+                .iter()
+                .map(|(name, line)| (name.as_str(), *line)),
+        ),
         scenarios,
     }
 }
@@ -938,19 +976,21 @@ fn panicked_file(
     error: &tokio::task::JoinError,
     redactor: &crate::privacy::Redactor,
 ) -> FileResult {
-    FileResult {
-        path: lf.path.clone(),
-        name: lf.feature.name.clone(),
-        scenarios: vec![ScenarioResult {
+    file_result(
+        lf,
+        redactor,
+        vec![ScenarioResult {
             name: "file run aborted".to_string(),
             line: 0,
+            description: String::new(),
+            tags: Vec::new(),
             // The file's own set is gone with its `World`: the run-wide one is
             // what is left to mask a payload with.
             failure: Some(redactor.mask(&format!("panic while running the file: {error}"))),
             steps: Vec::new(),
             duration: std::time::Duration::ZERO,
         }],
-    }
+    )
 }
 
 /// A chain is the unit of scheduling. Its files run strictly one after

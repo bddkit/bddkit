@@ -37,10 +37,22 @@ pub struct StepResult {
     pub warnings: Vec<String>,
 }
 
+/// A tag as Cucumber JSON writes it: the name with its `@`, and the line it is
+/// written on. Already masked: the writer only reads what the result holds.
+#[derive(Debug, Clone)]
+pub struct ReportTag {
+    pub name: String,
+    pub line: usize,
+}
+
 #[derive(Debug)]
 pub struct ScenarioResult {
     pub name: String,
     pub line: usize,
+    /// The text under the `Scenario:` line, `""` for none.
+    pub description: String,
+    /// The tags the filter saw: its own, its rule's, then the feature's.
+    pub tags: Vec<ReportTag>,
     pub failure: Option<String>,
     pub steps: Vec<StepResult>,
     pub duration: Duration,
@@ -51,6 +63,11 @@ pub struct FileResult {
     pub path: PathBuf,
     /// The text after `Feature:`.
     pub name: String,
+    /// The line of the `Feature:` keyword.
+    pub line: usize,
+    pub description: String,
+    /// The feature's own tags.
+    pub tags: Vec<ReportTag>,
     pub scenarios: Vec<ScenarioResult>,
 }
 
@@ -212,6 +229,11 @@ fn cucumber_json(results: &[FileResult]) -> serde_json::Value {
     use serde_json::json;
     let id = |name: &str| name.to_lowercase().replace(' ', "-");
     let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+    let tags = |tags: &[ReportTag]| -> Vec<_> {
+        tags.iter()
+            .map(|t| json!({"name": t.name, "line": t.line}))
+            .collect()
+    };
     let features: Vec<_> = results
         .iter()
         .map(|r| {
@@ -242,7 +264,9 @@ fn cucumber_json(results: &[FileResult]) -> serde_json::Value {
                         "id": format!("{};{}", id(&r.name), id(&s.name)),
                         "keyword": "Scenario",
                         "name": s.name,
+                        "description": s.description,
                         "line": s.line,
+                        "tags": tags(&s.tags),
                         "type": "scenario",
                         "steps": steps,
                     });
@@ -269,7 +293,9 @@ fn cucumber_json(results: &[FileResult]) -> serde_json::Value {
                 "id": id(&r.name),
                 "keyword": "Feature",
                 "name": r.name,
-                "line": 1,
+                "description": r.description,
+                "line": r.line,
+                "tags": tags(&r.tags),
                 "elements": elements,
             })
         })
@@ -285,9 +311,14 @@ mod tests {
         FileResult {
             path: PathBuf::from("features/auth.feature"),
             name: "auth".to_string(),
+            line: 1,
+            description: String::new(),
+            tags: Vec::new(),
             scenarios: vec![ScenarioResult {
                 name: "user login".to_string(),
                 line: 34,
+                description: String::new(),
+                tags: Vec::new(),
                 failure: failure.map(str::to_string),
                 steps: Vec::new(),
                 duration: Duration::from_millis(5),
@@ -324,9 +355,14 @@ mod tests {
         let r = FileResult {
             path: PathBuf::from("features/vars.feature"),
             name: "vars".to_string(),
+            line: 1,
+            description: String::new(),
+            tags: Vec::new(),
             scenarios: vec![ScenarioResult {
                 name: "shadowed global".to_string(),
                 line: 5,
+                description: String::new(),
+                tags: Vec::new(),
                 failure: None,
                 steps: vec![StepResult {
                     keyword: "When".to_string(),
@@ -351,10 +387,15 @@ mod tests {
         let r = FileResult {
             path: PathBuf::from("f.feature"),
             name: "f".into(),
+            line: 1,
+            description: String::new(),
+            tags: Vec::new(),
             scenarios: vec![
                 ScenarioResult {
                     name: "first".into(),
                     line: 3,
+                    description: String::new(),
+                    tags: Vec::new(),
                     failure: Some("reason A".into()),
                     steps: Vec::new(),
                     duration: Duration::ZERO,
@@ -362,6 +403,8 @@ mod tests {
                 ScenarioResult {
                     name: "second".into(),
                     line: 9,
+                    description: String::new(),
+                    tags: Vec::new(),
                     failure: Some("reason B".into()),
                     steps: Vec::new(),
                     duration: Duration::ZERO,
