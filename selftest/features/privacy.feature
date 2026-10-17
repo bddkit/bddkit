@@ -2,9 +2,9 @@ Feature: Secrets stay out of what bddkit prints and writes
   # Each scenario runs bddkit on selftest/fixtures/masking, whose scenarios all
   # fail on purpose, then reads back the console, the JUnit report and the event
   # stream. The secrets are the values in selftest/fixtures/masking/features.
-  # The stream is read for its failure texts: a literal in a step's own text
-  # reaches `step_started` before anything could register it (spec 7.11), which
-  # the last scenario pins.
+  # The stream is read for its failure texts and for the descriptions in
+  # `scenario_started`. A literal in a step's own text reaches `step_started`
+  # before anything could register it (spec 7.11), which the last scenario pins.
 
   Scenario Outline: by default a secret appears in none of the three outputs
     When I run the masking fixture "bddkit" with options ""
