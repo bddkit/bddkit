@@ -169,6 +169,7 @@ pub fn build_scenario(
                 name: sc.name.clone(),
                 line: sc.position.line,
                 example: None,
+                examples_line: None,
                 steps,
             })
         }

@@ -4,7 +4,7 @@ use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
 use crate::polling::{AttemptError, Polling};
 use crate::report::render_file;
-use crate::report::{FileResult, ScenarioResult, StepResult, StepStatus};
+use crate::report::{FileResult, ReportTag, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepId, StepKind, StepTarget, dispatch};
 use crate::unique::Generator;
 use crate::vars::{VarStack, interpolate, interpolate_with};
@@ -777,8 +777,9 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         ctx.options.clone(),
         ctx.artifacts.clone(),
     );
-    world.trace = Trace::new(ctx.events.clone(), &lf.path, &lf.feature.name);
-    world.set_redactor(ctx.redactor.fork());
+    let redactor = ctx.redactor.fork();
+    world.trace = Trace::new(ctx.events.clone(), &lf, redactor.clone());
+    world.set_redactor(redactor);
     if ctx.evidence {
         world.collect_evidence();
     }
@@ -788,7 +789,8 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     // would conflict with the later `&mut world` in the dispatch call.
     let generator = world.generator.clone();
 
-    for ScenarioRef { scenario: sc, rule } in lf.scenarios() {
+    for scenario_ref in lf.scenarios() {
+        let ScenarioRef { scenario: sc, rule } = scenario_ref;
         if !ctx.filter.matches(&sc.tags) {
             continue;
         }
@@ -827,7 +829,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 }
             };
 
-            world.trace.scenario_started(&ex.name, ex.line, ex.example);
+            world.trace.scenario_started(&lf, scenario_ref, &ex);
             let started = Instant::now();
             let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
             for step in background.iter().chain(ex.steps.iter()) {
@@ -880,6 +882,8 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             scenarios.push(ScenarioResult {
                 name: world.redactor.mask(&ex.name),
                 line: ex.line,
+                description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
+                tags: report_tags(&world.redactor, lf.effective_tags(scenario_ref)),
                 failure,
                 steps,
                 duration,
@@ -901,6 +905,10 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     // more with the file's final set.
     for scenario in &mut scenarios {
         scenario.name = world.redactor.mask(&scenario.name);
+        scenario.description = world.redactor.mask(&scenario.description);
+        for tag in &mut scenario.tags {
+            tag.name = world.redactor.mask(&tag.name);
+        }
         scenario.failure = scenario
             .failure
             .take()
@@ -915,9 +923,41 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         }
     }
 
+    file_result(&lf, &world.redactor, scenarios)
+}
+
+/// `(name, line)` pairs as a report shows them: with the `@`, and masked.
+fn report_tags<'a>(
+    redactor: &crate::privacy::Redactor,
+    tags: impl IntoIterator<Item = (&'a str, usize)>,
+) -> Vec<ReportTag> {
+    tags.into_iter()
+        .map(|(name, line)| ReportTag {
+            name: redactor.mask(&format!("@{name}")),
+            line,
+        })
+        .collect()
+}
+
+/// The file's result, with the feature's own description and tags masked by
+/// `redactor` as it stands now.
+fn file_result(
+    lf: &LoadedFeature,
+    redactor: &crate::privacy::Redactor,
+    scenarios: Vec<ScenarioResult>,
+) -> FileResult {
+    let line = lf.feature.position.line;
     FileResult {
         path: lf.path.clone(),
         name: lf.feature.name.clone(),
+        line,
+        description: redactor.mask(lf.description(line).unwrap_or("")),
+        tags: report_tags(
+            redactor,
+            lf.own_tags(line)
+                .iter()
+                .map(|(name, line)| (name.as_str(), *line)),
+        ),
         scenarios,
     }
 }
@@ -936,19 +976,21 @@ fn panicked_file(
     error: &tokio::task::JoinError,
     redactor: &crate::privacy::Redactor,
 ) -> FileResult {
-    FileResult {
-        path: lf.path.clone(),
-        name: lf.feature.name.clone(),
-        scenarios: vec![ScenarioResult {
+    file_result(
+        lf,
+        redactor,
+        vec![ScenarioResult {
             name: "file run aborted".to_string(),
             line: 0,
+            description: String::new(),
+            tags: Vec::new(),
             // The file's own set is gone with its `World`: the run-wide one is
             // what is left to mask a payload with.
             failure: Some(redactor.mask(&format!("panic while running the file: {error}"))),
             steps: Vec::new(),
             duration: std::time::Duration::ZERO,
         }],
-    }
+    )
 }
 
 /// A chain is the unit of scheduling. Its files run strictly one after
@@ -1086,7 +1128,6 @@ pub async fn run_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::parse_str;
     use crate::macros::MacroCatalog;
     use crate::unique::UniqueKind;
     use std::path::PathBuf;
@@ -1349,10 +1390,8 @@ mod tests {
     }
 
     async fn run_in(feature: &str, context: Arc<RunContext>) -> FileResult {
-        let loaded = LoadedFeature {
-            path: PathBuf::from("macro.feature"),
-            feature: parse_str(feature).unwrap(),
-        };
+        let loaded = LoadedFeature::from_text(PathBuf::from("macro.feature"), feature)
+            .expect("gherkin parses");
         run_file(Arc::new(loaded), context).await
     }
 
@@ -1360,13 +1399,11 @@ mod tests {
     /// compiler: if the file-run future stops being Send, the test won't build.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_run_can_be_spawned_onto_another_thread() {
-        let loaded = LoadedFeature {
-            path: PathBuf::from("spawnable.feature"),
-            feature: parse_str(
-                "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
-            )
-            .expect("gherkin parses"),
-        };
+        let loaded = LoadedFeature::from_text(
+            PathBuf::from("spawnable.feature"),
+            "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )
+        .expect("gherkin parses");
         let ctx = context(Registry::new().expect("built-in patterns compile"));
 
         let result = tokio::spawn(run_file(Arc::new(loaded), ctx))
@@ -1884,17 +1921,13 @@ Feature: eventual assertion
 
     mod chains {
         use super::super::*;
-        use crate::feature::parse_str;
         use std::path::PathBuf;
         use std::sync::Arc;
 
         pub(super) fn file(path: &str, tags: &str) -> Arc<LoadedFeature> {
             let src =
                 format!("{tags}Feature: f\n  Scenario: s\n    Then the response code is 200\n");
-            Arc::new(LoadedFeature {
-                path: PathBuf::from(path),
-                feature: parse_str(&src).expect("gherkin parses"),
-            })
+            Arc::new(LoadedFeature::from_text(PathBuf::from(path), &src).expect("gherkin parses"))
         }
 
         #[test]
@@ -2049,10 +2082,10 @@ Feature: eventual assertion
             .expect("an examples table")
             .rows
             .push(Vec::new());
-        let lf = Arc::new(LoadedFeature {
-            path: PathBuf::from("bad.feature"),
+        let lf = Arc::new(LoadedFeature::without_source(
+            PathBuf::from("bad.feature"),
             feature,
-        });
+        ));
         let mut ctx = Arc::into_inner(context(Registry::new().expect("builtin steps register")))
             .expect("one owner");
         ctx.events = Some(events.clone());

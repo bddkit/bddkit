@@ -3554,6 +3554,334 @@ async fn the_stream_opens_with_run_started_and_closes_with_run_finished() {
     assert_eq!(of_type(&stream, "run_finished").len(), 1);
 }
 
+#[test]
+fn feature_background_rule_and_examples_descriptions_reach_the_stream() {
+    let cfg = write_events_project(
+        "descriptions-file",
+        "",
+        &[
+            (
+                "a.feature",
+                "@ft1\n# c\n@ft2\nFeature: Described\n  What the file is for.\n\n    Indented line.\n\n  Background: Setup\n    Runs first.\n    Given set variable \"a\" to \"1\"\n\n  Scenario: s\n    Given set variable \"b\" to \"2\"\n",
+            ),
+            (
+                "b.feature",
+                "Feature: Bare\n  Background:\n    Given set variable \"a\" to \"1\"\n  Scenario: s\n    Given set variable \"b\" to \"2\"\n",
+            ),
+            (
+                "d.feature",
+                "Feature:\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+            ),
+            (
+                "c.feature",
+                "Feature: Ruled\n  Scenario: Loose\n    Given set variable \"a\" to \"1\"\n  Rule: Money\n    Everything about money.\n    Background: Prep\n      Prep text.\n      Given set variable \"a\" to \"1\"\n    Scenario Outline: pay\n      Given set variable \"n\" to \"<n>\"\n      Examples: Amounts\n        Rows of amounts.\n        | n |\n        | 1 |\n        | 2 |\n",
+            ),
+        ],
+        None,
+    );
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+
+    // A scenario inside a rule names the rule, its background and, for an
+    // outline row, the Examples block it came from.
+    let scenarios = of_type(&stream, "scenario_started");
+    let rows: Vec<_> = scenarios
+        .iter()
+        .filter(|e| e["name"].as_str().is_some_and(|n| n.starts_with("pay")))
+        .collect();
+    assert_eq!(rows.len(), 2, "{scenarios:?}");
+    for row in rows {
+        assert_eq!(
+            row["rule"],
+            serde_json::json!({
+                "line": 4, "name": "Money", "description": "Everything about money.",
+                "background": {"line": 6, "name": "Prep", "description": "Prep text."},
+            })
+        );
+        assert_eq!(
+            row["examples"],
+            serde_json::json!({"line": 11, "name": "Amounts", "description": "Rows of amounts."})
+        );
+    }
+    let loose = scenarios
+        .iter()
+        .find(|e| e["name"] == "Loose")
+        .expect("Loose");
+    assert!(
+        loose.get("rule").is_none() && loose.get("examples").is_none(),
+        "{loose}"
+    );
+
+    let started = of_type(&stream, "file_started");
+    let file = |name: &str| started.iter().find(|e| e["name"] == name).expect(name);
+
+    let described = file("Described");
+    assert_eq!(
+        described["description"],
+        "What the file is for.\n\n  Indented line."
+    );
+    assert_eq!(described["tags"], serde_json::json!(["@ft1", "@ft2"]));
+    assert_eq!(
+        described["background"],
+        serde_json::json!({"line": 9, "name": "Setup", "description": "Runs first."})
+    );
+
+    // An unnamed feature keeps the `name` it always had.
+    assert_eq!(file("")["name"], "");
+
+    // Nothing to say is nothing in the stream, except `tags`, always a list.
+    let bare = file("Bare");
+    assert_eq!(bare["tags"], serde_json::json!([]));
+    assert_eq!(bare["background"], serde_json::json!({"line": 2}));
+    assert!(bare.get("description").is_none(), "{bare}");
+}
+
+#[test]
+fn a_scenario_description_reaches_the_stream_with_its_paragraphs() {
+    let cfg = write_events_project(
+        "descriptions-scenario",
+        "",
+        &[(
+            "a.feature",
+            "Feature: f\n  Scenario: Described\n    Why this exists.\n\n      Indented bit.\n\n    Second paragraph.\n    Given set variable \"a\" to \"1\"\n  Scenario: Bare\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let (out, stream, _) = run_with_events(&cfg, &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let started = of_type(&stream, "scenario_started");
+    let by = |name: &str| started.iter().find(|e| e["name"] == name).expect(name);
+    assert_eq!(
+        by("Described")["description"],
+        "Why this exists.\n\n  Indented bit.\n\nSecond paragraph."
+    );
+    assert!(by("Bare").get("description").is_none(), "{}", by("Bare"));
+}
+
+#[test]
+fn scenario_started_carries_the_tags_the_filter_saw() {
+    let cfg = write_events_project(
+        "descriptions-tags",
+        "",
+        &[
+            (
+                "a.feature",
+                "@f @dup\nFeature: Tagged\n  Scenario: Untagged\n    Given set variable \"a\" to \"1\"\n  @r\n  Rule: R\n    @s @dup\n    Scenario: Picked\n      Given set variable \"a\" to \"1\"\n",
+            ),
+            (
+                "b.feature",
+                "Feature: Plain\n  Scenario: Plain one\n    Given set variable \"a\" to \"1\"\n",
+            ),
+        ],
+        None,
+    );
+
+    // Own tags, then the rule's, then the feature's, each name once.
+    let (_, stream, _) = run_with_events(&cfg, &["--tag", "s"]);
+    let started = of_type(&stream, "scenario_started");
+    assert_eq!(
+        started.len(),
+        1,
+        "only what the filter selected: {started:?}"
+    );
+    assert_eq!(
+        started[0]["tags"],
+        serde_json::json!(["@s", "@dup", "@r", "@f"])
+    );
+
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+    let started = of_type(&stream, "scenario_started");
+    let tags = |name: &str| started.iter().find(|e| e["name"] == name).expect(name)["tags"].clone();
+    assert_eq!(tags("Untagged"), serde_json::json!(["@f", "@dup"]));
+    assert_eq!(tags("Plain one"), serde_json::json!([]), "always present");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_secret_in_a_description_is_masked_in_the_stream() {
+    let base = common::spawn().await;
+    let feature = "Feature: Secrets\n  Bearer cfg-secret-value-77 is in the feature description.\n  Scenario: first\n    Given set variable \"secret_note\" to \"stream-note-4321\"\n  Scenario: second\n    Quotes stream-note-4321 and Bearer cfg-secret-value-77 here.\n    Given set variable \"x\" to \"1\"\n";
+    let cfg = masking_project(
+        "mask-description",
+        &base,
+        feature,
+        "      default_headers:\n        Authorization: Bearer cfg-secret-value-77\n",
+        "",
+    );
+    let events = cfg.with_file_name("events.ndjson");
+    let (code, _, stderr) = run_masking(&cfg, &["--events", events.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 0, "{stderr}");
+
+    let text = std::fs::read_to_string(&events).expect("stream");
+    assert!(!text.contains("cfg-secret-value-77"), "{text}");
+    let stream = read_stream(&events);
+    // Known from the config: hidden before the first scenario runs.
+    assert_eq!(
+        of_type(&stream, "file_started")[0]["description"],
+        "*** is in the feature description."
+    );
+    // Learned in scenario one, quoted in scenario two: the file's set is shared.
+    assert_eq!(
+        of_type(&stream, "scenario_started")[1]["description"],
+        "Quotes *** and *** here."
+    );
+}
+
+#[test]
+fn the_cucumber_json_report_carries_descriptions_tags_and_the_feature_line() {
+    let cfg = write_events_project(
+        "descriptions-json",
+        "",
+        &[(
+            "a.feature",
+            "# language: en\n@ft @dup\nFeature: Reported\n  Feature text.\n  Scenario: Described\n    What it is for.\n    Given set variable \"a\" to \"1\"\n  @own @dup\n  Scenario Outline: Row\n    Outline text.\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 1 |\n      | 2 |\n  Scenario: Bare\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let json = cfg.with_file_name("cucumber.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--cucumber-json")
+        .arg(&json)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("report")).expect("json");
+
+    let feature = &report[0];
+    assert_eq!(feature["line"], 3, "the keyword line, not 1");
+    assert_eq!(feature["description"], "Feature text.");
+    let ft = serde_json::json!([{"name": "@ft", "line": 2}, {"name": "@dup", "line": 2}]);
+    assert_eq!(feature["tags"], ft);
+
+    let elements = feature["elements"].as_array().expect("elements");
+    let by = |prefix: &str| -> Vec<&Value> {
+        elements
+            .iter()
+            .filter(|e| e["name"].as_str().is_some_and(|n| n.starts_with(prefix)))
+            .collect()
+    };
+    assert_eq!(by("Described")[0]["description"], "What it is for.");
+    assert_eq!(
+        by("Described")[0]["tags"],
+        ft,
+        "inherited, with their own lines"
+    );
+
+    // Every row of an outline carries the outline's text and tags; a name
+    // written at two levels is listed once, on the line of the closest.
+    let rows = by("Row");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["description"], "Outline text.");
+        assert_eq!(
+            row["tags"],
+            serde_json::json!([
+                {"name": "@own", "line": 8}, {"name": "@dup", "line": 8}, {"name": "@ft", "line": 2}
+            ])
+        );
+    }
+
+    // Cucumber's own formatter writes "" for no description.
+    assert_eq!(by("Bare")[0]["description"], "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_description_is_masked_in_the_json_report_with_the_final_set_but_not_rewritten_in_the_stream()
+ {
+    let base = common::spawn().await;
+    let feature = "Feature: Late\n  Scenario: first\n    Quotes late-value-98765 before it is known.\n    Given set variable \"x\" to \"1\"\n  Scenario: second\n    Given set variable \"secret_late\" to \"late-value-98765\"\n";
+    let cfg = masking_project("mask-description-json", &base, feature, "", "");
+    let json = cfg.with_file_name("cucumber.json");
+    let events = cfg.with_file_name("events.ndjson");
+    let (code, _, stderr) = run_masking(
+        &cfg,
+        &[
+            "--cucumber-json",
+            json.to_str().expect("utf-8"),
+            "--events",
+            events.to_str().expect("utf-8"),
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{stderr}");
+
+    let report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).expect("report")).expect("json");
+    assert_eq!(
+        report[0]["elements"][0]["description"],
+        "Quotes *** before it is known."
+    );
+    // The stream is never rewritten: the value was not a secret yet.
+    assert_eq!(
+        of_type(&read_stream(&events), "scenario_started")[0]["description"],
+        "Quotes late-value-98765 before it is known."
+    );
+}
+
+#[test]
+fn run_started_carries_the_config_and_the_selection() {
+    let cfg = write_events_project(
+        "run-started-selection",
+        "",
+        &[(
+            "a.feature",
+            "Feature: f\n  @smoke\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let features = cfg.with_file_name("features");
+    let features_text = path_text(&features);
+
+    // Named on the command line, with a selection.
+    let (out, stream, _) =
+        run_with_events(&cfg, &["--tag", "smoke", "--tag", "@x", &features_text]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(stream[0]["config"], path_text(&cfg));
+    assert_eq!(stream[0]["config_source"], "flag");
+    assert_eq!(
+        stream[0]["selection"],
+        serde_json::json!({"tags": ["smoke", "@x"], "paths": [features_text]}),
+        "the values as typed"
+    );
+
+    // Nothing selected: both lists are there, empty.
+    let (_, stream, _) = run_with_events(&cfg, &[]);
+    assert_eq!(
+        stream[0]["selection"],
+        serde_json::json!({"tags": [], "paths": []})
+    );
+
+    // Named by the environment, and found in the working directory.
+    let events = cfg.with_file_name("events.ndjson");
+    let run = |dir: &std::path::Path, env: Option<&std::path::Path>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command
+            .current_dir(dir)
+            .env_remove("BDDKIT_CONFIG")
+            .env_remove("BDDKIT_ARTIFACTS_DIR")
+            .args(["run", "--events"])
+            .arg(&events);
+        if let Some(env) = env {
+            command.env("BDDKIT_CONFIG", env);
+        }
+        assert_eq!(command.output().expect("run bddkit").status.code(), Some(0));
+        read_stream(&events).remove(0)
+    };
+    let first = run(&std::env::temp_dir(), Some(&cfg));
+    assert_eq!(first["config_source"], "env");
+    assert_eq!(first["config"], path_text(&cfg));
+
+    std::fs::copy(&cfg, cfg.with_file_name("bddkit.yaml")).expect("copy config");
+    let first = run(cfg.parent().expect("dir"), None);
+    assert_eq!(first["config_source"], "discovered");
+    assert_eq!(
+        first["config"], "./bddkit.yaml",
+        "the path as it was resolved"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_files_running_together_interleave_in_the_stream() {
     // The barrier opens only when both requests are in flight, so both
