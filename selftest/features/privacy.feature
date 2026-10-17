@@ -62,6 +62,14 @@ Feature: Secrets stay out of what bddkit prints and writes
     And I run the command "grep step_started selftest/out/events.ndjson"
     Then the command output contains "pin-secret-value-1"
 
+  Scenario: a secret quoted in a description is hidden in the stream
+    # `scenario_started` carries the description; the config named this value
+    # before any file ran, so the stream never holds it.
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "grep scenario_started selftest/out/events.ndjson"
+    Then the command output contains "Its description quotes *** too."
+    And the command output does not contain "config-secret-value-6"
+
   Scenario: --evidence writes the resolved slots and still hides the secret
     # `vars` shows what a slot resolved to; the one under a privacy word is `***`.
     When I run the masking fixture "bddkit" with options "--evidence"

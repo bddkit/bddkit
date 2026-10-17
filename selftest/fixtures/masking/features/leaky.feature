@@ -21,6 +21,7 @@ Feature: Leaks on purpose
     Then the response code is 200
 
   Scenario: a secret that only the config names
+    Its description quotes config-secret-value-6 too.
     Given set variable "note" to "config-secret-value-6"
     Then variable "note" should be equal to "nothing"
 
