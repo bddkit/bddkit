@@ -6155,12 +6155,12 @@ fn a_serial_tag_on_a_rule_schedules_the_file() {
             ),
             (
                 "features/c.feature",
-                "@serial(x)\nFeature: c\n  Rule: r\n    @serial(y)\n    Scenario: s\n      Given set variable \"v\" to \"1\"\n",
+                "@serial(x)\nFeature: c\n  @serial(y)\n  Rule: r\n    Scenario: s\n      Given set variable \"v\" to \"1\"\n",
             ),
         ],
     );
-    // Unlike a scenario-level tag, a rule-level one used to be invisible:
-    // c.feature is now in two chains, which is a startup error.
+    // c.feature carries @serial(x) on the feature and @serial(y) on its Rule:
+    // line, so it is in two chains, which is a startup error.
     let (code, _, stderr) = run_bddkit_in("run", &dir);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(stderr.contains("two chains"), "{stderr}");
@@ -6197,4 +6197,78 @@ fn an_included_rule_scenario_runs_its_rule_background() {
     );
     let (code, stdout, stderr) = run_bddkit_in("run", &dir);
     assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+}
+
+#[test]
+fn a_rule_background_is_not_checked_when_no_scenario_of_the_rule_is_selected() {
+    let dir = write_rule_project(
+        "rule-background-filtered",
+        &[(
+            "features/r.feature",
+            "Feature: f
+  @picked
+  Scenario: outside
+    Given set variable \"x\" to \"1\"
+
+  Rule: unselected
+    Background:
+      Given I frobnicate
+
+    Scenario: inside
+      Given set variable \"y\" to \"1\"
+",
+        )],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml", "--tag", "picked"])
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("scenarios: 1"), "{stdout}");
+}
+
+#[test]
+fn a_malformed_priority_on_a_rule_without_scenarios_fails_the_startup() {
+    let dir = write_rule_project(
+        "rule-empty-priority",
+        &[(
+            "features/r.feature",
+            "Feature: f
+  Scenario: outside
+    Given set variable \"x\" to \"1\"
+
+  @priority(high)
+  Rule: empty
+",
+        )],
+    );
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(code, Some(2), "{stdout}\n{stderr}");
+    assert!(stderr.contains("@priority(high)"), "{stderr}");
+}
+
+#[test]
+fn a_scenario_outline_inside_a_rule_runs_every_example_row() {
+    let dir = write_rule_project(
+        "rule-outline",
+        &[(
+            "features/r.feature",
+            "Feature: f
+  Rule: r
+    Scenario Outline: sets <v>
+      Given set variable \"v\" to \"<v>\"
+      Then variable \"v\" should be equal to \"<v>\"
+
+      Examples:
+        | v |
+        | a |
+        | b |
+",
+        )],
+    );
+    let (code, stdout, stderr) = run_bddkit_in("run", &dir);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("scenarios: 2"), "{stdout}");
 }
