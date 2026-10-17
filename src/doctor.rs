@@ -516,7 +516,14 @@ fn unmarked_names(
             .background
             .iter()
             .flat_map(|background| background.steps.iter())
-            .chain(lf.feature.scenarios.iter().flat_map(|sc| sc.steps.iter()));
+            .chain(
+                lf.feature
+                    .rules
+                    .iter()
+                    .filter_map(|rule| rule.background.as_ref())
+                    .flat_map(|background| background.steps.iter()),
+            )
+            .chain(lf.scenarios().flat_map(|sc| sc.scenario.steps.iter()));
         for step in steps {
             texts.push(&step.value);
             texts.extend(step.docstring.as_deref());
