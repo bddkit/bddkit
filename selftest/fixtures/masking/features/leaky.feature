@@ -29,3 +29,14 @@ Feature: Leaks on purpose
     Given set variable "secret_pin" to "pin-secret-value-1"
     And set variable "copy" to "<<secret_pin>>"
     Then variable "copy" should be equal to "nothing"
+
+  Scenario: a secret in annotations
+    # The config registers this value before the scenario starts.
+    # This note quotes config-secret-value-6.
+
+    # Disabled because config-secret-value-6 is private.
+    # Then variable "secret_pin" should be equal to "config-secret-value-6"
+    # This step note quotes config-secret-value-6.
+    Given set variable "x" to "1"
+    Then variable "x" should be equal to "2"
+    # Closing note quotes config-secret-value-6.

@@ -263,6 +263,41 @@ Under `concurrency` greater than 1 this output is not part of a file's atomic re
 
 Write what a scenario is for as its description, the free text between the `Scenario:` line and its first step. The same goes for `Feature:`, `Background:`, `Rule:` and `Examples:`. bddkit keeps it as written, with its paragraphs and relative indentation, and puts it in the event stream and the Cucumber JSON report (`#` comment lines are left out). A description line cannot start with a step keyword (`Given`, `When`, `Then`, `And`, `But`, `*`) or `@`: Gherkin reads such a line as the next step or tag, so "And then the user…" becomes an unknown step and the run exits with `2`.
 
+### Comments, disabled steps and sections
+
+The event stream keeps the notes and structure written with `#` in a feature file:
+
+1. A comment block is consecutive `#` lines with no blank line between them.
+2. A block directly above a step, with no blank line between, is that step's comment.
+3. A commented line is a disabled step when it starts with a step keyword of the file's language and its remaining text matches a loaded step, macro or plugin. A keyword alone is not enough: `# Then we wait for the queue` remains a comment if the registry has no such step.
+4. A block directly above a disabled step is that disabled step's comment.
+5. A block followed by a blank line starts a section. Its first non-empty line is the title and the remaining lines are its note; it groups the following items until the next section or the end of that scenario or Background.
+6. A block after the last item, with nothing below it, is a closing section, shown by a report as an end note.
+
+```gherkin
+Scenario: refund a paid order
+  The customer pays, then asks for the money back.
+
+  # Setup
+  # An order paid by card.
+
+  Given I have "orders" with "status: paid"
+  # The service needs a moment to settle the payment.
+  When I request "/api/v1/orders/<<id>>/refund" using HTTP POST
+  # Disabled until #123 is fixed: the status comes back as 202.
+  # Then the response code is 200
+
+  # Checks
+
+  Then I should have "refunds" with "order_id: <<id>>"
+```
+
+Here Setup and Checks are sections; the note above the request belongs to that step, and the disabled response assertion has its reason attached. Disabled steps never run, interpolate runtime variables or count toward step numbering. Outline placeholders in disabled steps are replaced before matching; prose comments and section text stay as written. Closing annotations after an Examples table repeat only for rows from that table. Comments and sections repeat with their Background or outline row and stay at their own include level. Sections and disabled steps after a failure are still emitted among the skipped steps.
+
+Each comment line loses its `#` and one following space; a lone `#` keeps a paragraph break, with empty lines trimmed from the block's edges. Hashes inside docstrings or table cells remain content. A block directly above a Feature, Scenario, Background, Rule or Examples keyword (or its tags) is that element's comment. The file's `# language:` directive is never comment text.
+
+These annotations reach the event stream as `comment`, `step_disabled` and `section`, with the same secret masking as other text. JUnit and Cucumber JSON keep their existing output. `doctor` counts disabled steps and lists `file:line` locations for commented lines that start with a step keyword but match no loaded step, without failing the check. A plugin that is not loaded makes its commented steps ordinary comments.
+
 ### Rules
 
 `Rule:` blocks are supported. A scenario inside a rule runs after the feature's own scenarios, in file order, and runs the feature's Background first and then the rule's own Background. It carries its own tags, its rule's and its feature's, so `--tag` sees all three, and a `@serial` or `@priority` tag on a rule schedules the whole file, as one on a scenario does. `I include` can name a scenario inside a rule, and an include with no name counts the scenarios inside rules toward its "exactly one".

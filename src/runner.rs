@@ -172,7 +172,7 @@ fn execute_step<'a>(
     source: &'a std::path::Path,
     generator: &'a Generator,
     depth: usize,
-    origin: Origin,
+    origin: Origin<'a>,
 ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
         let started = Instant::now();
@@ -298,6 +298,7 @@ async fn run_step(
                 let origin = Origin {
                     line: definition.line,
                     index: Some(index),
+                    comment: None,
                 };
                 if let Err(error) = execute_step(
                     world,
@@ -579,11 +580,31 @@ fn run_include<'a>(
             world.vars.set(name, value.clone());
         }
 
+        let annotations =
+            crate::annotate::scenario(&included, ScenarioRef { scenario, rule }, &expanded, reg);
         let mut run_result: Result<(), String> = Ok(());
-        for step in background.iter().chain(expanded.steps.iter()) {
+        for item in annotations.execution(background.iter().chain(expanded.steps.iter())) {
+            let (step, comment) = match item {
+                crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
+                crate::annotate::ExecutionItem::Annotation(item) => {
+                    world.trace.annotation(item, &resolved, reg);
+                    continue;
+                }
+            };
+            if run_result.is_err() {
+                world.trace.step_skipped(
+                    &step.keyword,
+                    &reg.display_text(&step.text, &world.redactor),
+                    step.line,
+                    &resolved,
+                    comment,
+                );
+                continue;
+            }
             let origin = Origin {
                 line: step.line,
                 index: None,
+                comment,
             };
             if let Err(e) =
                 execute_step(world, reg, step, &resolved, generator, depth + 1, origin).await
@@ -596,7 +617,6 @@ fn run_include<'a>(
                     step.line,
                     reg.display_text(&step.text, &world.redactor)
                 ));
-                break;
             }
         }
 
@@ -832,19 +852,30 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             world.trace.scenario_started(&lf, scenario_ref, &ex);
             let started = Instant::now();
             let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
-            for step in background.iter().chain(ex.steps.iter()) {
+            let annotations = crate::annotate::scenario(&lf, scenario_ref, &ex, &ctx.reg);
+            for item in annotations.execution(background.iter().chain(ex.steps.iter())) {
+                let (step, comment) = match item {
+                    crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
+                    crate::annotate::ExecutionItem::Annotation(item) => {
+                        world.trace.annotation(item, &lf.path, &ctx.reg);
+                        continue;
+                    }
+                };
                 let step_started = Instant::now();
                 // Everything after a failure is skipped, not run: the report
                 // lists every step of the scenario either way.
                 let origin = Origin {
                     line: step.line,
                     index: None,
+                    comment,
                 };
                 let status = if failure.is_some() {
                     world.trace.step_skipped(
                         &step.keyword,
                         &ctx.reg.display_text(&step.text, &world.redactor),
                         step.line,
+                        &lf.path,
+                        comment,
                     );
                     StepStatus::Skipped
                 } else if let Err(e) =
@@ -1240,6 +1271,7 @@ mod tests {
         let origin = Origin {
             line: 1,
             index: None,
+            comment: None,
         };
         execute_step(world, reg, &step, source, &generator, 0, origin).await
     }
@@ -1393,6 +1425,22 @@ mod tests {
         let loaded = LoadedFeature::from_text(PathBuf::from("macro.feature"), feature)
             .expect("gherkin parses");
         run_file(Arc::new(loaded), context).await
+    }
+
+    #[tokio::test]
+    async fn a_missing_annotation_scan_never_skips_a_parsed_step() {
+        let mut loaded = LoadedFeature::from_text(
+            PathBuf::from("without-annotations.feature"),
+            "Feature: f\n  Background:\n    Given set variable \"x\" to \"1\"\n  Scenario: s\n    Then variable \"x\" should be equal to \"2\"\n",
+        ).unwrap();
+        loaded.annotations = crate::annotate::Source::default();
+        let result = run_file(Arc::new(loaded), context(Registry::new().unwrap())).await;
+        assert_eq!(
+            result.failed(),
+            1,
+            "an annotation scan cannot decide whether parsed steps execute"
+        );
+        assert_eq!(result.scenarios[0].steps.len(), 2);
     }
 
     /// `tokio::spawn` requires `Send + 'static`. This is checked by the

@@ -25,6 +25,8 @@ pub struct ExpandedScenario {
     /// scenario. Rows of different blocks of one outline share `line`.
     pub examples_line: Option<usize>,
     pub steps: Vec<ExpandedStep>,
+    /// Outline replacements, also applied to commented steps before matching.
+    pub substitutions: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -33,6 +35,7 @@ pub struct LoadedFeature {
     pub feature: Feature,
     /// Descriptions as written, by the line of their element's keyword.
     descriptions: BTreeMap<usize, String>,
+    pub annotations: crate::annotate::Source,
     /// Each element's own tags as `(name without "@", line)`, by keyword line.
     tags: BTreeMap<usize, Vec<(String, usize)>>,
 }
@@ -187,14 +190,10 @@ pub struct ScenarioRef<'a> {
 }
 
 /// An element of a feature that gherkin gives a keyword line to.
-struct Element<'a> {
+pub(crate) struct Element<'a> {
     /// `feature`, `background`, `rule`, `rule background`, `scenario` or `examples`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "named in the agreement tests' messages")
-    )]
-    kind: &'static str,
-    line: usize,
+    pub(crate) kind: &'static str,
+    pub(crate) line: usize,
     /// gherkin's own description, with what it loses.
     #[cfg_attr(
         not(test),
@@ -207,16 +206,18 @@ struct Element<'a> {
 
 /// Every element in file order, and the lines of what hangs below them (steps and
 /// `Examples` tables) — the one walk of the tree both source scanners start from.
-struct Walk<'a> {
-    elements: Vec<Element<'a>>,
-    below: Vec<usize>,
+pub(crate) struct Walk<'a> {
+    pub(crate) elements: Vec<Element<'a>>,
+    pub(crate) below: Vec<usize>,
+    pub(crate) tables: Vec<&'a gherkin::Table>,
 }
 
 impl<'a> Walk<'a> {
-    fn new(f: &'a Feature) -> Self {
+    pub(crate) fn new(f: &'a Feature) -> Self {
         let mut walk = Walk {
             elements: Vec::new(),
             below: Vec::new(),
+            tables: Vec::new(),
         };
         walk.push("feature", f.position.line, &f.description, Some(&f.tags));
         if let Some(bg) = &f.background {
@@ -261,6 +262,8 @@ impl<'a> Walk<'a> {
     fn background(&mut self, kind: &'static str, bg: &'a gherkin::Background) {
         self.push(kind, bg.position.line, &bg.description, None);
         self.below.extend(bg.steps.iter().map(|s| s.position.line));
+        self.tables
+            .extend(bg.steps.iter().filter_map(|s| s.table.as_ref()));
     }
 
     fn scenario(&mut self, sc: &'a gherkin::Scenario) {
@@ -271,6 +274,8 @@ impl<'a> Walk<'a> {
             Some(&sc.tags),
         );
         self.below.extend(sc.steps.iter().map(|s| s.position.line));
+        self.tables
+            .extend(sc.steps.iter().filter_map(|s| s.table.as_ref()));
         for ex in &sc.examples {
             self.push(
                 "examples",
@@ -279,6 +284,7 @@ impl<'a> Walk<'a> {
                 Some(&ex.tags),
             );
             self.below.extend(ex.table.iter().map(|t| t.position.line));
+            self.tables.extend(ex.table.iter());
         }
     }
 }
@@ -330,6 +336,7 @@ impl LoadedFeature {
             path,
             feature,
             descriptions: BTreeMap::new(),
+            annotations: crate::annotate::Source::default(),
             tags: BTreeMap::new(),
         }
     }
@@ -354,10 +361,12 @@ impl LoadedFeature {
         }
         let descriptions = scan_descriptions(text, &feature);
         let tags = scan_tags(text, &feature);
+        let annotations = crate::annotate::Source::scan(text, &feature);
         Ok(LoadedFeature {
             path,
             feature,
             descriptions,
+            annotations,
             tags,
         })
     }
@@ -505,6 +514,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
             example: None,
             examples_line: None,
             steps: base,
+            substitutions: Vec::new(),
         }];
     }
     let mut out = Vec::new();
@@ -534,6 +544,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
                 example: Some(out.len()),
                 examples_line: Some(ex.position.line),
                 steps,
+                substitutions: keys.iter().cloned().zip(row.iter().cloned()).collect(),
             });
         }
     }

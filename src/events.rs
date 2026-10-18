@@ -197,10 +197,11 @@ fn micros(duration: Duration) -> u64 {
 
 /// Where a step's text is written, when it is not where its caller is.
 #[derive(Clone, Copy)]
-pub struct Origin {
+pub struct Origin<'a> {
     pub line: usize,
     /// Position in a macro body, which carries no line of its own.
     pub index: Option<usize>,
+    pub comment: Option<&'a str>,
 }
 
 /// The per-file half of the emitter: the file's name, the scenario ordinal, the
@@ -274,11 +275,17 @@ impl Trace {
             "description",
             lf.description(feature.position.line).unwrap_or(""),
         );
+        trace.put(
+            &mut fields,
+            "comment",
+            lf.annotations.comment(feature.position.line).unwrap_or(""),
+        );
         if let Some(background) = &feature.background {
             fields["background"] = trace.element(
                 background.position.line,
                 &background.name,
                 lf.description(background.position.line).unwrap_or(""),
+                lf.annotations.comment(background.position.line),
             );
         }
         events.emit("file_started", fields);
@@ -294,11 +301,12 @@ impl Trace {
         }
     }
 
-    /// `{"line", "name", "description"}` of a background, rule or examples block.
-    fn element(&self, line: usize, name: &str, description: &str) -> Value {
+    /// Metadata of a Background, Rule or Examples block; empty text is omitted.
+    fn element(&self, line: usize, name: &str, description: &str, comment: Option<&str>) -> Value {
         let mut element = json!({"line": line});
         self.put(&mut element, "name", name);
         self.put(&mut element, "description", description);
+        self.put(&mut element, "comment", comment.unwrap_or(""));
         element
     }
 
@@ -333,17 +341,24 @@ impl Trace {
             "description",
             lf.description(ex.line).unwrap_or(""),
         );
+        self.put(
+            &mut fields,
+            "comment",
+            lf.annotations.comment(ex.line).unwrap_or(""),
+        );
         if let Some(rule) = sc.rule {
             let mut element = self.element(
                 rule.position.line,
                 &rule.name,
                 lf.description(rule.position.line).unwrap_or(""),
+                lf.annotations.comment(rule.position.line),
             );
             if let Some(bg) = &rule.background {
                 element["background"] = self.element(
                     bg.position.line,
                     &bg.name,
                     lf.description(bg.position.line).unwrap_or(""),
+                    lf.annotations.comment(bg.position.line),
                 );
             }
             fields["rule"] = element;
@@ -360,6 +375,7 @@ impl Trace {
                 line,
                 block.name.as_deref().unwrap_or(""),
                 lf.description(line).unwrap_or(""),
+                lf.annotations.comment(line),
             );
         }
         events.emit("scenario_started", fields);
@@ -386,7 +402,7 @@ impl Trace {
         &mut self,
         keyword: &str,
         text: &str,
-        origin: Origin,
+        origin: Origin<'_>,
         source: &Path,
         vars: Vec<Value>,
     ) {
@@ -407,6 +423,7 @@ impl Trace {
         if self.evidence_on() && !vars.is_empty() {
             fields["vars"] = vars.into();
         }
+        self.put(&mut fields, "comment", origin.comment.unwrap_or(""));
         self.open.push(step);
         events.emit("step_started", fields);
     }
@@ -427,17 +444,67 @@ impl Trace {
         );
     }
 
-    pub fn step_skipped(&mut self, keyword: &str, text: &str, line: usize) {
+    pub fn step_skipped(
+        &mut self,
+        keyword: &str,
+        text: &str,
+        line: usize,
+        source: &Path,
+        comment: Option<&str>,
+    ) {
         let Some(events) = &self.events else { return };
         let step = self.steps;
         self.steps += 1;
-        events.emit(
-            "step_skipped",
-            json!({
-                "file": self.file, "scenario": self.scenario, "step": step,
-                "keyword": keyword, "text": self.redactor.mask(text), "line": line,
-            }),
-        );
+        let mut fields = self.location(line, source);
+        fields["step"] = step.into();
+        fields["keyword"] = self.redactor.mask(keyword).into();
+        fields["text"] = self.redactor.mask(text).into();
+        self.put(&mut fields, "comment", comment.unwrap_or(""));
+        events.emit("step_skipped", fields);
+    }
+
+    fn location(&self, line: usize, source: &Path) -> Value {
+        let mut fields = json!({"file": self.file, "scenario": self.scenario, "line": line});
+        if let Some(parent) = self.open.last() {
+            fields["parent"] = (*parent).into();
+            fields["source"] = self.redactor.mask(&display_path(source)).into();
+        }
+        fields
+    }
+
+    /// Annotations share the enclosing include's location but never consume a
+    /// step number or become the parent of executable steps.
+    pub fn annotation(
+        &self,
+        item: &crate::annotate::Item,
+        source: &Path,
+        registry: &crate::steps::Registry,
+    ) {
+        let Some(events) = &self.events else { return };
+        match item {
+            crate::annotate::Item::Disabled {
+                line,
+                keyword,
+                text,
+                comment,
+            } => {
+                let mut fields = self.location(*line, source);
+                fields["keyword"] = self.redactor.mask(keyword).into();
+                fields["text"] = self
+                    .redactor
+                    .mask(&registry.display_text(text, &self.redactor))
+                    .into();
+                self.put(&mut fields, "comment", comment);
+                events.emit("step_disabled", fields);
+            }
+            crate::annotate::Item::Section { line, title, note } => {
+                let mut fields = self.location(*line, source);
+                fields["title"] = self.redactor.mask(title).into();
+                self.put(&mut fields, "note", note);
+                events.emit("section", fields);
+            }
+            crate::annotate::Item::Step { .. } => {}
+        }
     }
 }
 
