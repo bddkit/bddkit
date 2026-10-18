@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/bddkit/bddkit/compare/v0.3.1...v0.3.2) - 2026-10-18
+
+### Added
+
+- bddkit report renders an event stream as one self-contained HTML page (bddkit/bddkit#110)
+- step comments, disabled steps and sections in the event stream (bddkit/bddkit#109)
+- the Cucumber JSON report carries descriptions, tags and the feature's line (bddkit/bddkit#108)
+- descriptions, tags, rule and selection in the event stream (bddkit/bddkit#108)
+- bddkit plugin prune removes plugin versions no lock references (bddkit/bddkit#124)
+- bddkit upgrade moves the binary and its plugins together, with rollback (bddkit/bddkit#123)
+- daily job that keeps the plugin index's ABI map current (bddkit/bddkit#122)
+
+### Fixed
+
+- run, validate and include scenarios written inside Rule: blocks (bddkit/bddkit#107)
+
+### Other
+
+- the report command, and a self-test report on every CI run (bddkit/bddkit#110)
+- move report.rs to report/mod.rs (bddkit/bddkit#110)
+- update the plugin index's ABI map
+- the new event stream and report fields (bddkit/bddkit#108)
+- read descriptions and tag lines from the source text (bddkit/bddkit#108)
+
 ## [0.3.1](https://github.com/bddkit/bddkit/compare/v0.3.0...v0.3.1) - 2026-10-16
 
 ### Fixed
