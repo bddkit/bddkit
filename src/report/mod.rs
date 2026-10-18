@@ -1,3 +1,7 @@
+pub mod command;
+pub mod html;
+pub mod model;
+
 use crate::feature::display_path;
 use anyhow::{Context, Result};
 use std::fmt::Write as _;
