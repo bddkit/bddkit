@@ -177,7 +177,22 @@ jobs:
         run: |
           cargo build --locked
           ./target/debug/bddkit plugin install exec
-          ./target/debug/bddkit run --config selftest/bddkit.yaml
+          ./target/debug/bddkit run --config selftest/bddkit.yaml --events "$RUNNER_TEMP/selftest/run.ndjson" --evidence --artifacts-dir "$RUNNER_TEMP/selftest/artifacts"
+
+      # The stream above, as the page a person opens after a red build. Kept
+      # outside the checkout like the JUnit files, and uploaded with its
+      # artifacts so the report's links still work once it is downloaded.
+      - name: Self-test report
+        if: always()
+        run: ./target/debug/bddkit report "$RUNNER_TEMP/selftest/run.ndjson"
+
+      - name: Upload the self-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-report
+          path: ${{ runner.temp }}/selftest
+          if-no-files-found: ignore
 
       # The JUnit files above, rendered on the job's summary page and, for a
       # PR, as annotations at the failing scenario — which is also the live

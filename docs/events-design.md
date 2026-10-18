@@ -15,7 +15,7 @@
 **Goals**
 
 - **G1 Live.** A consumer learns that a step started or finished without waiting for its file to end.
-- **G2 Complete.** The stream alone is enough to rebuild what the reports contain.
+- **G2 Complete.** The stream alone is enough to rebuild what the reports contain. Its first consumer is `bddkit report`, which folds the stream into `report::model`; the HTML report renders that model.
 - **G3 Crash-tolerant.** Any prefix of the stream is line-valid; a run that dies leaves everything written so far readable.
 - **G4 Free when off.** Without the flags: no file, no channel, no allocation per step, and console output and both reports unchanged except where masking (section 7) deliberately changes them.
 - **G5 Additive.** A new event type or field must not break an older consumer.
