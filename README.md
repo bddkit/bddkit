@@ -123,7 +123,7 @@ A Ctrl-C, the polite "please stop" signal a CI job's cancellation sends, or a cl
 
 ### Reports for CI
 
-`--junit reports/junit.xml` writes JUnit XML — one `<testsuite>` per feature file, one `<testcase>` per scenario, the steps with their status and timing in `<system-out>`, which is what Jenkins, GitLab and GitHub test summaries read. `--cucumber-json reports/cucumber.json` writes Cucumber JSON in the shape cucumber-html-reporter and Allure accept: features with `elements`, elements with `steps`, each step with `keyword`, `name`, `line` and a `result` of `status`, `duration` (nanoseconds) and `error_message`. Both flags are optional and independent, and both are properties of the run, not of the suite — the config never learns them. Console output is unchanged.
+`--junit reports/junit.xml` writes JUnit XML — one `<testsuite>` per feature file, one `<testcase>` per scenario, the steps with their status and timing in `<system-out>`, which is what Jenkins, GitLab and GitHub test summaries read. `--cucumber-json reports/cucumber.json` writes Cucumber JSON in the shape cucumber-html-reporter and Allure accept: features with `elements`, elements with `steps`, each step with `keyword`, `name`, `line` and a `result` of `status`, `duration` (nanoseconds) and `error_message`. Features and scenarios also carry `description` (`""` when there is none) and `tags` as `{"name": "@smoke", "line": 3}`, a scenario's being the ones `--tag` sees; a feature's `line` is its `Feature:` line. Both flags are optional and independent, and both are properties of the run, not of the suite — the config never learns them. Console output is unchanged.
 
 Step text is the raw feature text, never interpolated, so two runs' reports differ only in results and timings. A failure carries the same text the console prints — the step error plus the HTTP exchange — and the XML stays well-formed whatever that text contains (a `]]>`, a control character, the NUL bytes of the `<<null>>` sentinel become U+FFFD). Scenarios a `--tag` filtered out and files never started under `--fail-fast` are absent, not skipped; the totals count what ran. A macro call is one step. A file that panicked appears as its one synthetic failed scenario.
 
@@ -258,6 +258,10 @@ And Print table:
 ```
 
 Under `concurrency` greater than 1 this output is not part of a file's atomic report, so two files' lines can interleave; run with `concurrency: 1` while debugging.
+
+### Describing a scenario
+
+Write what a scenario is for as its description, the free text between the `Scenario:` line and its first step. The same goes for `Feature:`, `Background:`, `Rule:` and `Examples:`. bddkit keeps it as written, with its paragraphs and relative indentation, and puts it in the event stream and the Cucumber JSON report (`#` comment lines are left out). A description line cannot start with a step keyword (`Given`, `When`, `Then`, `And`, `But`, `*`) or `@`: Gherkin reads such a line as the next step or tag, so "And then the user…" becomes an unknown step and the run exits with `2`.
 
 ### Rules
 

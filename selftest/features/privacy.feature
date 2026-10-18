@@ -2,9 +2,9 @@ Feature: Secrets stay out of what bddkit prints and writes
   # Each scenario runs bddkit on selftest/fixtures/masking, whose scenarios all
   # fail on purpose, then reads back the console, the JUnit report and the event
   # stream. The secrets are the values in selftest/fixtures/masking/features.
-  # The stream is read for its failure texts: a literal in a step's own text
-  # reaches `step_started` before anything could register it (spec 7.11), which
-  # the last scenario pins.
+  # The stream is read for its failure texts and for the descriptions in
+  # `scenario_started`. A literal in a step's own text reaches `step_started`
+  # before anything could register it (spec 7.11), which the last scenario pins.
 
   Scenario Outline: by default a secret appears in none of the three outputs
     When I run the masking fixture "bddkit" with options ""
@@ -61,6 +61,14 @@ Feature: Secrets stay out of what bddkit prints and writes
     When I run the masking fixture "bddkit" with options ""
     And I run the command "grep step_started selftest/out/events.ndjson"
     Then the command output contains "pin-secret-value-1"
+
+  Scenario: a secret quoted in a description is hidden in the stream
+    # `scenario_started` carries the description; the config named this value
+    # before any file ran, so the stream never holds it.
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "grep scenario_started selftest/out/events.ndjson"
+    Then the command output contains "Its description quotes *** too."
+    And the command output does not contain "config-secret-value-6"
 
   Scenario: --evidence writes the resolved slots and still hides the secret
     # `vars` shows what a slot resolved to; the one under a privacy word is `***`.

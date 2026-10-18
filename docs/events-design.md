@@ -114,9 +114,9 @@ Only top-level steps are ever reported as skipped. When a nested step fails, the
 
 | `type` | Emitted | Fields beyond the envelope |
 |---|---|---|
-| `run_started` | where `run` prints `run <id>` today | `schema`, `bddkit`, `run_id`, `started_at_unix_ms`, `concurrency`, `files`, plus `privacy`, `evidence`, `artifacts_dir` from sections 7–9 |
-| `file_started` | top of `run_file` | `file`, `name` |
-| `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example` |
+| `run_started` | where `run` prints `run <id>` today | `schema`, `bddkit`, `run_id`, `started_at_unix_ms`, `config`, `config_source`, `selection`, `concurrency`, `files`, plus `privacy`, `evidence`, `artifacts_dir` from sections 7–9 |
+| `file_started` | top of `run_file` | `file`, `name`, `tags`, `description`, `background` |
+| `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example`, `tags`, `description`, `rule`, `examples` |
 | `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`; nested steps add `parent`, `source`, `index` |
 | `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `duration_us`, `warnings` |
 | `step_skipped` | for each top-level step after a failure | `file`, `scenario`, `step`, `keyword`, `text`, `line` |
@@ -124,17 +124,19 @@ Only top-level steps are ever reported as skipped. When a nested step fails, the
 | `file_finished` | end of `run_file`; by the worker for a panicked file | `file`, `scenarios`, `failed`, `panicked` |
 | `run_finished` | last line | `exit`, `signal` (only when interrupted), `files`, `scenarios`, `failed`, `duration_ms` |
 
+`config` is the config path as it was resolved, so it can be relative (`./bddkit.yaml`), and `config_source` is `flag`, `env` or `discovered`, the values `doctor --json` uses. `selection` is `{"tags": [...], "paths": [...]}`: the `--tag` values and the positional paths as typed, with `/` separators in the paths, both empty when not given. `description` is the text a tester wrote under the keyword line, with its paragraph breaks and relative indentation. `background` is `{"line", "name", "description"}`; `rule` is the same for the rule a scenario sits in, plus its own `background`; `examples` is the same for the `Examples` block an outline row came from. A consumer must not expect a field that would be empty: no description, no Background, a scenario outside any rule, a row of no outline, or an unnamed element leave the field out, and `name` inside `background`, `rule` and `examples` goes with it. The top-level `name` of `file_started` and of `scenario_started` is always there, even when empty, and so is `tags`, which is `[]` when empty; names are dropped only inside `background`, `rule` and `examples`. Tags are written with the `@`, as in the source. A scenario's `tags` are the ones the `--tag` filter saw: its own, then its rule's, then the feature's, each name once and the first mention kept. A feature's `tags` are its own. Descriptions, names and tags pass through the file's privacy filter as they are emitted, like step text, so a value registered later in the run is not masked in an earlier event (7.8).
+
 `text` is the raw step text, with one exception defined in 7.2. `keyword` is as the feature file has it, trailing space included; a macro body step has an empty keyword. The totals in `file_finished` and `run_finished` are the ones `report::print_summary` counts, so a panicked file is one scenario, one failed. A panicked file can leave a scenario or a step open; `file_finished` with `panicked: true` closes them, and a consumer must accept that.
 
 Values below are illustrative.
 
 ```
-{"type":"run_started","seq":0,"t":0,"schema":1,"bddkit":"0.3.0","run_id":"3n2k9a0f1x7q","started_at_unix_ms":1791244800000,"concurrency":8,"files":2}
-{"type":"file_started","seq":1,"t":1,"file":"features/company.feature","name":"Companies"}
-{"type":"scenario_started","seq":2,"t":1,"file":"features/company.feature","scenario":0,"name":"registering a company charges the account","line":12}
+{"type":"run_started","seq":0,"t":0,"schema":1,"bddkit":"0.3.0","run_id":"3n2k9a0f1x7q","started_at_unix_ms":1791244800000,"config":"./bddkit.yaml","config_source":"discovered","selection":{"tags":[],"paths":[]},"concurrency":8,"files":2}
+{"type":"file_started","seq":1,"t":1,"file":"features/company.feature","name":"Companies","tags":["@billing"]}
+{"type":"scenario_started","seq":2,"t":1,"file":"features/company.feature","scenario":0,"name":"registering a company charges the account","line":12,"tags":["@billing"],"description":"Charging happens when the company is registered."}
 {"type":"step_started","seq":3,"t":2,"file":"features/company.feature","scenario":0,"step":0,"keyword":"Given ","text":"I register a buyer","line":13}
 {"type":"step_started","seq":4,"t":2,"file":"features/company.feature","scenario":0,"step":1,"parent":0,"source":"macros/buyer.yaml","line":4,"index":0,"keyword":"","text":"I request \"/api/v1/buyers\" using HTTP POST"}
-{"type":"file_started","seq":5,"t":3,"file":"features/login.feature","name":"Login"}
+{"type":"file_started","seq":5,"t":3,"file":"features/login.feature","name":"Login","tags":[]}
 {"type":"step_finished","seq":6,"t":40,"file":"features/company.feature","scenario":0,"step":1,"status":"passed","duration_us":37900,"warnings":[]}
 {"type":"step_finished","seq":7,"t":40,"file":"features/company.feature","scenario":0,"step":0,"status":"passed","duration_us":38100,"warnings":[]}
 {"type":"run_finished","seq":58,"t":1310,"exit":1,"files":2,"scenarios":5,"failed":1,"duration_ms":1310}

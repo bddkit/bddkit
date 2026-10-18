@@ -369,14 +369,11 @@ fn render_chain(stack: &[(PathBuf, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::{LoadedFeature, parse_str};
+    use crate::feature::LoadedFeature;
     use crate::macros::MacroCatalog;
 
     fn loaded(src: &str) -> LoadedFeature {
-        LoadedFeature {
-            path: PathBuf::from("t.feature"),
-            feature: parse_str(src).unwrap(),
-        }
+        LoadedFeature::from_text(PathBuf::from("t.feature"), src).expect("gherkin parses")
     }
 
     fn macro_registry(name: &str) -> Registry {
