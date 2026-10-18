@@ -171,6 +171,7 @@ pub fn build_scenario(
                 example: None,
                 examples_line: None,
                 steps,
+                substitutions: header.iter().cloned().zip(tokens).collect(),
             })
         }
         None => {

@@ -108,23 +108,29 @@ The first line is `run_started` and carries `schema: 1`. A breaking change bumps
 
 A nested step also carries `source`, the file its text is written in. For a step of an included scenario, including that file's Background, `line` is its own line in `source`. **Detail:** for a macro body step `line` is the macro definition's line (`MacroDef.line`) and `index` is the step's 0-based position in the body, because `MacroStep` carries no line.
 
-Only top-level steps are ever reported as skipped. When a nested step fails, the rest of that body does not run and is not reported, and the failure closes each enclosing step in turn.
+Steps after a failure are reported as skipped at the top level and in an included scenario, whose sections and disabled steps are also emitted through its end. A failed macro body stops at its failed step; its remaining YAML steps are not reported. The failure closes each enclosing step in turn.
 
 ### 5.4 Lifecycle events
 
 | `type` | Emitted | Fields beyond the envelope |
 |---|---|---|
 | `run_started` | where `run` prints `run <id>` today | `schema`, `bddkit`, `run_id`, `started_at_unix_ms`, `config`, `config_source`, `selection`, `concurrency`, `files`, plus `privacy`, `evidence`, `artifacts_dir` from sections 7–9 |
-| `file_started` | top of `run_file` | `file`, `name`, `tags`, `description`, `background` |
-| `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example`, `tags`, `description`, `rule`, `examples` |
-| `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`; nested steps add `parent`, `source`, `index` |
+| `file_started` | top of `run_file` | `file`, `name`, `tags`, `description`, `comment`, `background` |
+| `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example`, `tags`, `description`, `comment`, `rule`, `examples` |
+| `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source`, `index` |
 | `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `duration_us`, `warnings` |
-| `step_skipped` | for each top-level step after a failure | `file`, `scenario`, `step`, `keyword`, `text`, `line` |
+| `step_skipped` | for each step after a failure, including the remainder of an included scenario | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source` |
+| `step_disabled` | where a commented step matches the loaded registry | `file`, `scenario`, `keyword`, `text`, `line`, optional `comment`; inside includes add `parent`, `source`; no `step` number |
+| `section` | before the items it groups, or after the last item for a closing note | `file`, `scenario`, `title`, `line`, optional `note`; inside includes add `parent`, `source` |
 | `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`) |
 | `file_finished` | end of `run_file`; by the worker for a panicked file | `file`, `scenarios`, `failed`, `panicked` |
 | `run_finished` | last line | `exit`, `signal` (only when interrupted), `files`, `scenarios`, `failed`, `duration_ms` |
 
 `config` is the config path as it was resolved, so it can be relative (`./bddkit.yaml`), and `config_source` is `flag`, `env` or `discovered`, the values `doctor --json` uses. `selection` is `{"tags": [...], "paths": [...]}`: the `--tag` values and the positional paths as typed, with `/` separators in the paths, both empty when not given. `description` is the text a tester wrote under the keyword line, with its paragraph breaks and relative indentation. `background` is `{"line", "name", "description"}`; `rule` is the same for the rule a scenario sits in, plus its own `background`; `examples` is the same for the `Examples` block an outline row came from. A consumer must not expect a field that would be empty: no description, no Background, a scenario outside any rule, a row of no outline, or an unnamed element leave the field out, and `name` inside `background`, `rule` and `examples` goes with it. The top-level `name` of `file_started` and of `scenario_started` is always there, even when empty, and so is `tags`, which is `[]` when empty; names are dropped only inside `background`, `rule` and `examples`. Tags are written with the `@`, as in the source. A scenario's `tags` are the ones the `--tag` filter saw: its own, then its rule's, then the feature's, each name once and the first mention kept. A feature's `tags` are its own. Descriptions, names and tags pass through the file's privacy filter as they are emitted, like step text, so a value registered later in the run is not masked in an earlier event (7.8).
+
+`comment` is the consecutive `#` block directly above the step or element, including above its tag lines. Each line loses its `#` and one following space; a lone `#` preserves a paragraph break, and empty edge lines are dropped. Element objects (`background`, `rule`, `examples`, and a rule's `background`) also carry an optional `comment`. The file's `# language:` directive is excluded. A block followed by a blank line produces `section`, whose first non-empty line is `title` and whose remaining text is `note`; `line` is the block's first source line, including any leading lone `#`. A trailing block is a closing section. Empty optional fields are omitted.
+
+A commented step is `step_disabled` only when its language-specific keyword is followed by text matching the loaded registry, after outline substitution in the candidate step text; prose comments, section titles and notes remain as written. Closing annotations after an Examples table belong only to rows from that block. It is never executed, interpolated at runtime or validated beyond that match, and consumes no step number. The new events retain source order even after a failure, between `step_skipped` events, and repeat at the Background, rule Background or included-scenario level where they were written. Every new string passes through the file's privacy filter when emitted; disabled step text also masks literal `secret` parameters by position. Docstring and table content never produces annotations. JUnit and Cucumber JSON are unchanged.
 
 `text` is the raw step text, with one exception defined in 7.2. `keyword` is as the feature file has it, trailing space included; a macro body step has an empty keyword. The totals in `file_finished` and `run_finished` are the ones `report::print_summary` counts, so a panicked file is one scenario, one failed. A panicked file can leave a scenario or a step open; `file_finished` with `panicked: true` closes them, and a consumer must accept that.
 

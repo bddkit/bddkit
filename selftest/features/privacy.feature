@@ -1,3 +1,5 @@
+# Both files write selftest/out, so they run one after the other.
+@serial(selftest)
 Feature: Secrets stay out of what bddkit prints and writes
   # Each scenario runs bddkit on selftest/fixtures/masking, whose scenarios all
   # fail on purpose, then reads back the console, the JUnit report and the event
@@ -78,3 +80,12 @@ Feature: Secrets stay out of what bddkit prints and writes
     And the command output does not contain "pin-secret-value-1"
     When I run the command "grep -v step_started selftest/out/events.ndjson"
     Then the command output does not contain "query-token-value-5"
+
+  Scenario: secrets in comments, disabled steps and sections are masked
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "grep -E '\"type\":\"(section|step_disabled)\"|\"comment\"' selftest/out/events.ndjson"
+    Then the command output contains "This note quotes ***."
+    And the command output contains "Disabled because *** is private."
+    And the command output contains "This step note quotes ***."
+    And the command output contains "Closing note quotes ***."
+    And the command output does not contain "config-secret-value-6"

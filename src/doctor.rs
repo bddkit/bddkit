@@ -485,7 +485,42 @@ fn check_features(
     } else if let Some(reason) = skipped {
         report.push("steps", None, Status::Skipped, reason);
     } else {
-        let detail = format!("{} file(s), every step matched", loaded.len());
+        let mut detail = format!("{} file(s), every step matched", loaded.len());
+        if let Ok(registry) = registry {
+            let mut disabled = std::collections::BTreeSet::new();
+            let mut disabled_files = std::collections::BTreeSet::new();
+            let mut unmatched = std::collections::BTreeSet::new();
+            for lf in &loaded {
+                for sc in lf.scenarios() {
+                    for expanded in feature::expand_outlines(sc.scenario) {
+                        let annotations = crate::annotate::scenario(lf, sc, &expanded, registry);
+                        for item in annotations.items {
+                            if let crate::annotate::Item::Disabled { line, .. } = item {
+                                disabled.insert((&lf.path, line));
+                                disabled_files.insert(&lf.path);
+                            }
+                        }
+                        unmatched.extend(
+                            annotations
+                                .unmatched
+                                .into_iter()
+                                .map(|line| (&lf.path, line)),
+                        );
+                    }
+                }
+            }
+            detail.push_str(&format!(
+                "; {} disabled step(s) in {} file(s)",
+                disabled.len(),
+                disabled_files.len()
+            ));
+            if !unmatched.is_empty() {
+                detail.push_str("\ncommented lines that look like steps but match none:");
+                for (path, line) in unmatched {
+                    detail.push_str(&format!("\n{}:{line}", feature::display_path(path)));
+                }
+            }
+        }
         report.push("steps", None, Status::Ok, &detail);
     }
 

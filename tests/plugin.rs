@@ -1782,3 +1782,53 @@ fn a_secret_group_no_pattern_group_has_stops_the_run_at_load() {
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("groups count from 1"), "{stderr}");
 }
+
+#[test]
+fn commented_plugin_steps_are_disabled_only_while_the_plugin_is_loaded() {
+    let dir = project(
+        "annotation-plugin",
+        "Feature: f\n  Scenario: s\n    # Given I echo \"<<undefined>>\" as \"never\"\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let stream_path = dir.join("events.ndjson");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .current_dir(&dir)
+        .args(["run", "--config", "cfg.yaml", "--events"])
+        .arg(&stream_path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(&stream_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let disabled: Vec<_> = events
+        .iter()
+        .filter(|e| e["type"] == "step_disabled")
+        .collect();
+    assert_eq!(disabled.len(), 1, "{events:?}");
+    assert_eq!(disabled[0]["text"], "I echo \"<<undefined>>\" as \"never\"");
+
+    let empty = dir.join("empty-plugins");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .current_dir(&dir)
+        .env("BDDKIT_DIR", &empty)
+        .args(["run", "--config", "cfg.yaml", "--events"])
+        .arg(&stream_path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stream = std::fs::read_to_string(&stream_path).unwrap();
+    assert!(!stream.contains("\"type\":\"step_disabled\""), "{stream}");
+    let events: Vec<serde_json::Value> = stream
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let step = events.iter().find(|e| e["type"] == "step_started").unwrap();
+    assert_eq!(
+        step["comment"],
+        "Given I echo \"<<undefined>>\" as \"never\""
+    );
+}
