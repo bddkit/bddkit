@@ -1,0 +1,58 @@
+:root {
+  --bg: #fff; --fg: #1b1f24; --muted: #59636e; --line: #d1d9e0; --panel: #f6f8fa;
+  --logo-a: #0f766e; --logo-b: #f59e0b;
+  --pass: #1a7f37; --fail: #cf222e; --skip: #8c959f; --warn: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --line: #30363d; --panel: #161b22;
+    --logo-a: #2dd4bf;
+    --pass: #3fb950; --fail: #f85149; --skip: #8b949e; --warn: #d29922;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; }
+#app { max-width: 1100px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 8px; }
+h2 { font-size: 15px; margin: 24px 0 4px; word-break: break-all; }
+h4, h5 { margin: 8px 0 4px; }
+.sub { color: var(--muted); font-weight: normal; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
+.meta dt { color: var(--muted); } .meta dd { margin: 0; }
+.banner { border: 1px solid var(--warn); border-left-width: 4px; background: var(--panel); padding: 8px 12px; margin: 8px 0; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+.bar input, .bar select { font: inherit; padding: 4px 8px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.bar input { flex: 1; min-width: 200px; }
+.count, .dur, .comment, .empty { color: var(--muted); }
+.tag { border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; margin-left: 6px; font-size: 12px; color: var(--muted); }
+details.scenario { border: 1px solid var(--line); border-radius: 6px; margin: 6px 0; }
+details.scenario > summary { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+details.scenario > summary .dur { margin-left: auto; }
+.scenario-body { padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+.badge { font-size: 11px; text-transform: uppercase; border-radius: 4px; padding: 0 6px; border: 1px solid currentColor; }
+.badge.passed { color: var(--pass); } .badge.failed, .badge.open { color: var(--fail); }
+.badge.skipped, .badge.disabled { color: var(--skip); }
+.step { margin: 2px 0; } .step > summary { cursor: pointer; }
+.step .line { display: inline-flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.step .kw { color: var(--muted); } .step.failed > .line .txt, .step.failed > summary .txt { color: var(--fail); }
+.step.disabled { opacity: .6; } .step.disabled .txt, .step.disabled .kw { text-decoration: line-through; }
+.children, .evidence, .vars, .comment, .warning, .attempt, .failure { margin-left: 24px; }
+.warning { color: var(--warn); } .comment { white-space: pre-wrap; }
+.section { margin: 10px 0 4px; border-bottom: 1px solid var(--line); } .section h4 { margin: 0; }
+.element { margin: 6px 0; }
+.text p { margin: 4px 0; white-space: pre-wrap; }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+pre.failure { border-color: var(--fail); }
+.vars { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+table.headers { border-collapse: collapse; font-size: 12px; }
+table.headers th { text-align: left; padding-right: 12px; color: var(--muted); font-weight: normal; vertical-align: top; }
+table.headers td { word-break: break-all; }
+.evidence summary { cursor: pointer; color: var(--muted); }
+.evidence img { max-width: 100%; display: block; border: 1px solid var(--line); }
+.toggle { font: inherit; font-size: 12px; }
+a { color: inherit; }
+@media (max-width: 600px) { #app { padding: 8px; } }
+.brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-weight: 600; font-size: 18px; margin-bottom: 8px; }
+.logo-a { fill: var(--logo-a); } .logo-a-stroke { stroke: var(--logo-a); } .logo-b { fill: var(--logo-b); }
+footer { max-width: 1100px; margin: 24px auto 0; padding: 12px 16px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+footer a { color: var(--muted); }

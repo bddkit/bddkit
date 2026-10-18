@@ -69,6 +69,8 @@ enum Command {
     Steps(StepsArgs),
     /// Check a suite's config, and with --live probe what it talks to
     Doctor(DoctorArgs),
+    /// Render an event stream (`run --events`) as a report
+    Report(RenderArgs),
     /// Show what a resource's config takes
     Resource(ResourceArgs),
     /// Find, install, update and remove plugins
@@ -81,6 +83,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Args)]
+#[command(after_help = "Examples:
+  bddkit report run.ndjson                 run.html beside the stream
+  bddkit report run.ndjson -o out/r.html   a named file")]
+struct RenderArgs {
+    /// The stream a run wrote with --events
+    events: PathBuf,
+    /// Where to write the report; the format follows the extension (.html or .htm). Repeatable [default: the stream's name with .html]
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    outputs: Vec<PathBuf>,
+    /// Where the run's artifacts are, when they are not where `run_started` says
+    #[arg(long, value_name = "DIR")]
+    artifacts: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -746,6 +763,10 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
+        Command::Report(args) => (
+            report::command::run(&args.events, &args.outputs, args.artifacts.as_deref()),
+            "nothing written",
+        ),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
