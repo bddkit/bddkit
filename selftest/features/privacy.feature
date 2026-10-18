@@ -1,3 +1,5 @@
+# Both files write selftest/out, so they run one after the other.
+@serial(selftest)
 Feature: Secrets stay out of what bddkit prints and writes
   # Each scenario runs bddkit on selftest/fixtures/masking, whose scenarios all
   # fail on purpose, then reads back the console, the JUnit report and the event

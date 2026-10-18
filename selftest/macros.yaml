@@ -4,3 +4,10 @@
 - step: 'I run the masking fixture "{config}" with options "{options}"'
   do:
     - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/masking/<<config>>.yaml --junit selftest/out/junit.xml --events selftest/out/events.ndjson <<options>>\""
+
+# Runs the binary on the annotations fixture, writes its event stream where a
+# later step can read it, then prints it through one of the fixture's jq
+# filters (`order`, `comments`, `numbers`, `description`) on one line, events joined by `|`.
+- step: 'I run the annotations fixture and read it through "{filter}"'
+  do:
+    - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/annotations/bddkit.yaml --events selftest/out/events.ndjson; jq -r -f selftest/fixtures/annotations/<<filter>>.jq selftest/out/events.ndjson | tr '\\n' '|'\""

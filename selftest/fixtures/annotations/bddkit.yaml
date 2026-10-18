@@ -1,0 +1,4 @@
+paths: [selftest/fixtures/annotations/features]
+
+resources:
+  api: {}
