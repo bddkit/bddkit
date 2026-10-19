@@ -60,6 +60,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 png = "0.18.1"
 image-webp = "0.2.4"
 webp = { version = "0.3.1", default-features = false }
+indicatif = "0.18"
 
 # Windows cannot rename over its own running executable; `bddkit upgrade` asks
 # this crate to do the swap there. Unix renames the file in place.

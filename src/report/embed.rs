@@ -213,7 +213,6 @@ pub struct Plan {
 }
 
 impl Plan {
-    #[allow(dead_code)] // read by the progress line, a later commit
     pub fn files(&self) -> usize {
         self.chosen.len()
     }

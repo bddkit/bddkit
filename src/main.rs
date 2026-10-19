@@ -1018,11 +1018,16 @@ fn report_command(args: RenderArgs) -> Result<i32> {
             )
         })
         .transpose()?;
+    let progress = report::progress::Progress::new(
+        report::progress::interactive(),
+        1 + usize::from(embed.is_some()),
+    );
     report::command::run(
         &args.events,
         &args.outputs,
         args.artifacts.as_deref(),
         embed.as_ref(),
+        &progress,
     )
 }
 
