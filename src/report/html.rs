@@ -107,7 +107,7 @@ pub fn is_temporary_root(root: &str, run_id: &str) -> bool {
         && !run_id.is_empty()
 }
 
-fn encode(segment: &str) -> String {
+pub(super) fn encode(segment: &str) -> String {
     let mut out = String::new();
     for byte in segment.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {

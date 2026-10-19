@@ -1,6 +1,7 @@
 pub mod command;
 pub mod embed;
 pub mod html;
+pub mod markdown;
 pub mod model;
 pub mod progress;
 
