@@ -89,13 +89,18 @@ enum Command {
 #[command(after_help = "Examples:
   bddkit report run.ndjson                 run.html beside the stream
   bddkit report run.ndjson -o out/r.html   a named file
-  bddkit report run.ndjson --embed-artifacts   one file that opens anywhere")]
+  bddkit report run.ndjson --embed-artifacts   one file that opens anywhere
+  bddkit report run.ndjson -o report.md    Markdown for an agent: failures only
+  bddkit report run.ndjson -o report.md --detail all   every scenario in full")]
 struct RenderArgs {
     /// The stream a run wrote with --events
     events: PathBuf,
-    /// Where to write the report; the format follows the extension (.html or .htm). Repeatable [default: the stream's name with .html]
+    /// Where to write the report; the format follows the extension (.html, .htm, .md or .markdown). Repeatable [default: the stream's name with .html]
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     outputs: Vec<PathBuf>,
+    /// What a Markdown report shows in full: failed scenarios, or every scenario [default: failed]
+    #[arg(long, value_enum)]
+    detail: Option<report::markdown::Detail>,
     /// Where the run's artifacts are, when they are not where `run_started` says
     #[arg(long, value_name = "DIR")]
     artifacts: Option<PathBuf>,
@@ -1035,6 +1040,7 @@ async fn report_command(args: RenderArgs) -> Result<i32> {
                 &args.outputs,
                 args.artifacts.as_deref(),
                 embed.as_ref(),
+                args.detail,
                 &progress,
             )
         })

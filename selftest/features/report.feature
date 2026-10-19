@@ -43,3 +43,47 @@ Feature: bddkit report turns an event stream into a page that keeps the masking
     And the command error output contains "nothing written"
     When I run the command "ls selftest/out/embed"
     Then the command output does not contain "no.html"
+
+  Scenario: the Markdown report holds the failures, their line ranges and no secret
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/out/events.ndjson -o selftest/out/events.md"
+    Then the command exit code is 0
+    When I run the command "cat selftest/out/events.md"
+    Then the command output contains "bddkit_report: 1"
+    And the command output contains "<!-- bddkit:begin failure"
+    And the command output contains "***"
+    And the command output does not contain "literal-key-value-3"
+    And the command output does not contain "config-secret-value-6"
+
+  Scenario: --detail needs a Markdown output
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/fixtures/embed/run.ndjson --detail all -o selftest/out/embed/no.html"
+    Then the command exit code is 2
+    And the command error output contains "nothing written"
+
+  Scenario: an index range of the Markdown report cuts out exactly its scenario
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/out/events.ndjson -o selftest/out/events.md"
+    # the first index row is a failed scenario; its lines column is from-to
+    When I run the command "r=selftest/out/events.md; range=$(grep -m1 '| failed |' $r | awk -F' [|] ' '{print $3}' | tr - ,); sed -n ${range}p $r | sed -n '1p;$p'"
+    Then the command output contains "<!-- bddkit:begin scenario id="
+    And the command output contains "<!-- bddkit:end scenario id="
+
+  Scenario: every begin marker of the Markdown report has its end, and nothing else looks like one
+    When I run the masking fixture "bddkit" with options ""
+    And I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/out/events.ndjson -o selftest/out/events.md --detail all"
+    When I run the command "r=selftest/out/events.md; b=$(grep -c '^<!-- bddkit:begin' $r); e=$(grep -c '^<!-- bddkit:end' $r); t=$(grep -c '^<!-- bddkit:' $r); test $b -gt 0 && test $b = $e && test $t = $((b + e)) && echo paired"
+    Then the command output contains "paired"
+    When I run the command "grep -c 'detail: all' selftest/out/events.md"
+    Then the command output contains "1"
+
+  Scenario: the Markdown report links an artifact relative to itself and names the failure
+    When I run the command "rm -rf selftest/out/embed && mkdir -p selftest/out/embed/art/1"
+    And I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/fixtures/embed/run.ndjson --artifacts selftest/out/embed/art -o selftest/out/embed/r.md"
+    Then the command exit code is 0
+    When I run the command "cat selftest/out/embed/r.md"
+    Then the command output contains "(art/1/note.txt)"
+    And the command output contains "### [failed] s"
+    And the command output contains "begin scenario id="
+    And the command output contains "a.feature:1"
+    And the command output contains "boom"
+    And the command output contains "complete: true"

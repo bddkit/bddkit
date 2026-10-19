@@ -318,3 +318,108 @@ fn a_sigint_during_embedding_exits_130_and_leaves_nothing_beside_the_target() {
         .collect();
     assert!(stray.is_empty(), "{stray:?}");
 }
+
+/// One failed scenario and one passed, in one file.
+const TWO_SCENARIOS: &str = concat!(
+    r#"{"type":"run_started","run_id":"r1","bddkit":"0.3.1","files":1}"#,
+    "\n",
+    r#"{"type":"file_started","file":"f.feature","name":"F","tags":[]}"#,
+    "\n",
+    r#"{"type":"scenario_started","file":"f.feature","scenario":0,"name":"good","line":3,"tags":[]}"#,
+    "\n",
+    r#"{"type":"scenario_finished","file":"f.feature","scenario":0,"status":"passed","duration_us":5}"#,
+    "\n",
+    r#"{"type":"scenario_started","file":"f.feature","scenario":1,"name":"bad","line":7,"tags":[]}"#,
+    "\n",
+    r#"{"type":"scenario_finished","file":"f.feature","scenario":1,"status":"failed","duration_us":5,"failure":"boom"}"#,
+    "\n",
+    r#"{"type":"run_finished","exit":1,"files":1,"scenarios":2,"failed":1,"duration_ms":1}"#,
+    "\n",
+);
+
+#[test]
+fn the_format_follows_the_extension() {
+    let dir = scratch("md");
+    std::fs::write(dir.join("run.ndjson"), TWO_SCENARIOS).expect("stream");
+    let s = dir.join("run.ndjson");
+    let (md, html, markdown) = (dir.join("r.MD"), dir.join("r.html"), dir.join("r.markdown"));
+    let out = report(&[
+        &s,
+        "-o".as_ref(),
+        &md,
+        "-o".as_ref(),
+        &html,
+        "-o".as_ref(),
+        &markdown,
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = std::fs::read_to_string(&md).expect("md");
+    assert!(text.starts_with("---\nbddkit_report: 1\n"));
+    assert!(text.contains("### [failed] bad"));
+    assert!(!text.contains("### [passed]"), "failures only by default");
+    assert_eq!(
+        text,
+        std::fs::read_to_string(&markdown)
+            .expect("markdown")
+            .replace("r.markdown", "r.MD")
+    );
+    assert!(
+        std::fs::read_to_string(&html)
+            .expect("html")
+            .contains("Content-Security-Policy")
+    );
+}
+
+#[test]
+fn detail_all_shows_the_passed_scenarios_too() {
+    let dir = scratch("md-all");
+    std::fs::write(dir.join("run.ndjson"), TWO_SCENARIOS).expect("stream");
+    let md = dir.join("r.md");
+    let out = report(&[
+        &dir.join("run.ndjson"),
+        "-o".as_ref(),
+        &md,
+        "--detail".as_ref(),
+        "all".as_ref(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        std::fs::read_to_string(&md)
+            .expect("md")
+            .contains("### [passed] good")
+    );
+}
+
+#[test]
+fn detail_without_a_markdown_output_is_refused() {
+    let dir = scratch("md-refuse");
+    std::fs::write(dir.join("run.ndjson"), TWO_SCENARIOS).expect("stream");
+    let s = dir.join("run.ndjson");
+    for extra in [
+        &["--detail", "all"][..],
+        &["--detail", "all", "-o", "x.html"],
+        &["--detail", "everything", "-o", "x.md"],
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command.current_dir(&dir).arg("report").arg(&s).args(extra);
+        let out = command.output().expect("runs");
+        assert_eq!(out.status.code(), Some(2), "{extra:?}");
+        assert!(
+            !dir.join("run.html").exists() && !dir.join("x.md").exists(),
+            "{extra:?}"
+        );
+    }
+}
+
+#[test]
+fn embedding_without_an_html_output_is_refused_with_nothing_written() {
+    let dir = scratch("md-embed");
+    std::fs::write(dir.join("run.ndjson"), TWO_SCENARIOS).expect("stream");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .current_dir(&dir)
+        .args(["report", "run.ndjson", "--embed-artifacts", "-o", "x.md"])
+        .output()
+        .expect("runs");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!dir.join("x.md").exists());
+}
