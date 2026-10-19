@@ -229,3 +229,32 @@ fn embedding_carries_the_images_and_leaves_the_files_and_exit_code_alone() {
     assert_eq!(page["not_embedded"]["1/big.png"]["reason"], "limit");
     assert_eq!(std::fs::read(dir.join("art/1/big.png")).expect("png"), big);
 }
+
+#[test]
+fn the_same_stream_and_options_give_the_same_bytes_and_no_flag_adds_nothing() {
+    let dir = scratch("same");
+    std::fs::create_dir_all(dir.join("art")).expect("art");
+    std::fs::write(dir.join("art/a.png"), blocks(300, 200)).expect("png");
+    let stream = stream_with_shots(&dir, &["a.png"]);
+    let s = stream.to_str().expect("utf8");
+    let (a, b) = (dir.join("a.html"), dir.join("b.html"));
+    for out in [&a, &b] {
+        run_report(&[
+            s,
+            "--embed-artifacts",
+            "--embed-images",
+            "lossy",
+            "-o",
+            out.to_str().expect("utf8"),
+        ]);
+    }
+    assert_eq!(std::fs::read(&a).expect("a"), std::fs::read(&b).expect("b"));
+    let plain = run_report(&[s]);
+    let stdout = String::from_utf8_lossy(&plain.stdout);
+    assert!(
+        stdout.contains(" scenarios") && !stdout.contains("embedded"),
+        "{stdout}"
+    );
+    let page = embedded_json(&std::fs::read_to_string(dir.join("run.html")).expect("html"));
+    assert!(page.get("embedded").is_none() && page.get("not_embedded").is_none());
+}

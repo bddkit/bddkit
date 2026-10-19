@@ -15,6 +15,8 @@ use std::path::{Component, Path};
 
 const DEFAULT_LIMIT: u64 = 20_000_000;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+/// The most a WebP bitstream can say for either side.
+const WEBP_MAX_SIDE: u32 = 16383;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Images {
@@ -30,7 +32,6 @@ pub enum Images {
 pub struct Options {
     pub limit: u64,
     pub images: Images,
-    #[allow(dead_code)] // read by the lossy encoder, a later commit
     pub quality: u8,
 }
 
@@ -326,16 +327,44 @@ fn lossless(px: &Pixels) -> Option<Vec<u8>> {
     Some(out)
 }
 
+fn lossy(px: &Pixels, quality: u8) -> Option<Vec<u8>> {
+    if px.width > WEBP_MAX_SIDE || px.height > WEBP_MAX_SIDE {
+        return None;
+    }
+    let quality = f32::from(quality);
+    let encoded = match px.color {
+        png::ColorType::Rgb => {
+            webp::Encoder::from_rgb(&px.data, px.width, px.height).encode(quality)
+        }
+        png::ColorType::Rgba => {
+            webp::Encoder::from_rgba(&px.data, px.width, px.height).encode(quality)
+        }
+        grey => {
+            let step = if grey == png::ColorType::Grayscale {
+                1
+            } else {
+                2
+            };
+            let mut rgba = Vec::with_capacity(px.data.len() / step * 4);
+            for p in px.data.chunks_exact(step) {
+                rgba.extend_from_slice(&[p[0], p[0], p[0], if step == 2 { p[1] } else { 255 }]);
+            }
+            webp::Encoder::from_rgba(&rgba, px.width, px.height).encode(quality)
+        }
+    };
+    (!encoded.is_empty()).then(|| encoded.to_vec())
+}
+
 /// The re-encoding and its label, only when it is smaller than the file.
 fn reencode(bytes: &[u8], opts: &Options) -> Option<(Vec<u8>, &'static str)> {
     if opts.images == Images::Original {
         return None;
     }
-    if opts.images != Images::Lossless {
-        return None;
-    }
     let px = decode_png(bytes)?;
-    let (out, label) = (lossless(&px)?, "webp-lossless");
+    let (out, label) = match opts.images {
+        Images::Lossy => (lossy(&px, opts.quality)?, "webp-lossy"),
+        _ => (lossless(&px)?, "webp-lossless"),
+    };
     (out.len() < bytes.len()).then_some((out, label))
 }
 
@@ -764,6 +793,18 @@ mod tests {
         }
         w.finish().expect("done");
         assert!(reencode(&out, &opts(Images::Lossless)).is_none());
+    }
+
+    #[test]
+    fn lossy_is_smaller_decodes_to_the_right_size_and_a_jpeg_stays_original() {
+        let source = gradient(png::ColorType::Rgb, png::BitDepth::Eight, 96, 64);
+        let o = Options::from_flags(None, Some(Images::Lossy), Some(50)).expect("opts");
+        let (out, label) = reencode(&source, &o).expect("smaller");
+        assert_eq!(label, "webp-lossy");
+        assert!(out.len() < source.len());
+        let (_, w, h, _) = decode_webp(&out);
+        assert_eq!((w, h), (96, 64));
+        assert!(reencode(b"\xff\xd8\xff\xe0 jpeg-ish", &o).is_none());
     }
 
     #[test]
