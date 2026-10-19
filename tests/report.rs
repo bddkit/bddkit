@@ -58,7 +58,6 @@ fn an_unknown_extension_exits_2() {
 // ---- --embed-artifacts ------------------------------------------------------
 
 /// A run that names `names` as screenshot evidence under `<dir>/art`.
-/// A run that names `names` as screenshot evidence under `<dir>/art`.
 fn stream_with_shots(dir: &std::path::Path, names: &[&str]) -> std::path::PathBuf {
     let mut text = format!(
         "{{\"type\":\"run_started\",\"run_id\":\"r1\",\"bddkit\":\"0.3.2\",\"artifacts_dir\":{:?}}}\n\
@@ -79,6 +78,24 @@ fn stream_with_shots(dir: &std::path::Path, names: &[&str]) -> std::path::PathBu
     let path = dir.join("run.ndjson");
     std::fs::write(&path, text).expect("stream");
     path
+}
+
+fn blocks(w: u32, h: u32) -> Vec<u8> {
+    let mut data = Vec::new();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            data.extend_from_slice(&[(x / 8 % 256) as u8, (y / 8 % 256) as u8, 40, 255]);
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("header")
+        .write_image_data(&data)
+        .expect("data");
+    out
 }
 
 fn embedded_json(html: &str) -> serde_json::Value {
@@ -151,24 +168,6 @@ fn files_are_embedded_as_they_are_marked_or_left_out() {
     let page = embedded_json(&std::fs::read_to_string(dir.join("z.html")).expect("html"));
     assert!(page.get("embedded").is_none());
     assert_eq!(page["not_embedded"]["a.txt"]["reason"], "limit");
-}
-
-fn blocks(w: u32, h: u32) -> Vec<u8> {
-    let mut data = Vec::new();
-    for y in 0..h as usize {
-        for x in 0..w as usize {
-            data.extend_from_slice(&[(x / 8 % 256) as u8, (y / 8 % 256) as u8, 40, 255]);
-        }
-    }
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .expect("header")
-        .write_image_data(&data)
-        .expect("data");
-    out
 }
 
 #[test]
@@ -257,4 +256,65 @@ fn the_same_stream_and_options_give_the_same_bytes_and_no_flag_adds_nothing() {
     );
     let page = embedded_json(&std::fs::read_to_string(dir.join("run.html")).expect("html"));
     assert!(page.get("embedded").is_none() && page.get("not_embedded").is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sigint_during_embedding_exits_130_and_leaves_nothing_beside_the_target() {
+    let dir = scratch("sigint");
+    std::fs::create_dir_all(dir.join("art")).expect("art");
+    let names: Vec<String> = (0..8).map(|i| format!("{i}.png")).collect();
+    for name in &names {
+        std::fs::write(dir.join("art").join(name), blocks(2000, 1500)).expect("png");
+    }
+    let stream = stream_with_shots(&dir, &names.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "report",
+            stream.to_str().expect("utf8"),
+            "--embed-artifacts",
+            "--embed-limit",
+            "1GB",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawns");
+    // Signalled only once the handler is installed (SIGINT is bit 1 of SigCgt),
+    // before that the default action would kill it with no exit code.
+    let caught = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("SigCgt:").map(|v| v.trim().to_owned()))
+            })
+            .and_then(|v| u64::from_str_radix(&v, 16).ok())
+            .is_some_and(|mask| mask & 0b10 != 0)
+    };
+    let started = std::time::Instant::now();
+    while !caught(child.id()) {
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "the handler never came up"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Past reading the stream, into the encoders. Timing-based: the encoding of
+    // these files takes seconds in a debug build, so there is ample margin.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    let status = child.wait().expect("waits");
+    assert_eq!(status.code(), Some(130));
+    assert!(!dir.join("run.html").exists());
+    let stray: Vec<_> = std::fs::read_dir(&dir)
+        .expect("dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
 }

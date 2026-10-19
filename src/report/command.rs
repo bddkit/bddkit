@@ -42,11 +42,43 @@ fn identity(path: &Path) -> PathBuf {
     dir.canonicalize().unwrap_or(dir).join(name)
 }
 
-fn temporary_name(target: &Path) -> PathBuf {
+pub(crate) fn temporary_name(target: &Path) -> PathBuf {
     let name = target
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     target.with_file_name(format!(".{name}.bddkit-{}.tmp", std::process::id()))
+}
+
+/// The outputs `run` writes: the ones named, or the default beside the stream.
+pub fn outputs_for(events: &Path, outputs: &[PathBuf]) -> Vec<PathBuf> {
+    if outputs.is_empty() {
+        vec![default_output(events)]
+    } else {
+        outputs.to_vec()
+    }
+}
+
+static CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called by the interrupt handler before it cleans up: the render thread is
+/// still running, and stops writing and renaming once it sees this.
+pub fn cancel() {
+    CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn check_cancelled() -> Result<()> {
+    if CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+        bail!("interrupted");
+    }
+    Ok(())
+}
+
+/// What an interrupt leaves behind: the names depend only on the output and
+/// the pid, so the signal handler needs no state from the run.
+pub fn remove_temporaries(outputs: &[PathBuf]) {
+    for output in outputs {
+        let _ = std::fs::remove_file(temporary_name(output));
+    }
 }
 
 /// Renders `events` to every output, or to none: each is written beside its
@@ -61,11 +93,7 @@ pub fn run(
     progress: &Progress,
 ) -> Result<i32> {
     let defaulted = outputs.is_empty();
-    let outputs = if defaulted {
-        vec![default_output(events)]
-    } else {
-        outputs.to_vec()
-    };
+    let outputs = outputs_for(events, outputs);
 
     // All of this before the stream is read, so a refusal writes nothing.
     let mut seen: Vec<PathBuf> = Vec::new();
@@ -127,6 +155,7 @@ pub fn run(
         let base = root
             .as_deref()
             .map_or_else(String::new, |root| html::artifacts_base(root, dir));
+        check_cancelled()?;
         let page = html::render(&run, &base, temporary, &embeds);
         let temp = temporary_name(output);
         written.push((temp.clone(), output.clone(), page.len()));
@@ -144,6 +173,7 @@ pub fn run(
     });
     let result = result.and_then(|()| {
         written.iter().try_for_each(|(temp, target, _)| {
+            check_cancelled()?;
             std::fs::rename(temp, target)
                 .with_context(|| format!("cannot write {}", target.display()))
         })
@@ -282,5 +312,21 @@ mod tests {
         let outputs = [d.join("a.html"), d.join("b.HTM")];
         run(&d.join("run.ndjson"), &outputs, None, None, &quiet()).expect("ok");
         assert!(d.join("a.html").is_file() && d.join("b.HTM").is_file());
+    }
+
+    #[test]
+    fn an_interrupt_removes_the_temporary_beside_each_output_and_only_that() {
+        let d = dir();
+        let outputs = [d.join("a.html"), d.join("b.html")];
+        for o in &outputs {
+            std::fs::write(temporary_name(o), "half").expect("temp");
+        }
+        std::fs::write(d.join("a.html"), "kept").expect("target");
+        remove_temporaries(&outputs);
+        assert!(!temporary_name(&outputs[0]).exists() && !temporary_name(&outputs[1]).exists());
+        assert_eq!(
+            std::fs::read_to_string(d.join("a.html")).expect("read"),
+            "kept"
+        );
     }
 }

@@ -776,7 +776,7 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
-        Command::Report(args) => (report_command(args), "nothing written"),
+        Command::Report(args) => (report_command(args).await, "nothing written"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
@@ -1007,7 +1007,10 @@ async fn handle_interrupt(
     std::process::exit(code);
 }
 
-fn report_command(args: RenderArgs) -> Result<i32> {
+/// Runs the render off the async thread and races it against an interrupt:
+/// the target is never partial, so all a signal can leave is the temporary
+/// files beside the outputs, and those are removed here.
+async fn report_command(args: RenderArgs) -> Result<i32> {
     let embed = args
         .embed_artifacts
         .then(|| {
@@ -1018,17 +1021,37 @@ fn report_command(args: RenderArgs) -> Result<i32> {
             )
         })
         .transpose()?;
-    let progress = report::progress::Progress::new(
+    let mut interrupts = Interrupts::install();
+    let outputs = report::command::outputs_for(&args.events, &args.outputs);
+    let progress = Arc::new(report::progress::Progress::new(
         report::progress::interactive(),
         1 + usize::from(embed.is_some()),
-    );
-    report::command::run(
-        &args.events,
-        &args.outputs,
-        args.artifacts.as_deref(),
-        embed.as_ref(),
-        &progress,
-    )
+    ));
+    let work = {
+        let progress = Arc::clone(&progress);
+        tokio::task::spawn_blocking(move || {
+            report::command::run(
+                &args.events,
+                &args.outputs,
+                args.artifacts.as_deref(),
+                embed.as_ref(),
+                &progress,
+            )
+        })
+    };
+    tokio::select! {
+        done = work => {
+            // Every way out, an error included, leaves the line clean.
+            progress.clear();
+            done.context("the report task failed")?
+        },
+        (_, code) = interrupts.wait() => {
+            report::command::cancel();
+            progress.clear();
+            report::command::remove_temporaries(&outputs);
+            std::process::exit(code);
+        }
+    }
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
