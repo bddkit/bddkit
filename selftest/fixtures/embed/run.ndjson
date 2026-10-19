@@ -1,0 +1,10 @@
+{"type":"run_started","run_id":"embed1","bddkit":"0.3.2","evidence":true}
+{"type":"file_started","file":"a.feature","name":"A","tags":[]}
+{"type":"scenario_started","file":"a.feature","scenario":0,"name":"s","line":1,"tags":[]}
+{"type":"step_started","file":"a.feature","scenario":0,"step":0,"keyword":"Given ","text":"x","line":2}
+{"type":"evidence","file":"a.feature","scenario":0,"step":0,"kind":"file","path":"1/note.txt","size":5,"media_type":"text/plain"}
+{"type":"evidence","file":"a.feature","scenario":0,"step":0,"kind":"file","path":"2/gone.txt","size":9,"media_type":"text/plain"}
+{"type":"step_finished","file":"a.feature","scenario":0,"step":0,"status":"failed","duration_us":5,"warnings":[]}
+{"type":"scenario_finished","file":"a.feature","scenario":0,"status":"failed","duration_us":5,"failure":"boom"}
+{"type":"file_finished","file":"a.feature","scenarios":1,"failed":1,"panicked":false}
+{"type":"run_finished","exit":1,"files":1,"scenarios":1,"failed":1,"duration_ms":1}
