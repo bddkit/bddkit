@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 const DEFAULT_LIMIT: u64 = 20_000_000;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Images {
@@ -275,9 +276,67 @@ pub fn plan(run: &Run, root: Option<&Path>, limit: u64) -> Plan {
     }
 }
 
-/// Re-encoding comes in the next commits; until then every file goes in as it is.
-fn reencode(_bytes: &[u8], _opts: &Options) -> Option<(Vec<u8>, &'static str)> {
-    None
+/// 8-bit pixels of a PNG, grey and palette already expanded.
+struct Pixels {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+}
+
+/// `None` for anything that must stay as it is: not a PNG, 16 bits, animated,
+/// or not decodable.
+fn decode_png(bytes: &[u8]) -> Option<Pixels> {
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return None;
+    }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().ok()?;
+    // A WebP of the first frame would silently freeze an APNG.
+    if reader.info().animation_control.is_some() {
+        return None;
+    }
+    let mut data = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut data).ok()?;
+    if frame.bit_depth != png::BitDepth::Eight || frame.color_type == png::ColorType::Indexed {
+        return None;
+    }
+    data.truncate(frame.buffer_size());
+    Some(Pixels {
+        data,
+        width: frame.width,
+        height: frame.height,
+        color: frame.color_type,
+    })
+}
+
+fn lossless(px: &Pixels) -> Option<Vec<u8>> {
+    use image_webp::ColorType::{L8, La8, Rgb8, Rgba8};
+    let color = match px.color {
+        png::ColorType::Grayscale => L8,
+        png::ColorType::GrayscaleAlpha => La8,
+        png::ColorType::Rgb => Rgb8,
+        _ => Rgba8,
+    };
+    let mut out = Vec::new();
+    image_webp::WebPEncoder::new(&mut out)
+        .encode(&px.data, px.width, px.height, color)
+        .ok()?;
+    Some(out)
+}
+
+/// The re-encoding and its label, only when it is smaller than the file.
+fn reencode(bytes: &[u8], opts: &Options) -> Option<(Vec<u8>, &'static str)> {
+    if opts.images == Images::Original {
+        return None;
+    }
+    if opts.images != Images::Lossless {
+        return None;
+    }
+    let px = decode_png(bytes)?;
+    let (out, label) = (lossless(&px)?, "webp-lossless");
+    (out.len() < bytes.len()).then_some((out, label))
 }
 
 fn embed_one(
@@ -407,6 +466,56 @@ mod tests {
             "kind":"screenshot","path":path,"size":size,"media_type":"image/png"})
     }
 
+    /// Blocks of flat colour, the shape of a screenshot.
+    fn gradient(color: png::ColorType, depth: png::BitDepth, w: u32, h: u32) -> Vec<u8> {
+        let channels = color.samples();
+        let per = if depth == png::BitDepth::Sixteen {
+            2
+        } else {
+            1
+        };
+        let mut data = Vec::new();
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                for c in 0..channels {
+                    let v = ((x / 8 + y / 8 * 3 + c * 50) % 256) as u8;
+                    data.extend(std::iter::repeat_n(v, per));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(color);
+        enc.set_depth(depth);
+        enc.write_header()
+            .expect("header")
+            .write_image_data(&data)
+            .expect("data");
+        out
+    }
+
+    /// Noise no encoder can shrink.
+    fn noise(w: u32, h: u32) -> Vec<u8> {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let data: Vec<u8> = (0..w * h * 3)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .expect("header")
+            .write_image_data(&data)
+            .expect("data");
+        out
+    }
+
     fn opts(images: Images) -> Options {
         Options::from_flags(None, Some(images), None).expect("opts")
     }
@@ -416,6 +525,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
         dir
+    }
+
+    fn decode_webp(bytes: &[u8]) -> (Vec<u8>, u32, u32, bool) {
+        let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).expect("webp");
+        let mut buf = vec![0; d.output_buffer_size().expect("size")];
+        d.read_image(&mut buf).expect("pixels");
+        let (w, h) = d.dimensions();
+        (buf, w, h, d.has_alpha())
     }
 
     #[test]
@@ -548,6 +665,137 @@ mod tests {
                 reason: "not found"
             }
         );
+    }
+
+    #[test]
+    fn original_round_trips_exact_bytes_and_leaves_the_file_alone() {
+        let d = scratch("orig");
+        let png = gradient(png::ColorType::Rgba, png::BitDepth::Eight, 32, 32);
+        std::fs::write(d.join("a.png"), &png).expect("file");
+        let run = run_naming(&[shot("a.png", png.len() as u64)]);
+        let e = encode(
+            plan(&run, Some(&d), 1 << 30),
+            Some(&d),
+            &opts(Images::Original),
+            1,
+            &|| {},
+        );
+        let got = base64::engine::general_purpose::STANDARD
+            .decode(&e.embedded["a.png"].data)
+            .expect("base64");
+        assert_eq!(got, png);
+        assert_eq!(e.embedded["a.png"].media_type, "image/png");
+        assert_eq!(std::fs::read(d.join("a.png")).expect("read"), png);
+    }
+
+    #[test]
+    fn lossless_webp_decodes_to_the_exact_pixels_of_each_colour_type() {
+        for color in [
+            png::ColorType::Rgba,
+            png::ColorType::Rgb,
+            png::ColorType::Grayscale,
+            png::ColorType::GrayscaleAlpha,
+        ] {
+            let source = gradient(color, png::BitDepth::Eight, 400, 300);
+            let px = decode_png(&source).expect("decodes");
+            let (out, label) = reencode(&source, &opts(Images::Lossless)).expect("smaller");
+            assert_eq!(label, "webp-lossless", "{color:?}");
+            let (pixels, w, h, alpha) = decode_webp(&out);
+            assert_eq!((w, h), (400, 300));
+            let mut want = Vec::new();
+            for p in px.data.chunks_exact(color.samples()) {
+                match color {
+                    png::ColorType::Rgba => want.extend_from_slice(p),
+                    png::ColorType::Rgb => want.extend_from_slice(p),
+                    png::ColorType::Grayscale => want.extend_from_slice(&[p[0]; 3]),
+                    _ => want.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
+                }
+            }
+            assert_eq!(
+                alpha,
+                matches!(color, png::ColorType::Rgba | png::ColorType::GrayscaleAlpha)
+            );
+            assert_eq!(pixels, want, "{color:?}");
+        }
+    }
+
+    #[test]
+    fn a_palette_png_is_expanded_and_encoded() {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, 300, 300);
+        enc.set_color(png::ColorType::Indexed);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_palette(vec![255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        let data: Vec<u8> = (0..90_000).map(|i| (i / 300 / 7 % 3) as u8).collect();
+        enc.write_header()
+            .expect("header")
+            .write_image_data(&data)
+            .expect("data");
+        let (webp, label) = reencode(&out, &opts(Images::Lossless)).expect("smaller");
+        assert_eq!(label, "webp-lossless");
+        let (pixels, ..) = decode_webp(&webp);
+        assert_eq!(&pixels[..3], &[255, 0, 0]);
+        assert_eq!(&pixels[7 * 300 * 3..7 * 300 * 3 + 3], &[0, 255, 0]);
+    }
+
+    #[test]
+    fn a_webp_that_is_not_smaller_leaves_the_original() {
+        assert!(reencode(&noise(32, 32), &opts(Images::Lossless)).is_none());
+    }
+
+    #[test]
+    fn sixteen_bit_corrupt_and_animated_input_stay_original() {
+        let deep = gradient(png::ColorType::Rgba, png::BitDepth::Sixteen, 64, 64);
+        assert!(reencode(&deep, &opts(Images::Lossless)).is_none());
+        let mut corrupt = gradient(png::ColorType::Rgba, png::BitDepth::Eight, 64, 64);
+        let cut = corrupt.len() / 2;
+        corrupt.truncate(cut);
+        assert!(reencode(&corrupt, &opts(Images::Lossless)).is_none());
+        assert!(reencode(b"\x89PNG\r\n\x1a\nnot really", &opts(Images::Lossy)).is_none());
+
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, 64, 64);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_animated(2, 0).expect("apng");
+        let mut w = enc.write_header().expect("header");
+        for _ in 0..2 {
+            w.write_image_data(&vec![7u8; 64 * 64 * 3]).expect("frame");
+        }
+        w.finish().expect("done");
+        assert!(reencode(&out, &opts(Images::Lossless)).is_none());
+    }
+
+    #[test]
+    fn one_thread_and_many_give_the_same_embeds() {
+        let d = scratch("threads");
+        let names: Vec<String> = (0..20).map(|i| format!("{i:02}.png")).collect();
+        for (i, name) in names.iter().enumerate() {
+            let png = gradient(
+                png::ColorType::Rgba,
+                png::BitDepth::Eight,
+                20 + i as u32,
+                30,
+            );
+            std::fs::write(d.join(name), png).expect("file");
+        }
+        let run = run_naming(&names.iter().map(|n| shot(n, 1)).collect::<Vec<_>>());
+        let one = encode(
+            plan(&run, Some(&d), 1 << 30),
+            Some(&d),
+            &opts(Images::Lossless),
+            1,
+            &|| {},
+        );
+        let many = encode(
+            plan(&run, Some(&d), 1 << 30),
+            Some(&d),
+            &opts(Images::Lossless),
+            8,
+            &|| {},
+        );
+        assert_eq!(one.embedded, many.embedded);
+        assert_eq!(one.embedded.len(), 20);
     }
 
     #[test]
