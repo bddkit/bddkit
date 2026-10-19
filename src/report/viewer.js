@@ -16,8 +16,46 @@
     for (let i = 1; i < arguments.length; i++) if (arguments[i]) parent.appendChild(arguments[i]);
     return parent;
   }
-  function link(path) {
+  function original(path) {
     return page.artifacts_base + path.split('/').map(encodeURIComponent).join('/');
+  }
+  // The one choke point for artifact links: an embedded file is decoded once, on first use.
+  // Only raster images render in place; anything else, SVG and HTML included, is a download, never a document of this page's origin.
+  const SAFE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+  const blobs = new Map();
+  function link(path) {
+    const f = page.embedded && page.embedded[path];
+    if (!f) return original(path);
+    if (!blobs.has(path)) {
+      const bin = atob(f.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      blobs.set(path, URL.createObjectURL(new Blob([bytes], { type: SAFE_TYPES.test(f.media_type) ? f.media_type : 'application/octet-stream' })));
+    }
+    return blobs.get(path);
+  }
+  function fmtSize(n) {
+    if (n < 1000) return n + ' B';
+    const u = ['KB', 'MB', 'GB'];
+    let i = -1;
+    do { n /= 1000; i++; } while (n >= 1000 && i < u.length - 1);
+    return n.toFixed(1) + ' ' + u[i];
+  }
+  // What happened to a linked file: embedded (and how), left out (and why), or nothing to say.
+  function mark(path) {
+    const f = page.embedded && page.embedded[path];
+    const skipped = page.not_embedded && page.not_embedded[path];
+    if (f) {
+      const how = f.encoding === 'original' ? 'original'
+        : 'WebP ' + (f.encoding === 'webp-lossy' ? 'lossy' : 'lossless') + ', ' + fmtSize(f.size) + ' → ' + fmtSize(f.data.length * 3 / 4 - (f.data.match(/=*$/)[0].length));
+      const note = el('span', 'note', 'embedded, ' + how + ' · ');
+      const a = el('a', '', 'original file'); a.href = original(path);
+      return add(note, a);
+    }
+    if (skipped) {
+      return el('span', 'note', 'not embedded: ' + (skipped.reason === 'limit' ? 'over the limit, ' + fmtSize(skipped.size) : skipped.reason));
+    }
+    return null;
   }
   function fmtDuration(us) {
     if (us === null || us === undefined) return '';
@@ -80,7 +118,7 @@
   if (!run.masking) banner('Masking was off for this run (--reveal): secrets may appear in clear text.');
   if (!run.evidence) banner('No evidence was collected. Run with --evidence (and --events) to see requests, responses and SQL.');
   if (run.incomplete) banner('This stream is incomplete: the run was killed or cut short, so the report ends where the stream does.');
-  if (page.artifacts_temporary) banner('Artifacts are under the temporary directory and links will break when it is cleaned. Use --artifacts-dir next to where this report is kept.');
+  if (page.artifacts_temporary && (page.not_embedded || !page.embedded)) banner('Artifacts are under the temporary directory and links will break when it is cleaned. Use --artifacts-dir next to where this report is kept.');
 
   // ---- filters -----------------------------------------------------------
   const allTags = [];
@@ -112,7 +150,7 @@
       const box = el('div', 'file');
       add(box, el('a', '', value.path + ' (' + value.size + ' bytes)'));
       box.firstChild.href = link(value.path);
-      return box;
+      return add(box, mark(value.path));
     }
     const pre = el('pre', 'body');
     let pretty = null;
@@ -148,10 +186,10 @@
     } else if (e.path && /^image\//.test(e.media_type || '')) {
       const img = el('img'); img.src = link(e.path); img.alt = e.title || e.path; img.loading = 'lazy';
       const a = el('a', '', e.path); a.href = link(e.path);
-      add(box, img, a);
+      add(box, img, a, mark(e.path));
     } else if (e.path) {
       const a = el('a', '', e.path + ' (' + e.size + ' bytes)'); a.href = link(e.path);
-      add(box, a, c !== undefined ? body(c) : null);
+      add(box, a, mark(e.path), c !== undefined ? body(c) : null);
     } else if (typeof c === 'string') {
       add(box, body(c));
     } else if (c && c.path) {

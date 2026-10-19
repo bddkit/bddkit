@@ -1,5 +1,6 @@
 //! The model written as one self-contained HTML page.
 
+use super::embed::Embeds;
 use super::model::Run;
 use serde::Serialize;
 use std::path::{Component, Path};
@@ -20,6 +21,8 @@ struct Page<'a> {
     artifacts_base: &'a str,
     /// The root is `<temp>/bddkit-<run id>`, which a cleanup will remove.
     artifacts_temporary: bool,
+    #[serde(flatten)]
+    embeds: &'a Embeds,
 }
 
 /// Every `<` becomes `<`: the JSON stays valid and no `</script>` or
@@ -30,11 +33,17 @@ fn embed(page: &Page<'_>) -> String {
         .replace('<', "\\u003c")
 }
 
-pub fn render(run: &Run, artifacts_base: &str, artifacts_temporary: bool) -> String {
+pub fn render(
+    run: &Run,
+    artifacts_base: &str,
+    artifacts_temporary: bool,
+    embeds: &Embeds,
+) -> String {
     let json = embed(&Page {
         run,
         artifacts_base,
         artifacts_temporary,
+        embeds,
     });
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -194,6 +203,7 @@ mod tests {
             &run_with("</script><script>alert(1)</script><!--"),
             "",
             false,
+            &Embeds::default(),
         );
         let data = embedded(&html);
         let step = &data["run"]["files"][0]["scenarios"][0]["items"][0];
@@ -204,7 +214,7 @@ mod tests {
     #[test]
     fn the_embedded_json_is_the_model_and_the_base() {
         let run = run_with("x");
-        let data = embedded(&render(&run, "../art/", true));
+        let data = embedded(&render(&run, "../art/", true, &Embeds::default()));
         assert_eq!(data["run"], serde_json::to_value(&run).expect("json"));
         assert_eq!(data["artifacts_base"], "../art/");
         assert_eq!(data["artifacts_temporary"], true);
@@ -214,14 +224,14 @@ mod tests {
     fn the_same_run_gives_the_same_bytes() {
         let run = run_with("x");
         assert_eq!(
-            render(&run, "../art/", false),
-            render(&run, "../art/", false)
+            render(&run, "../art/", false, &Embeds::default()),
+            render(&run, "../art/", false, &Embeds::default())
         );
     }
 
     #[test]
     fn the_footer_names_the_project_and_the_logo_is_inline() {
-        let html = render(&run_with("x"), "", false);
+        let html = render(&run_with("x"), "", false, &Embeds::default());
         for needle in [
             "https://bddkit.dev",
             "https://github.com/bddkit/bddkit",
@@ -234,7 +244,9 @@ mod tests {
 
     #[test]
     fn the_page_forbids_the_network() {
-        assert!(render(&run_with("x"), "", false).contains("default-src 'none'"));
+        assert!(
+            render(&run_with("x"), "", false, &Embeds::default()).contains("default-src 'none'")
+        );
     }
 
     #[test]

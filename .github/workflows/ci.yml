@@ -181,10 +181,10 @@ jobs:
 
       # The stream above, as the page a person opens after a red build. Kept
       # outside the checkout like the JUnit files, and uploaded with its
-      # artifacts so the report's links still work once it is downloaded.
+      # artifacts; `--embed-artifacts` makes the page open on its own anyway.
       - name: Self-test report
         if: always()
-        run: ./target/debug/bddkit report "$RUNNER_TEMP/selftest/run.ndjson"
+        run: ./target/debug/bddkit report "$RUNNER_TEMP/selftest/run.ndjson" --embed-artifacts
 
       - name: Upload the self-test report
         if: always()

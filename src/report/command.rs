@@ -1,6 +1,7 @@
 //! `bddkit report`: a stream on disk rendered to one or more files.
 
-use super::{html, model};
+use super::progress::{Counting, Progress};
+use super::{embed, html, model};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -41,24 +42,58 @@ fn identity(path: &Path) -> PathBuf {
     dir.canonicalize().unwrap_or(dir).join(name)
 }
 
-fn temporary_name(target: &Path) -> PathBuf {
+pub(crate) fn temporary_name(target: &Path) -> PathBuf {
     let name = target
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     target.with_file_name(format!(".{name}.bddkit-{}.tmp", std::process::id()))
 }
 
+/// The outputs `run` writes: the ones named, or the default beside the stream.
+pub fn outputs_for(events: &Path, outputs: &[PathBuf]) -> Vec<PathBuf> {
+    if outputs.is_empty() {
+        vec![default_output(events)]
+    } else {
+        outputs.to_vec()
+    }
+}
+
+static CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called by the interrupt handler before it cleans up: the render thread is
+/// still running, and stops writing and renaming once it sees this.
+pub fn cancel() {
+    CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn check_cancelled() -> Result<()> {
+    if CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+        bail!("interrupted");
+    }
+    Ok(())
+}
+
+/// What an interrupt leaves behind: the names depend only on the output and
+/// the pid, so the signal handler needs no state from the run.
+pub fn remove_temporaries(outputs: &[PathBuf]) {
+    for output in outputs {
+        let _ = std::fs::remove_file(temporary_name(output));
+    }
+}
+
 /// Renders `events` to every output, or to none: each is written beside its
 /// target under a temporary name and renamed only once all are complete.
 /// Returns the exit code (0), every failure being an error for `main` to turn
 /// into exit 2.
-pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Result<i32> {
+pub fn run(
+    events: &Path,
+    outputs: &[PathBuf],
+    artifacts: Option<&Path>,
+    embed: Option<&embed::Options>,
+    progress: &Progress,
+) -> Result<i32> {
     let defaulted = outputs.is_empty();
-    let outputs = if defaulted {
-        vec![default_output(events)]
-    } else {
-        outputs.to_vec()
-    };
+    let outputs = outputs_for(events, outputs);
 
     // All of this before the stream is read, so a refusal writes nothing.
     let mut seen: Vec<PathBuf> = Vec::new();
@@ -79,7 +114,16 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
 
     let file =
         std::fs::File::open(events).with_context(|| format!("cannot read {}", events.display()))?;
-    let run = model::build(std::io::BufReader::new(file))
+    progress.stage(
+        "reading the stream",
+        file.metadata().map_or(0, |m| m.len()),
+        true,
+    );
+    let reader = Counting {
+        inner: file,
+        progress,
+    };
+    let run = model::build(std::io::BufReader::new(reader))
         .with_context(|| format!("{} is not a usable event stream", events.display()))?;
 
     let root = artifacts
@@ -91,7 +135,18 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
             .as_deref()
             .is_some_and(|dir| html::is_temporary_root(dir, &run.run_id));
 
-    let mut written: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let embeds = match embed {
+        Some(options) => {
+            let plan = embed::plan(&run, root.as_deref(), options.limit);
+            progress.stage("embedding artifacts", plan.files() as u64, false);
+            embed::encode(plan, root.as_deref(), options, embed::threads(), &|| {
+                progress.inc(1);
+            })
+        }
+        None => embed::Embeds::default(),
+    };
+
+    let mut written: Vec<(PathBuf, PathBuf, usize)> = Vec::new();
     let result = outputs.iter().try_for_each(|output| {
         let dir = output
             .parent()
@@ -100,9 +155,10 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
         let base = root
             .as_deref()
             .map_or_else(String::new, |root| html::artifacts_base(root, dir));
-        let page = html::render(&run, &base, temporary);
+        check_cancelled()?;
+        let page = html::render(&run, &base, temporary, &embeds);
         let temp = temporary_name(output);
-        written.push((temp.clone(), output.clone()));
+        written.push((temp.clone(), output.clone(), page.len()));
         std::fs::write(&temp, page).map_err(|error| {
             let hint = if defaulted {
                 format!(
@@ -116,21 +172,28 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
         })
     });
     let result = result.and_then(|()| {
-        written.iter().try_for_each(|(temp, target)| {
+        written.iter().try_for_each(|(temp, target, _)| {
+            check_cancelled()?;
             std::fs::rename(temp, target)
                 .with_context(|| format!("cannot write {}", target.display()))
         })
     });
     if result.is_err() {
-        for (temp, _) in &written {
+        for (temp, ..) in &written {
             let _ = std::fs::remove_file(temp);
         }
     }
     result?;
 
+    progress.clear();
     let scenarios: usize = run.files.iter().map(|f| f.scenarios.len()).sum();
-    for output in &outputs {
-        println!("{}: {scenarios} scenarios", output.display());
+    let clause = embed.map_or_else(String::new, |o| embeds.summary(o.images));
+    for (_, output, size) in &written {
+        println!(
+            "{}: {}, {scenarios} scenarios{clause}",
+            output.display(),
+            embed::human(*size as u64)
+        );
     }
     Ok(0)
 }
@@ -145,6 +208,10 @@ mod tests {
         r#"{"type":"run_finished","exit":0,"files":0,"scenarios":0,"failed":0,"duration_ms":1}"#,
         "\n",
     );
+
+    fn quiet() -> Progress {
+        Progress::new(false, 1)
+    }
 
     fn dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -161,7 +228,10 @@ mod tests {
     fn without_o_the_html_lands_beside_the_stream_under_its_name() {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
-        assert_eq!(run(&d.join("run.ndjson"), &[], None).expect("ok"), 0);
+        assert_eq!(
+            run(&d.join("run.ndjson"), &[], None, None, &quiet()).expect("ok"),
+            0
+        );
         assert!(d.join("run.html").is_file());
     }
 
@@ -171,7 +241,10 @@ mod tests {
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         for bad in ["out.txt", "out", "out.md"] {
             let outputs = [d.join("ok.html"), d.join(bad)];
-            assert!(run(&d.join("run.ndjson"), &outputs, None).is_err(), "{bad}");
+            assert!(
+                run(&d.join("run.ndjson"), &outputs, None, None, &quiet()).is_err(),
+                "{bad}"
+            );
         }
         assert!(!d.join("ok.html").exists());
     }
@@ -181,7 +254,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("./a.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None).is_err());
+        assert!(run(&d.join("run.ndjson"), &outputs, None, None, &quiet()).is_err());
     }
 
     #[test]
@@ -189,7 +262,16 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("bad.ndjson"), "hello\n").expect("file");
         std::fs::write(d.join("out.html"), "old").expect("old");
-        assert!(run(&d.join("bad.ndjson"), &[d.join("out.html")], None).is_err());
+        assert!(
+            run(
+                &d.join("bad.ndjson"),
+                &[d.join("out.html")],
+                None,
+                None,
+                &quiet()
+            )
+            .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(d.join("out.html")).expect("read"),
             "old"
@@ -201,7 +283,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("missing/b.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None).is_err());
+        assert!(run(&d.join("run.ndjson"), &outputs, None, None, &quiet()).is_err());
         assert!(!d.join("a.html").exists());
         let leftovers = std::fs::read_dir(&d).expect("dir").count();
         assert_eq!(leftovers, 1, "only the stream is left");
@@ -216,7 +298,10 @@ mod tests {
             format!("{cut}\n{{\"type\":\"file_sta"),
         )
         .expect("stream");
-        assert_eq!(run(&d.join("run.ndjson"), &[], None).expect("ok"), 0);
+        assert_eq!(
+            run(&d.join("run.ndjson"), &[], None, None, &quiet()).expect("ok"),
+            0
+        );
         assert!(d.join("run.html").is_file());
     }
 
@@ -225,7 +310,23 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("b.HTM")];
-        run(&d.join("run.ndjson"), &outputs, None).expect("ok");
+        run(&d.join("run.ndjson"), &outputs, None, None, &quiet()).expect("ok");
         assert!(d.join("a.html").is_file() && d.join("b.HTM").is_file());
+    }
+
+    #[test]
+    fn an_interrupt_removes_the_temporary_beside_each_output_and_only_that() {
+        let d = dir();
+        let outputs = [d.join("a.html"), d.join("b.html")];
+        for o in &outputs {
+            std::fs::write(temporary_name(o), "half").expect("temp");
+        }
+        std::fs::write(d.join("a.html"), "kept").expect("target");
+        remove_temporaries(&outputs);
+        assert!(!temporary_name(&outputs[0]).exists() && !temporary_name(&outputs[1]).exists());
+        assert_eq!(
+            std::fs::read_to_string(d.join("a.html")).expect("read"),
+            "kept"
+        );
     }
 }

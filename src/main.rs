@@ -88,7 +88,8 @@ enum Command {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit report run.ndjson                 run.html beside the stream
-  bddkit report run.ndjson -o out/r.html   a named file")]
+  bddkit report run.ndjson -o out/r.html   a named file
+  bddkit report run.ndjson --embed-artifacts   one file that opens anywhere")]
 struct RenderArgs {
     /// The stream a run wrote with --events
     events: PathBuf,
@@ -98,6 +99,18 @@ struct RenderArgs {
     /// Where the run's artifacts are, when they are not where `run_started` says
     #[arg(long, value_name = "DIR")]
     artifacts: Option<PathBuf>,
+    /// Carry the files the report links to inside the page, so it can be mailed
+    #[arg(long)]
+    embed_artifacts: bool,
+    /// The most on-disk bytes to embed, smallest files first: a whole number and B, KB, MB or GB [default: 20MB]
+    #[arg(long, value_name = "SIZE", value_parser = report::embed::parse_size, requires = "embed_artifacts")]
+    embed_limit: Option<u64>,
+    /// What to do to a PNG on its way in; the file on disk is never touched [default: lossless]
+    #[arg(long, value_enum, requires = "embed_artifacts")]
+    embed_images: Option<report::embed::Images>,
+    /// WebP quality for --embed-images lossy [default: 80]
+    #[arg(long, value_name = "1-100", value_parser = clap::value_parser!(u8).range(1..=100), requires = "embed_artifacts")]
+    embed_quality: Option<u8>,
 }
 
 #[derive(Args)]
@@ -763,10 +776,7 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
-        Command::Report(args) => (
-            report::command::run(&args.events, &args.outputs, args.artifacts.as_deref()),
-            "nothing written",
-        ),
+        Command::Report(args) => (report_command(args).await, "nothing written"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
@@ -995,6 +1005,53 @@ async fn handle_interrupt(
         }
     }
     std::process::exit(code);
+}
+
+/// Runs the render off the async thread and races it against an interrupt:
+/// the target is never partial, so all a signal can leave is the temporary
+/// files beside the outputs, and those are removed here.
+async fn report_command(args: RenderArgs) -> Result<i32> {
+    let embed = args
+        .embed_artifacts
+        .then(|| {
+            report::embed::Options::from_flags(
+                args.embed_limit,
+                args.embed_images,
+                args.embed_quality,
+            )
+        })
+        .transpose()?;
+    let mut interrupts = Interrupts::install();
+    let outputs = report::command::outputs_for(&args.events, &args.outputs);
+    let progress = Arc::new(report::progress::Progress::new(
+        report::progress::interactive(),
+        1 + usize::from(embed.is_some()),
+    ));
+    let work = {
+        let progress = Arc::clone(&progress);
+        tokio::task::spawn_blocking(move || {
+            report::command::run(
+                &args.events,
+                &args.outputs,
+                args.artifacts.as_deref(),
+                embed.as_ref(),
+                &progress,
+            )
+        })
+    };
+    tokio::select! {
+        done = work => {
+            // Every way out, an error included, leaves the line clean.
+            progress.clear();
+            done.context("the report task failed")?
+        },
+        (_, code) = interrupts.wait() => {
+            report::command::cancel();
+            progress.clear();
+            report::command::remove_temporaries(&outputs);
+            std::process::exit(code);
+        }
+    }
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {
