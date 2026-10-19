@@ -88,7 +88,8 @@ enum Command {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit report run.ndjson                 run.html beside the stream
-  bddkit report run.ndjson -o out/r.html   a named file")]
+  bddkit report run.ndjson -o out/r.html   a named file
+  bddkit report run.ndjson --embed-artifacts   one file that opens anywhere")]
 struct RenderArgs {
     /// The stream a run wrote with --events
     events: PathBuf,
@@ -98,6 +99,18 @@ struct RenderArgs {
     /// Where the run's artifacts are, when they are not where `run_started` says
     #[arg(long, value_name = "DIR")]
     artifacts: Option<PathBuf>,
+    /// Carry the files the report links to inside the page, so it can be mailed
+    #[arg(long)]
+    embed_artifacts: bool,
+    /// The most on-disk bytes to embed, smallest files first: a whole number and B, KB, MB or GB [default: 20MB]
+    #[arg(long, value_name = "SIZE", value_parser = report::embed::parse_size, requires = "embed_artifacts")]
+    embed_limit: Option<u64>,
+    /// What to do to a PNG on its way in; the file on disk is never touched [default: lossless]
+    #[arg(long, value_enum, requires = "embed_artifacts")]
+    embed_images: Option<report::embed::Images>,
+    /// WebP quality for --embed-images lossy [default: 80]
+    #[arg(long, value_name = "1-100", value_parser = clap::value_parser!(u8).range(1..=100), requires = "embed_artifacts")]
+    embed_quality: Option<u8>,
 }
 
 #[derive(Args)]
@@ -763,10 +776,7 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
-        Command::Report(args) => (
-            report::command::run(&args.events, &args.outputs, args.artifacts.as_deref()),
-            "nothing written",
-        ),
+        Command::Report(args) => (report_command(args), "nothing written"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
@@ -995,6 +1005,23 @@ async fn handle_interrupt(
         }
     }
     std::process::exit(code);
+}
+
+fn report_command(args: RenderArgs) -> Result<i32> {
+    let embed = args
+        .embed_artifacts
+        .then(|| {
+            report::embed::Options::from_flags(
+                args.embed_limit,
+                args.embed_images,
+                args.embed_quality,
+            )
+        })
+        .transpose()?;
+    if embed.is_some() {
+        anyhow::bail!("--embed-artifacts is not implemented yet");
+    }
+    report::command::run(&args.events, &args.outputs, args.artifacts.as_deref())
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {

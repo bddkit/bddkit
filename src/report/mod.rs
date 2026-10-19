@@ -1,4 +1,5 @@
 pub mod command;
+pub mod embed;
 pub mod html;
 pub mod model;
 
