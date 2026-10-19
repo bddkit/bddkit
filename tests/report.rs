@@ -81,6 +81,13 @@ fn stream_with_shots(dir: &std::path::Path, names: &[&str]) -> std::path::PathBu
     path
 }
 
+fn embedded_json(html: &str) -> serde_json::Value {
+    let open = "<script type=\"application/json\" id=\"run\">";
+    let start = html.find(open).expect("element") + open.len();
+    let end = start + html[start..].find("</script>").expect("closed");
+    serde_json::from_str(&html[start..end]).expect("valid JSON")
+}
+
 fn run_report(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .arg("report")
@@ -117,4 +124,31 @@ fn the_embedding_options_need_the_flag_and_a_quality_needs_lossy() {
         assert_eq!(out.status.code(), Some(2), "{extra:?}");
         assert!(!dir.join("run.html").exists(), "{extra:?}");
     }
+}
+
+#[test]
+fn files_are_embedded_as_they_are_marked_or_left_out() {
+    let dir = scratch("plain");
+    std::fs::create_dir_all(dir.join("art")).expect("art");
+    std::fs::write(dir.join("art/a.txt"), b"hello").expect("file");
+    let stream = stream_with_shots(&dir, &["a.txt", "gone.txt", "../x"]);
+    let s = stream.to_str().expect("utf8");
+    let out = run_report(&[s, "--embed-artifacts"]);
+    assert_eq!(out.status.code(), Some(0));
+    let page = embedded_json(&std::fs::read_to_string(dir.join("run.html")).expect("html"));
+    assert_eq!(page["embedded"]["a.txt"]["encoding"], "original");
+    assert_eq!(page["embedded"]["a.txt"]["data"], "aGVsbG8=");
+    assert_eq!(page["not_embedded"]["gone.txt"]["reason"], "not found");
+    assert_eq!(page["not_embedded"]["../x"]["reason"], "unsafe path");
+    run_report(&[
+        s,
+        "--embed-artifacts",
+        "--embed-limit",
+        "0",
+        "-o",
+        dir.join("z.html").to_str().expect("utf8"),
+    ]);
+    let page = embedded_json(&std::fs::read_to_string(dir.join("z.html")).expect("html"));
+    assert!(page.get("embedded").is_none());
+    assert_eq!(page["not_embedded"]["a.txt"]["reason"], "limit");
 }

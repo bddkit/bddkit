@@ -1018,10 +1018,12 @@ fn report_command(args: RenderArgs) -> Result<i32> {
             )
         })
         .transpose()?;
-    if embed.is_some() {
-        anyhow::bail!("--embed-artifacts is not implemented yet");
-    }
-    report::command::run(&args.events, &args.outputs, args.artifacts.as_deref())
+    report::command::run(
+        &args.events,
+        &args.outputs,
+        args.artifacts.as_deref(),
+        embed.as_ref(),
+    )
 }
 
 async fn run(cli: RunArgs) -> Result<i32> {

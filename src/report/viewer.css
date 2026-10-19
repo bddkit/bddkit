@@ -56,3 +56,4 @@ a { color: inherit; }
 .logo-a { fill: var(--logo-a); } .logo-a-stroke { stroke: var(--logo-a); } .logo-b { fill: var(--logo-b); }
 footer { max-width: 1100px; margin: 24px auto 0; padding: 12px 16px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 footer a { color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; margin-left: 8px; }

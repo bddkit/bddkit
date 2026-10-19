@@ -1,6 +1,6 @@
 //! `bddkit report`: a stream on disk rendered to one or more files.
 
-use super::{html, model};
+use super::{embed, html, model};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -52,7 +52,12 @@ fn temporary_name(target: &Path) -> PathBuf {
 /// target under a temporary name and renamed only once all are complete.
 /// Returns the exit code (0), every failure being an error for `main` to turn
 /// into exit 2.
-pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Result<i32> {
+pub fn run(
+    events: &Path,
+    outputs: &[PathBuf],
+    artifacts: Option<&Path>,
+    embed: Option<&embed::Options>,
+) -> Result<i32> {
     let defaulted = outputs.is_empty();
     let outputs = if defaulted {
         vec![default_output(events)]
@@ -91,7 +96,15 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
             .as_deref()
             .is_some_and(|dir| html::is_temporary_root(dir, &run.run_id));
 
-    let mut written: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let embeds = match embed {
+        Some(options) => {
+            let plan = embed::plan(&run, root.as_deref(), options.limit);
+            embed::encode(plan, root.as_deref(), options, embed::threads(), &|| {})
+        }
+        None => embed::Embeds::default(),
+    };
+
+    let mut written: Vec<(PathBuf, PathBuf, usize)> = Vec::new();
     let result = outputs.iter().try_for_each(|output| {
         let dir = output
             .parent()
@@ -100,9 +113,9 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
         let base = root
             .as_deref()
             .map_or_else(String::new, |root| html::artifacts_base(root, dir));
-        let page = html::render(&run, &base, temporary);
+        let page = html::render(&run, &base, temporary, &embeds);
         let temp = temporary_name(output);
-        written.push((temp.clone(), output.clone()));
+        written.push((temp.clone(), output.clone(), page.len()));
         std::fs::write(&temp, page).map_err(|error| {
             let hint = if defaulted {
                 format!(
@@ -116,21 +129,26 @@ pub fn run(events: &Path, outputs: &[PathBuf], artifacts: Option<&Path>) -> Resu
         })
     });
     let result = result.and_then(|()| {
-        written.iter().try_for_each(|(temp, target)| {
+        written.iter().try_for_each(|(temp, target, _)| {
             std::fs::rename(temp, target)
                 .with_context(|| format!("cannot write {}", target.display()))
         })
     });
     if result.is_err() {
-        for (temp, _) in &written {
+        for (temp, ..) in &written {
             let _ = std::fs::remove_file(temp);
         }
     }
     result?;
 
     let scenarios: usize = run.files.iter().map(|f| f.scenarios.len()).sum();
-    for output in &outputs {
-        println!("{}: {scenarios} scenarios", output.display());
+    let clause = embed.map_or_else(String::new, |o| embeds.summary(o.images));
+    for (_, output, size) in &written {
+        println!(
+            "{}: {}, {scenarios} scenarios{clause}",
+            output.display(),
+            embed::human(*size as u64)
+        );
     }
     Ok(0)
 }
@@ -161,7 +179,7 @@ mod tests {
     fn without_o_the_html_lands_beside_the_stream_under_its_name() {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
-        assert_eq!(run(&d.join("run.ndjson"), &[], None).expect("ok"), 0);
+        assert_eq!(run(&d.join("run.ndjson"), &[], None, None).expect("ok"), 0);
         assert!(d.join("run.html").is_file());
     }
 
@@ -171,7 +189,10 @@ mod tests {
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         for bad in ["out.txt", "out", "out.md"] {
             let outputs = [d.join("ok.html"), d.join(bad)];
-            assert!(run(&d.join("run.ndjson"), &outputs, None).is_err(), "{bad}");
+            assert!(
+                run(&d.join("run.ndjson"), &outputs, None, None).is_err(),
+                "{bad}"
+            );
         }
         assert!(!d.join("ok.html").exists());
     }
@@ -181,7 +202,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("./a.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None).is_err());
+        assert!(run(&d.join("run.ndjson"), &outputs, None, None).is_err());
     }
 
     #[test]
@@ -189,7 +210,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("bad.ndjson"), "hello\n").expect("file");
         std::fs::write(d.join("out.html"), "old").expect("old");
-        assert!(run(&d.join("bad.ndjson"), &[d.join("out.html")], None).is_err());
+        assert!(run(&d.join("bad.ndjson"), &[d.join("out.html")], None, None).is_err());
         assert_eq!(
             std::fs::read_to_string(d.join("out.html")).expect("read"),
             "old"
@@ -201,7 +222,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("missing/b.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None).is_err());
+        assert!(run(&d.join("run.ndjson"), &outputs, None, None).is_err());
         assert!(!d.join("a.html").exists());
         let leftovers = std::fs::read_dir(&d).expect("dir").count();
         assert_eq!(leftovers, 1, "only the stream is left");
@@ -216,7 +237,7 @@ mod tests {
             format!("{cut}\n{{\"type\":\"file_sta"),
         )
         .expect("stream");
-        assert_eq!(run(&d.join("run.ndjson"), &[], None).expect("ok"), 0);
+        assert_eq!(run(&d.join("run.ndjson"), &[], None, None).expect("ok"), 0);
         assert!(d.join("run.html").is_file());
     }
 
@@ -225,7 +246,7 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("b.HTM")];
-        run(&d.join("run.ndjson"), &outputs, None).expect("ok");
+        run(&d.join("run.ndjson"), &outputs, None, None).expect("ok");
         assert!(d.join("a.html").is_file() && d.join("b.HTM").is_file());
     }
 }
