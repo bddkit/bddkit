@@ -1,3 +1,4 @@
+use crate::failure::StepError;
 use crate::json::path;
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
@@ -6,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
 use super::assert;
-use super::markup;
+use super::markup::{self, MarkupError};
 use regex::Regex;
 
 fn hex_nibble(byte: u8) -> Option<u8> {
@@ -18,17 +19,21 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn decode_aes256_key(key_hex: &str) -> Result<[u8; 32], String> {
+fn decode_aes256_key(key_hex: &str) -> Result<[u8; 32], StepError> {
     if key_hex.len() != 64 {
-        return Err("AES-256 key must be exactly 64 hexadecimal characters".to_string());
+        return Err(StepError::input(
+            "AES-256 key must be exactly 64 hexadecimal characters",
+        ));
     }
 
     let mut key = [0; 32];
     for (byte, pair) in key.iter_mut().zip(key_hex.as_bytes().as_chunks::<2>().0) {
-        let high = hex_nibble(pair[0])
-            .ok_or_else(|| "AES-256 key must contain only hexadecimal characters".to_string())?;
-        let low = hex_nibble(pair[1])
-            .ok_or_else(|| "AES-256 key must contain only hexadecimal characters".to_string())?;
+        let high = hex_nibble(pair[0]).ok_or_else(|| {
+            StepError::input("AES-256 key must contain only hexadecimal characters")
+        })?;
+        let low = hex_nibble(pair[1]).ok_or_else(|| {
+            StepError::input("AES-256 key must contain only hexadecimal characters")
+        })?;
         *byte = (high << 4) | low;
     }
     Ok(key)
@@ -45,10 +50,10 @@ pub fn encrypt_with_aes(
     plaintext: &str,
     key_hex: &str,
     prefix: &str,
-) -> Result<(), String> {
+) -> Result<(), StepError> {
     let key = decode_aes256_key(key_hex)?;
     let mut iv = [0; 16];
-    getrandom::fill(&mut iv).map_err(|_| "failed to read system entropy".to_string())?;
+    getrandom::fill(&mut iv).map_err(|_| StepError::host("failed to read system entropy"))?;
     let ciphertext = encrypt_aes256_cbc(plaintext, &key, &iv);
     let iv_hex = iv.iter().map(|byte| format!("{byte:02x}")).collect();
 
@@ -57,7 +62,7 @@ pub fn encrypt_with_aes(
     Ok(())
 }
 
-pub fn set_variable(w: &mut World, name: &str, value: &str, global: bool) -> Result<(), String> {
+pub fn set_variable(w: &mut World, name: &str, value: &str, global: bool) -> Result<(), StepError> {
     if global {
         if w.vars.shadowed_by_frame(name) {
             w.warnings.push(format!(
@@ -79,10 +84,18 @@ fn scalar(v: &serde_json::Value) -> String {
     }
 }
 
-pub fn extract_from_json(w: &mut World, p: &str, name: &str, global: bool) -> Result<(), String> {
-    let ex = w.http.last().ok_or("no request has been sent yet")?;
-    let v = ex.json()?;
-    let value = scalar(path::read(&v, p)?);
+pub fn extract_from_json(
+    w: &mut World,
+    p: &str,
+    name: &str,
+    global: bool,
+) -> Result<(), StepError> {
+    let ex = w
+        .http
+        .last()
+        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
+    let v = ex.json().map_err(StepError::assertion)?;
+    let value = scalar(path::read(&v, p).map_err(StepError::assertion)?);
     set_variable(w, name, &value, global)
 }
 
@@ -92,9 +105,9 @@ pub fn extract_json_from_variable(
     source: &str,
     name: &str,
     global: bool,
-) -> Result<(), String> {
-    let v = variable_json(w, source).map_err(AttemptError::into_message)?;
-    let value = scalar(path::read(&v, p)?);
+) -> Result<(), StepError> {
+    let v = variable_json(w, source).map_err(AttemptError::into_error)?;
+    let value = scalar(path::read(&v, p).map_err(StepError::input)?);
     set_variable(w, name, &value, global)
 }
 
@@ -106,18 +119,27 @@ pub fn extract_regex_from_variable(
     source: &str,
     name: &str,
     global: bool,
-) -> Result<(), String> {
-    let re = Regex::new(pattern).map_err(|e| format!("invalid regex {pattern:?}: {e}"))?;
+) -> Result<(), StepError> {
+    let re = Regex::new(pattern)
+        .map_err(|e| StepError::input(format!("invalid regex {pattern:?}: {e}")))?;
     if re.captures_len() < 2 {
-        return Err(format!("regex {pattern:?} has no capture group to extract"));
+        return Err(StepError::input(format!(
+            "regex {pattern:?} has no capture group to extract"
+        )));
     }
-    let text = variable(w, source).map_err(AttemptError::into_message)?;
-    let caps = re
-        .captures(text)
-        .ok_or_else(|| format!("regex {pattern:?} does not match variable {source:?}: {text:?}"))?;
+    let text = variable(w, source).map_err(AttemptError::into_error)?;
+    let caps = re.captures(text).ok_or_else(|| {
+        StepError::input(format!(
+            "regex {pattern:?} does not match variable {source:?}: {text:?}"
+        ))
+    })?;
     let value = caps
         .get(1)
-        .ok_or_else(|| format!("capture group 1 of {pattern:?} did not take part in the match"))?
+        .ok_or_else(|| {
+            StepError::input(format!(
+                "capture group 1 of {pattern:?} did not take part in the match"
+            ))
+        })?
         .as_str()
         .to_string();
     set_variable(w, name, &value, global)
@@ -128,18 +150,27 @@ pub fn extract_from_cookies(
     cookie: &str,
     name: &str,
     global: bool,
-) -> Result<(), String> {
-    let ex = w.http.last().ok_or("no request has been sent yet")?;
-    let value = ex
-        .set_cookie(cookie)
-        .ok_or_else(|| format!("cookie {cookie:?} not found in the response"))?;
+) -> Result<(), StepError> {
+    let ex = w
+        .http
+        .last()
+        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
+    let value = ex.set_cookie(cookie).ok_or_else(|| {
+        StepError::assertion(format!("cookie {cookie:?} not found in the response"))
+    })?;
     set_variable(w, name, &value, global)
 }
 
-pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<(), String> {
-    let ex = w.http.last().ok_or("no request has been sent yet")?;
+pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<(), StepError> {
+    let ex = w
+        .http
+        .last()
+        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
     let kind = markup::classify(markup::content_type(&ex.resp_headers));
-    let value = markup::select(kind, &ex.body, selector, false).map_err(|e| e.to_string())?;
+    let value = markup::select(kind, &ex.body, selector, false).map_err(|e| match e {
+        MarkupError::NoMatch(msg) => StepError::assertion(msg),
+        MarkupError::Fatal(msg) => StepError::input(msg),
+    })?;
     w.vars.set(name, value);
     Ok(())
 }
@@ -147,29 +178,29 @@ pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<
 fn variable<'a>(w: &'a World, name: &str) -> Result<&'a str, AttemptError> {
     w.vars
         .get(name)
-        .ok_or_else(|| AttemptError::Fatal(format!("variable {name:?} is not set")))
+        .ok_or_else(|| AttemptError::input(format!("variable {name:?} is not set")))
 }
 
 fn variable_json(w: &World, name: &str) -> Result<serde_json::Value, AttemptError> {
     serde_json::from_str(variable(w, name)?)
-        .map_err(|e| AttemptError::Fatal(format!("variable {name:?} is not valid JSON: {e}")))
+        .map_err(|e| AttemptError::input(format!("variable {name:?} is not valid JSON: {e}")))
 }
 
 /// Nothing runs between two attempts, so a variable cannot change under an
 /// armed `I expect the next assertion to pass …`: a mismatch is final, and
 /// polling it again would only burn the timeout to report the same thing.
 fn settled(result: AttemptResult) -> AttemptResult {
-    result.map_err(|e| AttemptError::Fatal(e.into_message()))
+    result.map_err(|e| AttemptError::Fatal(e.into_error()))
 }
 
 pub fn variable_equals(w: &World, name: &str, expected: &str, negate: bool) -> AttemptResult {
     let got = variable(w, name)?;
     match (got == expected, negate) {
         (true, false) | (false, true) => Ok(()),
-        (false, false) => Err(AttemptError::Fatal(format!(
+        (false, false) => Err(AttemptError::assertion(format!(
             "    expected: {expected}\n    actual:   {got}"
         ))),
-        (true, true) => Err(AttemptError::Fatal(format!(
+        (true, true) => Err(AttemptError::assertion(format!(
             "value must not equal {expected:?}, but it does"
         ))),
     }
@@ -318,7 +349,7 @@ mod tests {
         let error = encrypt_with_aes(&mut world, "secret", &"z0".repeat(32), "otp")
             .expect_err("non-hex key is rejected");
 
-        assert!(error.contains("hexadecimal"), "{error}");
+        assert!(error.message.contains("hexadecimal"), "{error}");
         assert_eq!(world.vars.get("otp_ciphertext"), None);
         assert_eq!(world.vars.get("otp_ivHex"), None);
     }
@@ -329,7 +360,7 @@ mod tests {
         let error = encrypt_with_aes(&mut world, "secret", &"11".repeat(16), "otp")
             .expect_err("short key is rejected");
 
-        assert!(error.contains("64"), "{error}");
+        assert!(error.message.contains("64"), "{error}");
         assert_eq!(world.vars.get("otp_ciphertext"), None);
         assert_eq!(world.vars.get("otp_ivHex"), None);
     }
@@ -369,7 +400,7 @@ mod tests {
         });
 
         let err = extract_from_markup(&mut w, ".missing", "pageTitle").unwrap_err();
-        assert!(err.contains("missing"), "{err}");
+        assert!(err.message.contains("missing"), "{err}");
         assert_eq!(w.vars.get("pageTitle"), None);
     }
 
@@ -387,7 +418,8 @@ mod tests {
             panic!("a non-JSON variable must be fatal");
         };
         assert!(
-            msg.contains(r#"variable "out" is not valid JSON: expected"#),
+            msg.message
+                .contains(r#"variable "out" is not valid JSON: expected"#),
             "{msg}"
         );
     }
@@ -422,7 +454,7 @@ mod tests {
         let Err(AttemptError::Fatal(msg)) = variable_empty(&world(), "nope") else {
             panic!("an unset variable must be fatal");
         };
-        assert_eq!(msg, r#"variable "nope" is not set"#);
+        assert_eq!(msg.message, r#"variable "nope" is not set"#);
     }
 
     #[test]
@@ -436,7 +468,7 @@ mod tests {
     fn extract_regex_without_a_capture_group_is_refused() {
         let mut w = world_with("out", "id=12");
         let err = extract_regex_from_variable(&mut w, r"id=\d+", "out", "id", false).unwrap_err();
-        assert!(err.contains("no capture group"), "{err}");
+        assert!(err.message.contains("no capture group"), "{err}");
     }
 
     /// Every variable already outlives its scenario, so only a macro frame

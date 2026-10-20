@@ -339,6 +339,28 @@ fn a_failed_reset_scenario_fails_the_scenario() {
     assert!(stdout.contains("failed: 1"), "{stdout}");
 }
 
+#[test]
+fn a_fatal_plugin_reply_is_a_plugin_failure() {
+    let dir = project(
+        "class-fatal",
+        "Feature: f\n  Scenario: s\n    Then the echo should fail\n",
+        ECHO_GROUP,
+    );
+    let stdout = String::from_utf8_lossy(&run(&dir).stdout).into_owned();
+    assert!(stdout.contains("failed: 1 (1 plugin)"), "{stdout}");
+}
+
+#[test]
+fn a_failed_reset_is_a_reset_failure() {
+    let dir = project(
+        "class-reset",
+        "Feature: f\n  Scenario: a\n    When I echo \"x\" as \"g\"\n\n  Scenario: b\n    When I echo \"y\" as \"g\"\n",
+        "  echo:\n    main:\n      prefix: \"p-\"\n      fail_reset: true\n",
+    );
+    let stdout = String::from_utf8_lossy(&run(&dir).stdout).into_owned();
+    assert!(stdout.contains("failed: 1 (1 reset)"), "{stdout}");
+}
+
 /// The only plugin invariant no other suite can see: `Plugins::shutdown` must
 /// run on every exit path, including a failed run, so a plugin's instance
 /// never outlives the process. `shutdown_drops_every_live_instance` (unit

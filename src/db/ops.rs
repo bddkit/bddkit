@@ -1,7 +1,8 @@
 use crate::db::plan::{self, InsertPlan, PkSource};
 use crate::db::platform::Platform;
 use crate::db::reference::TableRef;
-use crate::db::{bind_all, text_col, value};
+use crate::db::{bind_all, db_read, sql_failure, text_col, value};
+use crate::failure::StepError;
 use crate::world::World;
 use sqlx::AnyPool;
 use sqlx::any::AnyArguments;
@@ -70,15 +71,15 @@ pub async fn resolve<'a>(
         Arc<plan::TableSchema>,
         TableRef,
     ),
-    String,
+    StepError,
 > {
-    let tref = TableRef::parse(raw_table)?;
+    let tref = TableRef::parse(raw_table).map_err(StepError::input)?;
     let conn = tref
         .conn
         .clone()
         .unwrap_or_else(|| w.db.current().to_string());
-    let db = w.db.resources()?;
-    let state = db.connection(&conn)?;
+    let db = w.db.resources().map_err(StepError::input)?;
+    let state = db.connection(&conn).map_err(StepError::input)?;
     let schema = db.schema(&conn, &tref).await?;
     Ok((&state.pool, state.platform, schema, tref))
 }
@@ -89,7 +90,7 @@ pub async fn insert(
     raw_table: &str,
     values: &[(String, Option<String>)],
     index: Option<usize>,
-) -> Result<(), String> {
+) -> Result<(), StepError> {
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
     let InsertPlan {
         sql,
@@ -111,7 +112,7 @@ pub async fn insert(
     if pk_vars.is_empty() {
         timed(w, &stmt, bind_all(sqlx::query(&sql), &binds).execute(pool))
             .await
-            .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
+            .map_err(|e| sql_failure(&e, format!("INSERT into {}: {e}", tref.sql_name())))?;
         return Ok(());
     }
 
@@ -122,13 +123,13 @@ pub async fn insert(
             bind_all(sqlx::query(&sql), &binds).fetch_one(pool),
         )
         .await
-        .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
+        .map_err(|e| sql_failure(&e, format!("INSERT into {}: {e}", tref.sql_name())))?;
         // PK values come back as text, per Platform::returning, in pk_vars order.
         let mut assignments = Vec::new();
         for (i, (name, _)) in pk_vars.iter().enumerate() {
             let v = text_col(&row, i)
-                .map_err(|e| format!("reading RETURNING: {e}"))?
-                .ok_or_else(|| "reading RETURNING: unexpected NULL".to_string())?;
+                .map_err(|e| db_read(format!("reading RETURNING: {e}")))?
+                .ok_or_else(|| db_read("reading RETURNING: unexpected NULL"))?;
             assignments.push((name.clone(), v));
         }
         assignments
@@ -142,7 +143,7 @@ pub async fn insert(
         // file's id, not rarely.
         let result = timed(w, &stmt, bind_all(sqlx::query(&sql), &binds).execute(pool))
             .await
-            .map_err(|e| format!("INSERT into {}: {e}", tref.sql_name()))?;
+            .map_err(|e| sql_failure(&e, format!("INSERT into {}: {e}", tref.sql_name())))?;
         let mut assignments = Vec::new();
         for (name, source) in &pk_vars {
             let v = match source {
@@ -153,10 +154,10 @@ pub async fn insert(
                     // generated — not a real id, so it must not become one.
                     .filter(|id| *id > 0)
                     .ok_or_else(|| {
-                        format!(
+                        db_read(format!(
                             "INSERT into {}: expected an auto-increment id in the INSERT result, got none",
                             tref.sql_name()
-                        )
+                        ))
                     })?
                     .to_string(),
                 PkSource::Unknown(col) => unreachable!(
@@ -175,10 +176,15 @@ pub async fn insert(
 }
 
 /// UPDATE ... SET ... WHERE ...; stores the number of affected rows in `updated_<table>`.
-pub async fn update(w: &mut World, raw_table: &str, set: &str, where_: &str) -> Result<(), String> {
+pub async fn update(
+    w: &mut World,
+    raw_table: &str,
+    set: &str,
+    where_: &str,
+) -> Result<(), StepError> {
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
-    let set_pairs = value::parse_oneliner(set)?;
-    let where_pairs = value::parse_oneliner(where_)?;
+    let set_pairs = value::parse_oneliner(set).map_err(StepError::input)?;
+    let where_pairs = value::parse_oneliner(where_).map_err(StepError::input)?;
     let (sql, binds) = plan::build_update(
         platform,
         &schema,
@@ -190,7 +196,7 @@ pub async fn update(w: &mut World, raw_table: &str, set: &str, where_: &str) -> 
     let stmt = Stmt::new(w, tref.conn.as_deref(), &sql, &binds);
     let done = timed(w, &stmt, bind_all(sqlx::query(&sql), &binds).execute(pool))
         .await
-        .map_err(|e| format!("UPDATE {}: {e}", tref.sql_name()))?;
+        .map_err(|e| sql_failure(&e, format!("UPDATE {}: {e}", tref.sql_name())))?;
     let table = tref.table.clone();
     w.vars.set(
         &format!("updated_{table}"),
@@ -201,15 +207,15 @@ pub async fn update(w: &mut World, raw_table: &str, set: &str, where_: &str) -> 
 
 /// DELETE FROM ... WHERE ... (an empty WHERE is rejected by the builder);
 /// stores the number of deleted rows in `deleted_<table>`.
-pub async fn delete(w: &mut World, raw_table: &str, where_: &str) -> Result<(), String> {
+pub async fn delete(w: &mut World, raw_table: &str, where_: &str) -> Result<(), StepError> {
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
-    let where_pairs = value::parse_oneliner(where_)?;
+    let where_pairs = value::parse_oneliner(where_).map_err(StepError::input)?;
     let (sql, binds) = plan::build_delete(platform, &schema, &tref.sql_name(), &where_pairs)?;
     log_sql(w, &sql, &binds, &[]);
     let stmt = Stmt::new(w, tref.conn.as_deref(), &sql, &binds);
     let done = timed(w, &stmt, bind_all(sqlx::query(&sql), &binds).execute(pool))
         .await
-        .map_err(|e| format!("DELETE {}: {e}", tref.sql_name()))?;
+        .map_err(|e| sql_failure(&e, format!("DELETE {}: {e}", tref.sql_name())))?;
     let table = tref.table.clone();
     w.vars.set(
         &format!("deleted_{table}"),
@@ -223,7 +229,7 @@ pub async fn exists(
     w: &mut World,
     raw_table: &str,
     where_pairs: &[(String, Option<String>)],
-) -> Result<bool, String> {
+) -> Result<bool, StepError> {
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
     let (sql, binds) = plan::build_exists(platform, &schema, &tref.sql_name(), where_pairs)?;
     log_sql(w, &sql, &binds, &[]);
@@ -234,7 +240,7 @@ pub async fn exists(
         bind_all(sqlx::query(&sql), &binds).fetch_optional(pool),
     )
     .await
-    .map_err(|e| format!("checking presence in {}: {e}", tref.sql_name()))?
+    .map_err(|e| sql_failure(&e, format!("checking presence in {}: {e}", tref.sql_name())))?
     .is_some())
 }
 
@@ -246,16 +252,19 @@ pub async fn extract(
     raw_table: &str,
     where_str: &str,
     var: &str,
-) -> Result<(), String> {
+) -> Result<(), StepError> {
     let (pool, platform, schema, tref) = resolve(w, raw_table).await?;
     // The read column is a plain name — the one position where a name is
     // neither a condition nor a written value, and so takes no operator.
-    plan::plain_column(column)?;
-    let col = schema
-        .col(column)
-        .ok_or_else(|| format!("column {column:?} is missing from {}", tref.sql_name()))?;
-    platform.check_bindable(col)?;
-    let where_pairs = value::parse_oneliner(where_str)?;
+    plan::plain_column(column).map_err(StepError::input)?;
+    let col = schema.col(column).ok_or_else(|| {
+        db_read(format!(
+            "column {column:?} is missing from {}",
+            tref.sql_name()
+        ))
+    })?;
+    platform.check_bindable(col).map_err(StepError::input)?;
+    let where_pairs = value::parse_oneliner(where_str).map_err(StepError::input)?;
     let (where_sql, binds) = plan::build_where(platform, &schema, &where_pairs, 1)?;
     let sql = format!(
         "SELECT {} FROM {} WHERE {where_sql} LIMIT 1",
@@ -270,9 +279,15 @@ pub async fn extract(
         bind_all(sqlx::query(&sql), &binds).fetch_optional(pool),
     )
     .await
-    .map_err(|e| format!("SELECT {}: {e}", tref.sql_name()))?
-    .ok_or_else(|| format!("no row in {} matched the condition", tref.sql_name()))?;
-    let v = text_col(&row, 0).map_err(|e| format!("reading value: {e}"))?;
+    .map_err(|e| sql_failure(&e, format!("SELECT {}: {e}", tref.sql_name())))?
+    .ok_or_else(|| {
+        // The statement ran: the data the test expects is not there.
+        StepError::assertion(format!(
+            "no row in {} matched the condition",
+            tref.sql_name()
+        ))
+    })?;
+    let v = text_col(&row, 0).map_err(|e| db_read(format!("reading value: {e}")))?;
     let value = v.unwrap_or_default();
     w.vars.set(var, value);
     Ok(())
@@ -280,14 +295,14 @@ pub async fn extract(
 
 /// DELETE FROM ... with no WHERE — a full table clear;
 /// stores the number of deleted rows in `deleted_<table>`.
-pub async fn delete_all(w: &mut World, raw_table: &str) -> Result<(), String> {
+pub async fn delete_all(w: &mut World, raw_table: &str) -> Result<(), StepError> {
     let (pool, _platform, _schema, tref) = resolve(w, raw_table).await?;
     let sql = plan::build_delete_all(&tref.sql_name());
     log_sql(w, &sql, &[], &[]);
     let stmt = Stmt::new(w, tref.conn.as_deref(), &sql, &[]);
     let done = timed(w, &stmt, sqlx::query(&sql).execute(pool))
         .await
-        .map_err(|e| format!("DELETE ALL {}: {e}", tref.sql_name()))?;
+        .map_err(|e| sql_failure(&e, format!("DELETE ALL {}: {e}", tref.sql_name())))?;
     let table = tref.table.clone();
     w.vars.set(
         &format!("deleted_{table}"),
@@ -336,10 +351,10 @@ fn placeholder_list(p: &dyn Platform, n: usize) -> String {
 }
 
 /// Calls a procedure: `CALL name(...)` with positional arguments.
-pub async fn call_procedure(w: &mut World, name: &str, args_str: &str) -> Result<(), String> {
-    let args = value::parse_args(args_str)?;
-    let db = w.db.resources()?;
-    let state = db.connection(w.db.current())?;
+pub async fn call_procedure(w: &mut World, name: &str, args_str: &str) -> Result<(), StepError> {
+    let args = value::parse_args(args_str).map_err(StepError::input)?;
+    let db = w.db.resources().map_err(StepError::input)?;
+    let state = db.connection(w.db.current()).map_err(StepError::input)?;
     let sql = format!(
         "CALL {name}({})",
         placeholder_list(state.platform, args.len())
@@ -355,7 +370,7 @@ pub async fn call_procedure(w: &mut World, name: &str, args_str: &str) -> Result
         bind_args(sqlx::query(&sql), &args).execute(&state.pool),
     )
     .await
-    .map_err(|e| format!("CALL {name}: {e}"))?;
+    .map_err(|e| sql_failure(&e, format!("CALL {name}: {e}")))?;
     Ok(())
 }
 
@@ -366,10 +381,10 @@ pub async fn call_function(
     name: &str,
     args_str: &str,
     var: &str,
-) -> Result<(), String> {
-    let args = value::parse_args(args_str)?;
-    let db = w.db.resources()?;
-    let state = db.connection(w.db.current())?;
+) -> Result<(), StepError> {
+    let args = value::parse_args(args_str).map_err(StepError::input)?;
+    let db = w.db.resources().map_err(StepError::input)?;
+    let state = db.connection(w.db.current()).map_err(StepError::input)?;
     let call = format!("{name}({})", placeholder_list(state.platform, args.len()));
     let sql = state.platform.cast_text(&call);
     let sql = format!("SELECT {sql}");
@@ -384,21 +399,23 @@ pub async fn call_function(
         bind_args(sqlx::query(&sql), &args).fetch_one(&state.pool),
     )
     .await
-    .map_err(|e| format!("SELECT {name}(...): {e}"))?;
-    let v = text_col(&row, 0).map_err(|e| format!("reading function result: {e}"))?;
+    .map_err(|e| sql_failure(&e, format!("SELECT {name}(...): {e}")))?;
+    let v = text_col(&row, 0).map_err(|e| db_read(format!("reading function result: {e}")))?;
     let value = v.unwrap_or_default();
     w.vars.set(var, value);
     Ok(())
 }
 
 /// Advances a sequence via `Platform::next_sequence`; stores the value in a variable.
-pub async fn next_sequence(w: &mut World, seq: &str, var: &str) -> Result<(), String> {
-    let db = w.db.resources()?;
-    let state = db.connection(w.db.current())?;
-    let (sql, binds) = state
-        .platform
-        .next_sequence(seq)
-        .ok_or_else(|| format!("sequences are not supported on {}", state.platform.name()))?;
+pub async fn next_sequence(w: &mut World, seq: &str, var: &str) -> Result<(), StepError> {
+    let db = w.db.resources().map_err(StepError::input)?;
+    let state = db.connection(w.db.current()).map_err(StepError::input)?;
+    let (sql, binds) = state.platform.next_sequence(seq).ok_or_else(|| {
+        StepError::input(format!(
+            "sequences are not supported on {}",
+            state.platform.name()
+        ))
+    })?;
     if w.debug {
         debug_eprintln!(w, "SQL: {sql} [{seq}]");
     }
@@ -409,9 +426,9 @@ pub async fn next_sequence(w: &mut World, seq: &str, var: &str) -> Result<(), St
         bind_all(sqlx::query(&sql), &binds).fetch_one(&state.pool),
     )
     .await
-    .map_err(|e| format!("next value of sequence {seq:?}: {e}"))?;
+    .map_err(|e| sql_failure(&e, format!("next value of sequence {seq:?}: {e}")))?;
     let v = text_col(&row, 0)
-        .map_err(|e| format!("reading sequence: {e}"))?
+        .map_err(|e| db_read(format!("reading sequence: {e}")))?
         .unwrap_or_default();
     w.vars.set(var, v);
     Ok(())

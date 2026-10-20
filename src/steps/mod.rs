@@ -9,6 +9,7 @@ pub mod plugin;
 pub mod srp;
 pub mod vars;
 
+use crate::failure::StepError;
 use crate::macros::{MacroCatalog, MacroDef};
 use crate::options::{OptionsLayer, PollingOptionsLayer};
 use crate::polling::{AttemptError, AttemptResult};
@@ -1153,7 +1154,7 @@ impl Args {
 
 /// One `match` instead of boxed futures and trait objects.
 pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> AttemptResult {
-    let result: Result<(), String> = match id {
+    let result: Result<(), StepError> = match id {
         StepId::SetRequestHeader => api::set_header(w, a.cap(0), a.cap(1)),
         // The step names the value before the name: `I add "V" to the "H" request header`.
         StepId::AddRequestHeader => api::add_header(w, a.cap(1), a.cap(0)),
@@ -1172,7 +1173,7 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
             Ok(())
         }
         StepId::ExpectWithin => {
-            let timeout_secs = parse_positive(a.cap(0))?;
+            let timeout_secs = parse_positive(a.cap(0)).map_err(StepError::input)?;
             w.arm_options(OptionsLayer {
                 polling: Some(PollingOptionsLayer {
                     timeout_secs: Some(timeout_secs),
@@ -1182,10 +1183,12 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
             Ok(())
         }
         StepId::ExpectWithinEvery => {
-            let timeout_secs = parse_positive(a.cap(0))?;
-            let interval_ms = parse_positive(a.cap(1))?;
+            let timeout_secs = parse_positive(a.cap(0)).map_err(StepError::input)?;
+            let interval_ms = parse_positive(a.cap(1)).map_err(StepError::input)?;
             if interval_ms > timeout_secs.saturating_mul(1000) {
-                Err("polling interval_ms must not exceed timeout_secs".to_string())
+                Err(StepError::input(
+                    "polling interval_ms must not exceed timeout_secs",
+                ))
             } else {
                 w.arm_options(OptionsLayer {
                     polling: Some(PollingOptionsLayer {
@@ -1313,7 +1316,9 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         }
         StepId::EncryptWithAes => vars::encrypt_with_aes(w, a.cap(0), a.cap(1), a.cap(2)),
         StepId::UseApi => api::use_api(w, a.cap(0)),
-        StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)),
+        StepId::UsePluginInstance => {
+            plugin::use_instance(w, a.cap(1), a.cap(0)).map_err(StepError::input)
+        }
         StepId::UseConnection => db::use_connection(w, a.cap(0)),
         StepId::DebugOn => db::debug_on(w),
         StepId::DebugOff => db::debug_off(w),
@@ -1337,20 +1342,26 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::CallProcedure => db::call_procedure(w, a.cap(0), a.cap(1)).await,
         StepId::CallFunction => db::call_function(w, a.cap(0), a.cap(1), a.cap(2)).await,
         StepId::GetSequence => db::get_sequence(w, a.cap(0), a.cap(1)).await,
-        StepId::Sleep => sleep(a.cap(0)).await,
-        StepId::ShowAllVariables => show_all_variables(w),
-        StepId::ShowVariable => show_variable(w, a.cap(0)),
-        StepId::PrintResponseHeaders => debug::print_headers(w),
-        StepId::PrintResponseBody => debug::print_body(w),
-        StepId::PrintResponseBodyAsPath => debug::print_body_as(w, a.cap(0)),
-        StepId::PrintTable => debug::print_table(w, a.table.as_ref()),
-        StepId::SrpVerifier => srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)),
+        StepId::Sleep => sleep(a.cap(0)).await.map_err(StepError::input),
+        StepId::ShowAllVariables => show_all_variables(w).map_err(StepError::input),
+        StepId::ShowVariable => show_variable(w, a.cap(0)).map_err(StepError::input),
+        StepId::PrintResponseHeaders => debug::print_headers(w).map_err(StepError::input),
+        StepId::PrintResponseBody => debug::print_body(w).map_err(StepError::input),
+        StepId::PrintResponseBodyAsPath => {
+            debug::print_body_as(w, a.cap(0)).map_err(StepError::input)
+        }
+        StepId::PrintTable => debug::print_table(w, a.table.as_ref()).map_err(StepError::input),
+        StepId::SrpVerifier => {
+            srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)).map_err(StepError::input)
+        }
         StepId::SrpVerifierWithSalt => {
             srp::generate_verifier(w, a.cap(0), a.cap(1), Some(a.cap(2)), a.cap(3))
+                .map_err(StepError::input)
         }
-        StepId::SrpStartLogin => srp::start_login(w, a.cap(0)),
+        StepId::SrpStartLogin => srp::start_login(w, a.cap(0)).map_err(StepError::input),
         StepId::SrpCompleteLogin => {
             srp::complete_login(w, a.cap(0), a.cap(1), a.cap(2), a.cap(3), a.cap(4))
+                .map_err(StepError::input)
         }
         StepId::Include | StepId::IncludeScenario => {
             unreachable!("execute_step intercepts Include/IncludeScenario before calling dispatch")

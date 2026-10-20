@@ -80,7 +80,7 @@
     return n + f.scenarios.filter(isBad).length + (f.panicked && !f.scenarios.some(isBad) ? 1 : 0);
   }, 0);
   function isBad(s) { return s.status !== 'passed'; }
-  const state = { status: failedCount ? 'failed' : 'all', q: '', tag: '', s: '' };
+  const state = { status: failedCount ? 'failed' : 'all', q: '', tag: '', kind: '', s: '' };
   function readHash() {
     const p = new URLSearchParams(location.hash.slice(1));
     Object.keys(state).forEach(function (k) { if (p.has(k)) state[k] = p.get(k); });
@@ -137,8 +137,21 @@
   const none = el('option', '', 'All tags'); none.value = ''; tagSel.appendChild(none);
   allTags.forEach(function (t) { const o = el('option', '', t); o.value = t; tagSel.appendChild(o); });
   tagSel.value = state.tag;
+  const allKinds = [];
+  run.files.forEach(function (f) {
+    f.scenarios.forEach(function (s) { if (s.failure_kind && allKinds.indexOf(s.failure_kind) < 0) allKinds.push(s.failure_kind); });
+  });
+  allKinds.sort();
+  // A link from another run may name a class this one does not have.
+  if (state.kind && allKinds.indexOf(state.kind) < 0) state.kind = '';
+  const kindSel = el('select');
+  const anyKind = el('option', '', 'All failure classes'); anyKind.value = ''; kindSel.appendChild(anyKind);
+  allKinds.forEach(function (k) { const o = el('option', '', k); o.value = k; kindSel.appendChild(o); });
+  kindSel.value = state.kind;
   const counter = el('span', 'count');
-  add(bar, status, search, tagSel, counter);
+  add(bar, status, search, tagSel);
+  if (allKinds.length) bar.appendChild(kindSel);
+  bar.appendChild(counter);
   root.appendChild(bar);
   const list = el('main');
   root.appendChild(list);
@@ -285,6 +298,7 @@
     if (state.status === 'failed' && !isBad(s)) return false;
     if (state.status === 'passed' && s.status !== 'passed') return false;
     if (state.tag && s.tags.indexOf(state.tag) < 0) return false;
+    if (state.kind && s.failure_kind !== state.kind) return false;
     if (state.q && haystack(file, s).indexOf(state.q.toLowerCase()) < 0) return false;
     return true;
   }
@@ -294,7 +308,7 @@
     run.files.forEach(function (file, fi) {
       const visible = [];
       file.scenarios.forEach(function (s, si) { if (matches(file, s)) visible.push([s, si]); });
-      const unfiltered = state.status !== 'passed' && !state.q && !state.tag;
+      const unfiltered = state.status !== 'passed' && !state.q && !state.tag && !state.kind;
       if (!visible.length && !(file.panicked && unfiltered)) return;
       shown += visible.length;
       const section = el('section', 'file-block');
@@ -311,7 +325,7 @@
         const d = el('details', 'scenario ' + s.status);
         d.id = 's' + id;
         const sum = el('summary');
-        add(sum, el('span', 'badge ' + s.status, s.status), el('span', 'name', s.name), tagList(s.tags),
+        add(sum, el('span', 'badge ' + s.status, s.status), el('span', 'badge kind', s.failure_kind || ''), el('span', 'name', s.name), tagList(s.tags),
           el('span', 'dur', fmtDuration(s.duration_us)));
         d.appendChild(sum);
         let built = false;
@@ -334,11 +348,11 @@
     if (target) target.scrollIntoView();
   }
   function changed() {
-    state.status = status.value; state.q = search.value; state.tag = tagSel.value; state.s = '';
+    state.status = status.value; state.q = search.value; state.tag = tagSel.value; state.kind = kindSel.value; state.s = '';
     writeHash(); render();
   }
-  status.onchange = tagSel.onchange = changed;
+  status.onchange = tagSel.onchange = kindSel.onchange = changed;
   search.oninput = changed;
-  window.addEventListener('hashchange', function () { readHash(); status.value = state.status; search.value = state.q; tagSel.value = state.tag; render(); });
+  window.addEventListener('hashchange', function () { readHash(); status.value = state.status; search.value = state.q; tagSel.value = state.tag; kindSel.value = state.kind; render(); });
   render();
 })();

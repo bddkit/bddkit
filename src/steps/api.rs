@@ -1,38 +1,46 @@
+use crate::failure::StepError;
 use crate::world::World;
 
-pub fn set_header(w: &mut World, name: &str, value: &str) -> Result<(), String> {
+pub fn set_header(w: &mut World, name: &str, value: &str) -> Result<(), StepError> {
     w.http.set_header(name, value);
     Ok(())
 }
 
 /// Argument order matches `set_header`. The step text names them in
 /// reverse order — the swap happens on the dispatcher side, in one place.
-pub fn add_header(w: &mut World, name: &str, value: &str) -> Result<(), String> {
+pub fn add_header(w: &mut World, name: &str, value: &str) -> Result<(), StepError> {
     w.http.add_header(name, value);
     Ok(())
 }
 
-pub fn set_query(w: &mut World, name: &str, value: &str) -> Result<(), String> {
+pub fn set_query(w: &mut World, name: &str, value: &str) -> Result<(), StepError> {
     w.http.set_query(name, value);
     Ok(())
 }
 
-pub fn set_body(w: &mut World, docstring: Option<&String>) -> Result<(), String> {
-    let b = docstring.ok_or("step `the request body is:` requires a doc string")?;
+pub fn set_body(w: &mut World, docstring: Option<&String>) -> Result<(), StepError> {
+    let b = docstring
+        .ok_or_else(|| StepError::input("step `the request body is:` requires a doc string"))?;
     w.http.set_body(b.clone());
     Ok(())
 }
 
-pub fn clear_body(w: &mut World) -> Result<(), String> {
+pub fn clear_body(w: &mut World) -> Result<(), StepError> {
     w.http.clear_body();
     Ok(())
 }
 
-pub fn set_form(w: &mut World, table: Option<&Vec<Vec<String>>>) -> Result<(), String> {
-    let rows = table.ok_or("step `the request form parameters are:` requires a table")?;
-    let head = rows.first().ok_or("table is empty")?;
+pub fn set_form(w: &mut World, table: Option<&Vec<Vec<String>>>) -> Result<(), StepError> {
+    let rows = table.ok_or_else(|| {
+        StepError::input("step `the request form parameters are:` requires a table")
+    })?;
+    let head = rows
+        .first()
+        .ok_or_else(|| StepError::input("table is empty"))?;
     if head.len() != 2 || head[0] != "name" || head[1] != "value" {
-        return Err("table must have exactly two columns: name | value".into());
+        return Err(StepError::input(
+            "table must have exactly two columns: name | value",
+        ));
     }
     let pairs = rows[1..]
         .iter()
@@ -51,30 +59,30 @@ pub fn attach_file(
     base_dir: &std::path::Path,
     file: &str,
     part: &str,
-) -> Result<(), String> {
+) -> Result<(), StepError> {
     let path = crate::include::join(file, base_dir);
     let bytes = std::fs::read(&path).map_err(|e| {
-        format!(
+        StepError::input(format!(
             "I attach the file {file:?}: cannot read {}: {e}",
             crate::feature::display_path(&path)
-        )
+        ))
     })?;
     w.http.attach_file(part, &path, bytes);
     Ok(())
 }
 
-pub async fn request(w: &mut World, path: &str, method: &str) -> Result<(), String> {
+pub async fn request(w: &mut World, path: &str, method: &str) -> Result<(), StepError> {
     w.http.send(path, method).await
 }
 
 /// Records Hawk credentials for the next `I request ...` only; it does not
 /// sign anything itself. `HttpState::send` consumes them.
-pub fn sign_next_request_with_hawk(w: &mut World, id: &str, key: &str) -> Result<(), String> {
+pub fn sign_next_request_with_hawk(w: &mut World, id: &str, key: &str) -> Result<(), StepError> {
     w.http.sign_next(id, key);
     Ok(())
 }
 
 /// Switches the scenario's current API. An error if the name is not declared.
-pub fn use_api(w: &mut World, name: &str) -> Result<(), String> {
-    w.http.use_api(name)
+pub fn use_api(w: &mut World, name: &str) -> Result<(), StepError> {
+    w.http.use_api(name).map_err(StepError::input)
 }

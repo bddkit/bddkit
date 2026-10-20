@@ -67,6 +67,8 @@ pub struct Scenario {
     pub status: String,
     pub duration_us: Option<u64>,
     pub failure: Option<String>,
+    /// The class of `failure`; absent in a stream older than failure classes.
+    pub failure_kind: Option<String>,
     pub items: Vec<Item>,
 }
 
@@ -276,6 +278,7 @@ impl Builder {
             status: "open".into(),
             duration_us: None,
             failure: None,
+            failure_kind: None,
             items: Vec::new(),
         });
     }
@@ -381,6 +384,7 @@ impl Builder {
         .into();
         scenario.duration_us = event["duration_us"].as_u64();
         scenario.failure = text(event, "failure");
+        scenario.failure_kind = text(event, "failure_kind");
     }
 
     fn finish(mut self, cut: bool) -> Run {
@@ -460,7 +464,7 @@ mod tests {
             json!({"type": "step_finished", "file": "a.feature", "scenario": 0, "step": 0, "status": "failed", "duration_us": 9, "warnings": ["w"]}),
             json!({"type": "step_disabled", "file": "a.feature", "scenario": 0, "keyword": "When ", "text": "off", "line": 6}),
             json!({"type": "step_skipped", "file": "a.feature", "scenario": 0, "step": 2, "keyword": "Then ", "text": "later", "line": 7}),
-            json!({"type": "scenario_finished", "file": "a.feature", "scenario": 0, "status": "failed", "duration_us": 20, "failure": "boom"}),
+            json!({"type": "scenario_finished", "file": "a.feature", "scenario": 0, "status": "failed", "duration_us": 20, "failure": "boom", "failure_kind": "transport"}),
             json!({"type": "run_finished", "exit": 1, "files": 1, "scenarios": 1, "failed": 1, "duration_ms": 3}),
         ]);
         let run = model(&events);
@@ -474,6 +478,7 @@ mod tests {
         assert!(outer.children[0].evidence[0].get("seq").is_none());
         assert_eq!(scenario.items[3].status, Some("skipped"));
         assert_eq!(scenario.failure.as_deref(), Some("boom"));
+        assert_eq!(scenario.failure_kind.as_deref(), Some("transport"));
         assert!(!run.incomplete && !run.masking && run.evidence);
     }
 

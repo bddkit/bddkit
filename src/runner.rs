@@ -1,4 +1,5 @@
 use crate::events::{Events, Origin, Trace};
+use crate::failure::{FailureKind, StepError};
 use crate::feature::{ExpandedStep, LoadedFeature, ScenarioRef, expand_outlines};
 use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
@@ -173,7 +174,7 @@ fn execute_step<'a>(
     generator: &'a Generator,
     depth: usize,
     origin: Origin<'a>,
-) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<(), StepError>> + Send + 'a>> {
     Box::pin(async move {
         let started = Instant::now();
         let warned = world.warnings.len();
@@ -191,13 +192,17 @@ fn execute_step<'a>(
         );
         let result = match resolved {
             Ok(resolved) => run_step(world, reg, step, source, generator, depth, resolved).await,
-            Err(error) => Err(error),
+            // Everything `resolve` refuses is the scenario's own text: an
+            // unknown step, a variable that is not set, a value of the wrong type.
+            Err(error) => Err(StepError::input(error)),
         };
         // Still the innermost step in flight: this is whose exchanges they are.
         world.flush_evidence();
-        world
-            .trace
-            .step_finished(result.is_ok(), started.elapsed(), &world.warnings[warned..]);
+        world.trace.step_finished(
+            result.as_ref().err().map(|error| error.kind),
+            started.elapsed(),
+            &world.warnings[warned..],
+        );
         result
     })
 }
@@ -210,7 +215,7 @@ async fn run_step(
     generator: &Generator,
     depth: usize,
     resolved: Resolved,
-) -> Result<(), String> {
+) -> Result<(), StepError> {
     let Resolved {
         target, caps, args, ..
     } = resolved;
@@ -229,19 +234,23 @@ async fn run_step(
             match kind {
                 StepKind::Action => dispatch(world, id, &args, 0)
                     .await
-                    .map_err(AttemptError::into_message),
+                    .map_err(AttemptError::into_error),
                 StepKind::Assertion(source_kind) => {
                     let Some(layer) = world.take_options() else {
                         return dispatch(world, id, &args, 0)
                             .await
-                            .map_err(AttemptError::into_message);
+                            .map_err(AttemptError::into_error);
                     };
                     let base = match source_kind {
                         OptionsSource::Global => world.options.clone(),
-                        OptionsSource::Http => world.http.options_for_last_response()?.clone(),
-                        OptionsSource::Db => world.db.options()?.clone(),
+                        OptionsSource::Http => world
+                            .http
+                            .options_for_last_response()
+                            .map_err(StepError::input)?
+                            .clone(),
+                        OptionsSource::Db => world.db.options().map_err(StepError::input)?.clone(),
                     };
-                    let effective = base.apply(&layer)?;
+                    let effective = base.apply(&layer).map_err(StepError::input)?;
                     let shown = reg.display_text(&step.text, &world.redactor);
                     let mut polling = Polling::new(&shown, &effective.polling);
                     let mut attempt = 0;
@@ -254,7 +263,7 @@ async fn run_step(
                             Ok(()) => return Ok(()),
                             Err(AttemptError::Fatal(error)) => return Err(error),
                             Err(AttemptError::NotYet(error)) => {
-                                world.trace.attempt(attempt + 1, &error);
+                                world.trace.attempt(attempt + 1, &error.message);
                                 polling.after_not_yet(&error).await?;
                                 attempt += 1;
                             }
@@ -311,14 +320,20 @@ async fn run_step(
                 )
                 .await
                 {
-                    world.vars.pop_frame(&[])?;
-                    return Err(format!(
-                        "  {}\n{error}",
-                        reg.display_text(&body_step.text, &world.redactor)
-                    ));
+                    world.vars.pop_frame(&[]).map_err(StepError::input)?;
+                    // The inner step's class stands; the macro adds context.
+                    return Err(error.wrap(|message| {
+                        format!(
+                            "  {}\n{message}",
+                            reg.display_text(&body_step.text, &world.redactor)
+                        )
+                    }));
                 }
             }
-            let exported = world.vars.pop_frame(&definition.exports)?;
+            let exported = world
+                .vars
+                .pop_frame(&definition.exports)
+                .map_err(StepError::input)?;
             if world.debug {
                 for (k, v) in &exported {
                     debug_eprintln!(
@@ -340,11 +355,20 @@ async fn run_step(
             // syntax (invariant 1, restated at the FFI boundary).
             let args = args.expect("resolve interpolates every step but an include");
             let Some(plugins) = world.plugins.plugins().cloned() else {
-                return Err("this step is served by a plugin, but no plugin is loaded".into());
+                return Err(StepError::plugin(
+                    "this step is served by a plugin, but no plugin is loaded",
+                ));
             };
             let group = plugins.group_of_step(lib, step_index).to_string();
-            let instance = world.plugins.current(&group)?.to_string();
-            let base = plugins.options_for(&group, &instance)?.clone();
+            let instance = world
+                .plugins
+                .current(&group)
+                .map_err(StepError::input)?
+                .to_string();
+            let base = plugins
+                .options_for(&group, &instance)
+                .map_err(StepError::input)?
+                .clone();
 
             // Only an assertion consumes an armed eventual-assertion
             // modifier; an action leaves it for the assertion that follows.
@@ -354,7 +378,7 @@ async fn run_step(
                 None
             };
             let effective = match &layer {
-                Some(layer) => base.apply(layer)?,
+                Some(layer) => base.apply(layer).map_err(StepError::input)?,
                 None => base,
             };
             let shown = reg.display_text(&step.text, &world.redactor);
@@ -368,7 +392,11 @@ async fn run_step(
             // Resolved once per plugin step rather than per attempt: the
             // path is constant for the file, and `Workspace` caches the
             // `create_dir_all` after the first call.
-            let workspace_dir = world.workspace_dir()?.display().to_string();
+            let workspace_dir = world
+                .workspace_dir()
+                .map_err(StepError::plugin)?
+                .display()
+                .to_string();
 
             let mut attempts = 0;
             loop {
@@ -383,7 +411,9 @@ async fn run_step(
                     options: OptionsJson::from(&effective),
                     evidence: world.trace.evidence_on(),
                 })
-                .map_err(|error| format!("failed to encode the plugin request: {error}"))?;
+                .map_err(|error| {
+                    StepError::plugin(format!("failed to encode the plugin request: {error}"))
+                })?;
 
                 // The FFI call is synchronous and may block for seconds;
                 // spawn_blocking keeps it off the executor. Passing the
@@ -415,7 +445,10 @@ async fn run_step(
                     )
                 })
                 .await
-                .map_err(|error| format!("the plugin dispatch task failed: {error}"))??;
+                .map_err(|error| {
+                    StepError::plugin(format!("the plugin dispatch task failed: {error}"))
+                })?
+                .map_err(StepError::plugin)?;
                 world
                     .plugins
                     .record(&group, &instance, lib, handle, per_worker);
@@ -455,22 +488,29 @@ async fn run_step(
 
                 match result.status {
                     Status::Passed => return Ok(()),
-                    Status::Fatal => return Err(result.render_failure(&world.redactor)),
+                    Status::Fatal => {
+                        return Err(StepError::plugin(result.render_failure(&world.redactor)));
+                    }
                     Status::NotYet if !assertion => {
-                        return Err(format!(
+                        return Err(StepError::plugin(format!(
                             "a plugin action answered not_yet, which only an assertion may do: {}",
                             result.render_failure(&world.redactor)
-                        ));
+                        )));
                     }
                     Status::NotYet => match &mut polling {
                         // Without an armed modifier there is no second
                         // attempt, so not_yet is simply a failure.
-                        None => return Err(result.render_failure(&world.redactor)),
+                        None => {
+                            return Err(StepError::assertion(
+                                result.render_failure(&world.redactor),
+                            ));
+                        }
                         Some(polling) => {
-                            let message = result.render_failure(&world.redactor);
+                            let error =
+                                StepError::assertion(result.render_failure(&world.redactor));
                             attempts += 1;
-                            world.trace.attempt(attempts, &message);
-                            polling.after_not_yet(&message).await?
+                            world.trace.attempt(attempts, &error.message);
+                            polling.after_not_yet(&error).await?
                         }
                     },
                 }
@@ -498,13 +538,13 @@ fn run_include<'a>(
     source: &'a std::path::Path,
     generator: &'a Generator,
     depth: usize,
-) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<(), StepError>> + Send + 'a>> {
     Box::pin(async move {
         if caller_step.docstring.is_some() {
-            return Err("I include does not support a docstring".into());
+            return Err(StepError::input("I include does not support a docstring"));
         }
         if depth >= 16 {
-            return Err("include nesting exceeds 16".into());
+            return Err(StepError::input("include nesting exceeds 16"));
         }
 
         let path_literal = &caps[0];
@@ -526,17 +566,20 @@ fn run_include<'a>(
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-        crate::include::check_literal(path_literal)?;
-        let resolved = crate::include::resolve(path_literal, &base_dir)?;
-        let included = crate::feature::load(&resolved).map_err(|e| e.to_string())?;
+        crate::include::check_literal(path_literal).map_err(StepError::input)?;
+        let resolved =
+            crate::include::resolve(path_literal, &base_dir).map_err(StepError::input)?;
+        let included =
+            crate::feature::load(&resolved).map_err(|e| StepError::input(e.to_string()))?;
         let ScenarioRef { scenario, rule } =
-            crate::include::select_scenario(&included, scenario_name)?;
-        let exports = crate::feature::exports_of(&included, scenario)?;
+            crate::include::select_scenario(&included, scenario_name).map_err(StepError::input)?;
+        let exports = crate::feature::exports_of(&included, scenario).map_err(StepError::input)?;
 
         // build_scenario validates the with: table's shape (exactly one data row) —
         // do this BEFORE extracting values, so there is one authoritative shape
         // check, not two independently-written ones with different error messages.
-        let expanded = crate::include::build_scenario(scenario, caller_step.table.as_deref())?;
+        let expanded = crate::include::build_scenario(scenario, caller_step.table.as_deref())
+            .map_err(StepError::input)?;
 
         // `with:` cells are interpolated in the CALLER's scope, before the swap.
         // The shape (exactly one data row) is already guaranteed by build_scenario above.
@@ -547,7 +590,8 @@ fn run_include<'a>(
                 };
                 let mut out = Vec::with_capacity(header.len());
                 for (name, raw) in header.iter().zip(row.iter()) {
-                    let value = interpolate(raw, &world.vars, generator)?;
+                    let value =
+                        interpolate(raw, &world.vars, generator).map_err(StepError::input)?;
                     out.push((name.clone(), value));
                 }
                 out
@@ -582,7 +626,7 @@ fn run_include<'a>(
 
         let annotations =
             crate::annotate::scenario(&included, ScenarioRef { scenario, rule }, &expanded, reg);
-        let mut run_result: Result<(), String> = Ok(());
+        let mut run_result: Result<(), StepError> = Ok(());
         for item in annotations.execution(background.iter().chain(expanded.steps.iter())) {
             let (step, comment) = match item {
                 crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
@@ -609,14 +653,16 @@ fn run_include<'a>(
             if let Err(e) =
                 execute_step(world, reg, step, &resolved, generator, depth + 1, origin).await
             {
-                run_result = Err(format!(
-                    "{}:{} → {}:{}\n  {}\n{e}",
-                    crate::feature::display_path(source),
-                    caller_step.line,
-                    crate::feature::display_path(&resolved),
-                    step.line,
-                    reg.display_text(&step.text, &world.redactor)
-                ));
+                run_result = Err(e.wrap(|message| {
+                    format!(
+                        "{}:{} → {}:{}\n  {}\n{message}",
+                        crate::feature::display_path(source),
+                        caller_step.line,
+                        crate::feature::display_path(&resolved),
+                        step.line,
+                        reg.display_text(&step.text, &world.redactor)
+                    )
+                }));
             }
         }
 
@@ -641,9 +687,9 @@ fn run_include<'a>(
                 } else if let Some(v) = world.vars.get(name) {
                     resolved_exports.push((apply_prefix(name.clone()), v.to_string()));
                 } else {
-                    missing = Some(format!(
+                    missing = Some(StepError::input(format!(
                         "I include {path_literal:?}: declared export {name:?}, but the variable is not set"
-                    ));
+                    )));
                     break;
                 }
             }
@@ -826,7 +872,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             // failing Background step would be: running its steps against
             // state the plugin could not clear is how a suite goes green for
             // the wrong reason.
-            let mut failure = match ctx.plugins.clone() {
+            let mut failure: Option<(String, FailureKind)> = match ctx.plugins.clone() {
                 None => None,
                 Some(plugins) => {
                     // Only what THIS file has touched. A file with no plugin
@@ -839,11 +885,15 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                             .await
                         {
                             Ok(result) => result.err().map(|error| {
-                                world.redactor.mask(&format!("  scenario reset\n{error}"))
+                                let text = format!("  scenario reset\n{error}");
+                                (world.redactor.mask(&text), FailureKind::Reset)
                             }),
-                            Err(error) => Some(world.redactor.mask(&format!(
-                                "  scenario reset\nthe plugin reset task failed: {error}"
-                            ))),
+                            Err(error) => {
+                                let text = format!(
+                                    "  scenario reset\nthe plugin reset task failed: {error}"
+                                );
+                                Some((world.redactor.mask(&text), FailureKind::Reset))
+                            }
                         }
                     }
                 }
@@ -882,13 +932,14 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     execute_step(&mut world, &ctx.reg, step, &lf.path, &generator, 0, origin).await
                 {
                     let mut msg = world.redactor.mask(&format!(
-                        "  {}\n{e}",
-                        ctx.reg.display_text(&step.text, &world.redactor)
+                        "  {}\n{}",
+                        ctx.reg.display_text(&step.text, &world.redactor),
+                        e.message
                     ));
                     if let Some(ex) = world.http.last() {
                         msg.push_str(&format!("\n\n{}", ex.render(&world.redactor)));
                     }
-                    failure = Some(msg);
+                    failure = Some((msg, e.kind));
                     StepStatus::Failed
                 } else {
                     StepStatus::Passed
@@ -909,13 +960,21 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 });
             }
             let duration = started.elapsed();
-            world.trace.scenario_finished(failure.as_deref(), duration);
+            world.trace.scenario_finished(
+                failure.as_ref().map(|(text, kind)| (text.as_str(), *kind)),
+                duration,
+            );
+            let (failure, failure_kind) = match failure {
+                Some((text, kind)) => (Some(text), Some(kind)),
+                None => (None, None),
+            };
             scenarios.push(ScenarioResult {
                 name: world.redactor.mask(&ex.name),
                 line: ex.line,
                 description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
                 tags: report_tags(&world.redactor, lf.effective_tags(scenario_ref)),
                 failure,
+                failure_kind,
                 steps,
                 duration,
             });
@@ -1018,6 +1077,7 @@ fn panicked_file(
             // The file's own set is gone with its `World`: the run-wide one is
             // what is left to mask a payload with.
             failure: Some(redactor.mask(&format!("panic while running the file: {error}"))),
+            failure_kind: Some(FailureKind::Panic),
             steps: Vec::new(),
             duration: std::time::Duration::ZERO,
         }],
@@ -1273,7 +1333,9 @@ mod tests {
             index: None,
             comment: None,
         };
-        execute_step(world, reg, &step, source, &generator, 0, origin).await
+        execute_step(world, reg, &step, source, &generator, 0, origin)
+            .await
+            .map_err(|error| error.message)
     }
 
     #[tokio::test]
@@ -2088,6 +2150,19 @@ Feature: eventual assertion
             .expect("tags are valid");
             assert_eq!(chains[0].files[0].path, PathBuf::from("a.feature"));
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicked_file_is_a_panic_failure() {
+        let error = tokio::spawn(async { panic!("deliberate") })
+            .await
+            .expect_err("the task must panic");
+        let result = panicked_file(
+            &chains::file("bad.feature", ""),
+            &error,
+            &crate::privacy::Redactor::disabled(),
+        );
+        assert_eq!(result.scenarios[0].failure_kind, Some(FailureKind::Panic));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

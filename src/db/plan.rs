@@ -1,4 +1,6 @@
 use super::platform::Platform;
+use crate::db::db_read;
+use crate::failure::StepError;
 
 /// A table column from introspection data, as reported by the current
 /// platform's `Platform::introspect` query. `type_name` is the platform's
@@ -77,13 +79,17 @@ pub fn build_insert(
     bare: &str,
     values: &[(String, Option<String>)],
     index: Option<usize>,
-) -> Result<InsertPlan, String> {
+) -> Result<InsertPlan, StepError> {
     // Given columns must exist and be bindable.
     for (col, _) in values {
-        plain_column(col)?;
+        plain_column(col).map_err(StepError::input)?;
         match schema.col(col) {
-            None => return Err(format!("column {col:?} is missing from table {sql_name}")),
-            Some(c) => platform.check_bindable(c)?,
+            None => {
+                return Err(db_read(format!(
+                    "column {col:?} is missing from table {sql_name}"
+                )));
+            }
+            Some(c) => platform.check_bindable(c).map_err(StepError::input)?,
         }
     }
     let given: std::collections::HashSet<&str> = values.iter().map(|(c, _)| c.as_str()).collect();
@@ -123,10 +129,10 @@ pub fn build_insert(
             generated_uuids.insert(pk.name.clone(), id);
             param += 1;
         } else {
-            return Err(format!(
+            return Err(StepError::input(format!(
                 "primary key {} ({}) has no value and is not generated (no default, not uuid)",
                 pk.name, pk.type_name
-            ));
+            )));
         }
     }
 
@@ -142,10 +148,10 @@ pub fn build_insert(
             // to route it through Platform.
             exprs.push("now()".to_string());
         } else {
-            return Err(format!(
+            return Err(StepError::input(format!(
                 "column {} ({}) is NOT NULL, has no value and no default",
                 c.name, c.type_name
-            ));
+            )));
         }
     }
 
@@ -213,10 +219,10 @@ pub fn build_insert(
             .iter()
             .find(|(_, s)| matches!(s, PkSource::Unknown(_)))
     {
-        return Err(format!(
+        return Err(StepError::input(format!(
             "primary key {col} is server-generated (a DEFAULT that is not auto-increment) \
              and this platform has no RETURNING to read it back with — give the value explicitly"
-        ));
+        )));
     }
 
     Ok(InsertPlan {
@@ -310,24 +316,24 @@ pub fn build_where(
     schema: &TableSchema,
     pairs: &[(String, Option<String>)],
     start: usize,
-) -> Result<(String, Vec<Option<String>>), String> {
+) -> Result<(String, Vec<Option<String>>), StepError> {
     let mut parts = Vec::new();
     let mut binds = Vec::new();
     let mut param = start;
     for (raw, val) in pairs {
-        let (col, op) = split_operator(raw)?;
+        let (col, op) = split_operator(raw).map_err(StepError::input)?;
         let c = schema
             .col(col)
-            .ok_or_else(|| format!("column {col:?} is missing from the table"))?;
-        platform.check_bindable(c)?;
+            .ok_or_else(|| db_read(format!("column {col:?} is missing from the table")))?;
+        platform.check_bindable(c).map_err(StepError::input)?;
         match (op, val) {
             (Op::Eq, None) => parts.push(format!("{col} IS NULL")),
             (Op::Ne, None) => parts.push(format!("{col} IS NOT NULL")),
             (Op::Like | Op::NotLike, None) => {
-                return Err(format!(
+                return Err(StepError::input(format!(
                     "column {col:?}: a LIKE has nothing to match against <<null>>; \
                      write `{col}: <<null>>` or `{col}!: <<null>>`"
-                ));
+                )));
             }
             // A pattern: the COLUMN is rendered as text and the value binds
             // as text. An ordering operator must NOT be added here — under
@@ -364,19 +370,21 @@ pub fn build_update(
     sql_name: &str,
     set: &[(String, Option<String>)],
     where_: &[(String, Option<String>)],
-) -> Result<(String, Vec<Option<String>>), String> {
+) -> Result<(String, Vec<Option<String>>), StepError> {
     if where_.is_empty() {
-        return Err("UPDATE without WHERE is forbidden; give a condition for a bulk change".into());
+        return Err(StepError::input(
+            "UPDATE without WHERE is forbidden; give a condition for a bulk change",
+        ));
     }
     let mut sets = Vec::new();
     let mut binds = Vec::new();
     let mut param = 1usize;
     for (col, val) in set {
-        plain_column(col)?;
+        plain_column(col).map_err(StepError::input)?;
         let c = schema
             .col(col)
-            .ok_or_else(|| format!("column {col:?} is missing from the table"))?;
-        platform.check_bindable(c)?;
+            .ok_or_else(|| db_read(format!("column {col:?} is missing from the table")))?;
+        platform.check_bindable(c).map_err(StepError::input)?;
         sets.push(format!("{col} = {}", platform.bind(param, &c.type_name)));
         binds.push(val.clone());
         param += 1;
@@ -397,12 +405,11 @@ pub fn build_delete(
     schema: &TableSchema,
     sql_name: &str,
     where_: &[(String, Option<String>)],
-) -> Result<(String, Vec<Option<String>>), String> {
+) -> Result<(String, Vec<Option<String>>), StepError> {
     if where_.is_empty() {
-        return Err(
-            "DELETE without WHERE is forbidden; use the \"I delete all\" step for a full wipe"
-                .into(),
-        );
+        return Err(StepError::input(
+            "DELETE without WHERE is forbidden; use the \"I delete all\" step for a full wipe",
+        ));
     }
     let (where_sql, binds) = build_where(platform, schema, where_, 1)?;
     Ok((format!("DELETE FROM {sql_name} WHERE {where_sql}"), binds))
@@ -417,9 +424,9 @@ pub fn build_exists(
     schema: &TableSchema,
     sql_name: &str,
     where_: &[(String, Option<String>)],
-) -> Result<(String, Vec<Option<String>>), String> {
+) -> Result<(String, Vec<Option<String>>), StepError> {
     if where_.is_empty() {
-        return Err("an existence check requires a condition".into());
+        return Err(StepError::input("an existence check requires a condition"));
     }
     let (where_sql, binds) = build_where(platform, schema, where_, 1)?;
     Ok((
@@ -527,7 +534,7 @@ mod tests {
             ],
         };
         let err = build_insert(&PG, &s, "t", "t", &[], None).unwrap_err();
-        assert!(err.contains("qty"), "{err}");
+        assert!(err.message.contains("qty"), "{err}");
     }
 
     #[test]
@@ -541,7 +548,7 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(err.contains("nope"), "{err}");
+        assert!(err.message.contains("nope"), "{err}");
     }
 
     #[test]
@@ -688,7 +695,7 @@ mod tests {
             let err =
                 build_where(&PG, &companies(), &[(raw.into(), Some("x".into()))], 1).unwrap_err();
             assert!(
-                err.contains("unknown operator") && err.contains(raw),
+                err.message.contains("unknown operator") && err.message.contains(raw),
                 "{raw:?} must be refused by name, got: {err}"
             );
         }
@@ -764,8 +771,8 @@ mod tests {
     #[test]
     fn a_like_against_null_is_refused_naming_the_alternative() {
         let err = build_where(&PG, &companies(), &[("slug~".into(), None)], 1).unwrap_err();
-        assert!(err.contains("slug"), "{err}");
-        assert!(err.contains("<<null>>"), "{err}");
+        assert!(err.message.contains("slug"), "{err}");
+        assert!(err.message.contains("<<null>>"), "{err}");
     }
 
     #[test]
@@ -774,8 +781,8 @@ mod tests {
         // the author to their DDL for what is a typo in the step.
         let err =
             build_where(&PG, &companies(), &[("slug>=".into(), Some("1".into()))], 1).unwrap_err();
-        assert!(err.contains("slug>="), "{err}");
-        assert!(err.contains("unknown operator"), "{err}");
+        assert!(err.message.contains("slug>="), "{err}");
+        assert!(err.message.contains("unknown operator"), "{err}");
     }
 
     #[test]
@@ -788,7 +795,7 @@ mod tests {
             &[("id".into(), Some("1".into()))],
         )
         .unwrap_err();
-        assert!(err.contains("only allowed in a condition"), "{err}");
+        assert!(err.message.contains("only allowed in a condition"), "{err}");
         let err = build_insert(
             &PG,
             &companies(),
@@ -798,7 +805,7 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(err.contains("only allowed in a condition"), "{err}");
+        assert!(err.message.contains("only allowed in a condition"), "{err}");
     }
 
     #[test]
@@ -972,8 +979,8 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(err.contains("id"), "{err}");
-        assert!(err.contains("server-generated"), "{err}");
+        assert!(err.message.contains("id"), "{err}");
+        assert!(err.message.contains("server-generated"), "{err}");
     }
 
     #[test]

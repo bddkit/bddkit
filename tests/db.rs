@@ -46,6 +46,23 @@ Feature: insert
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_constraint_violation_is_a_db_statement_failure() {
+    let _g = setup().await;
+    // NOT NULL column given an explicit NULL: the server refuses the INSERT.
+    let src = "\
+Feature: insert
+  Scenario: null slug
+    Given I have \"companies\" with \"slug: <<null>>\"
+";
+    let out = run_feature(src, &_g);
+    assert!(
+        combined(&out).contains("failed: 1 (1 db_statement)"),
+        "{}",
+        combined(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wide_table_insert_sets_indexed_vars() {
     let _g = setup().await;
     let src = "\

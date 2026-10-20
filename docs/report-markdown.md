@@ -29,7 +29,7 @@ Values are escaped as the contents of a JSON string (`\"`, `\\`, `\n`, `\t`, `\u
 | `howto`, `run`, `index` | none |
 | `file` | `id` (the path as the stream names it), `scenarios`, `failed` |
 | `scenario` | `id`, `status`, `file`, `line`, `example` (outline rows), `tags` (space-separated) |
-| `failure` | `id` (the scenario's) |
+| `failure` | `id` (the scenario's), `kind` (the failure class, when the stream names one) |
 | `evidence` | `id` (the scenario's), `step`, `kind`, `group`, `resource`, `path` |
 
 The end marker of `file`, `scenario`, `failure` and `evidence` carries `id` and, for `evidence`, `step`; `howto`, `run` and `index` have none.
