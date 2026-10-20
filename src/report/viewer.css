@@ -32,6 +32,8 @@ details.scenario > summary .dur { margin-left: auto; }
 .badge { font-size: 11px; text-transform: uppercase; border-radius: 4px; padding: 0 6px; border: 1px solid currentColor; }
 .badge.passed { color: var(--pass); } .badge.failed, .badge.open { color: var(--fail); }
 .badge.skipped, .badge.disabled { color: var(--skip); }
+.badge.kind { color: var(--fail); }
+.badge.kind:empty { display: none; }
 .step { margin: 2px 0; } .step > summary { cursor: pointer; }
 .step .line { display: inline-flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .step .kw { color: var(--muted); } .step.failed > .line .txt, .step.failed > summary .txt { color: var(--fail); }

@@ -5,6 +5,7 @@ pub mod markdown;
 pub mod model;
 pub mod progress;
 
+use crate::failure::FailureKind;
 use crate::feature::display_path;
 use anyhow::{Context, Result};
 use std::fmt::Write as _;
@@ -61,6 +62,8 @@ pub struct ScenarioResult {
     /// The tags the filter saw: its own, its rule's, then the feature's.
     pub tags: Vec<ReportTag>,
     pub failure: Option<String>,
+    /// The class of `failure`; set exactly when `failure` is.
+    pub failure_kind: Option<FailureKind>,
     pub steps: Vec<StepResult>,
     pub duration: Duration,
 }
@@ -124,12 +127,35 @@ pub fn render_file(r: &FileResult) -> String {
     out
 }
 
-pub fn print_summary(results: &[FileResult], run_id: &str) -> i32 {
+/// `files: 12, scenarios: 310, failed: 5 (4 assertion, 1 transport)`; the
+/// split appears only when something failed, in the order the classes are
+/// declared.
+fn summary_line(results: &[FileResult]) -> String {
     let files = results.len();
     let scenarios: usize = results.iter().map(|r| r.scenarios.len()).sum();
     let failed: usize = results.iter().map(FileResult::failed).sum();
+    let mut line = format!("files: {files}, scenarios: {scenarios}, failed: {failed}");
+    let mut by_kind = std::collections::BTreeMap::new();
+    for scenario in results.iter().flat_map(|r| &r.scenarios) {
+        if scenario.failure.is_some() {
+            let kind = scenario.failure_kind.unwrap_or(FailureKind::Unclassified);
+            *by_kind.entry(kind).or_insert(0usize) += 1;
+        }
+    }
+    if !by_kind.is_empty() {
+        let split: Vec<String> = by_kind
+            .iter()
+            .map(|(kind, n)| format!("{n} {kind}"))
+            .collect();
+        let _ = write!(line, " ({})", split.join(", "));
+    }
+    line
+}
+
+pub fn print_summary(results: &[FileResult], run_id: &str) -> i32 {
+    let failed: usize = results.iter().map(FileResult::failed).sum();
     println!("\nrun {run_id}");
-    println!("files: {files}, scenarios: {scenarios}, failed: {failed}");
+    println!("{}", summary_line(results));
     if failed == 0 { 0 } else { 1 }
 }
 
@@ -206,7 +232,8 @@ fn junit(results: &[FileResult]) -> String {
                 let message = f.lines().next().unwrap_or_default().trim();
                 let _ = writeln!(
                     out,
-                    "      <failure message=\"{}\">{}</failure>",
+                    "      <failure type=\"{}\" message=\"{}\">{}</failure>",
+                    s.failure_kind.unwrap_or(FailureKind::Unclassified),
                     xml(message),
                     xml(f)
                 );
@@ -327,6 +354,7 @@ mod tests {
                 description: String::new(),
                 tags: Vec::new(),
                 failure: failure.map(str::to_string),
+                failure_kind: failure.map(|_| FailureKind::Assertion),
                 steps: Vec::new(),
                 duration: Duration::from_millis(5),
             }],
@@ -371,6 +399,7 @@ mod tests {
                 description: String::new(),
                 tags: Vec::new(),
                 failure: None,
+                failure_kind: None,
                 steps: vec![StepResult {
                     keyword: "When".to_string(),
                     text: r#"set variable "x" to "b" global"#.to_string(),
@@ -404,6 +433,7 @@ mod tests {
                     description: String::new(),
                     tags: Vec::new(),
                     failure: Some("reason A".into()),
+                    failure_kind: Some(FailureKind::Assertion),
                     steps: Vec::new(),
                     duration: Duration::ZERO,
                 },
@@ -413,6 +443,7 @@ mod tests {
                     description: String::new(),
                     tags: Vec::new(),
                     failure: Some("reason B".into()),
+                    failure_kind: Some(FailureKind::Transport),
                     steps: Vec::new(),
                     duration: Duration::ZERO,
                 },
@@ -423,6 +454,37 @@ mod tests {
             out.contains("reason A") && out.contains("reason B"),
             "{out}"
         );
+    }
+
+    fn failed_with(kind: FailureKind) -> FileResult {
+        let mut r = result(Some("boom"));
+        r.scenarios[0].failure_kind = Some(kind);
+        r
+    }
+
+    #[test]
+    fn the_junit_failure_carries_its_type() {
+        let out = junit(&[failed_with(FailureKind::Transport)]);
+        assert!(
+            out.contains("<failure type=\"transport\" message="),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_summary_line_splits_failures_by_class() {
+        let mut files = vec![
+            failed_with(FailureKind::Transport),
+            failed_with(FailureKind::Assertion),
+            failed_with(FailureKind::Assertion),
+        ];
+        assert_eq!(
+            summary_line(&files),
+            "files: 3, scenarios: 3, failed: 3 (2 assertion, 1 transport)"
+        );
+        files.clear();
+        files.push(result(None));
+        assert_eq!(summary_line(&files), "files: 1, scenarios: 1, failed: 0");
     }
 
     #[test]

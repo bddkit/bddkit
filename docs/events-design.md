@@ -118,11 +118,11 @@ Steps after a failure are reported as skipped at the top level and in an include
 | `file_started` | top of `run_file` | `file`, `name`, `tags`, `description`, `comment`, `background` |
 | `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example`, `tags`, `description`, `comment`, `rule`, `examples` |
 | `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source`, `index` |
-| `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `duration_us`, `warnings` |
+| `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `kind` (only when failed: the failure class), `duration_us`, `warnings` |
 | `step_skipped` | for each step after a failure, including the remainder of an included scenario | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source` |
 | `step_disabled` | where a commented step matches the loaded registry | `file`, `scenario`, `keyword`, `text`, `line`, optional `comment`; inside includes add `parent`, `source`; no `step` number |
 | `section` | before the items it groups, or after the last item for a closing note | `file`, `scenario`, `title`, `line`, optional `note`; inside includes add `parent`, `source` |
-| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`) |
+| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`), `failure_kind` (only when failed: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic` or `unclassified`) |
 | `file_finished` | end of `run_file`; by the worker for a panicked file | `file`, `scenarios`, `failed`, `panicked` |
 | `run_finished` | last line | `exit`, `signal` (only when interrupted), `files`, `scenarios`, `failed`, `duration_ms` |
 

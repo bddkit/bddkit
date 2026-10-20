@@ -8,6 +8,7 @@ pub mod value;
 use crate::config::Connection;
 use crate::db::platform::{MARIADB, MYSQL, PG, Platform};
 use crate::db::reference::TableRef;
+use crate::failure::{FailureKind, StepError};
 use crate::options::Options;
 use plan::TableSchema;
 use sqlx::AnyPool;
@@ -29,6 +30,41 @@ pub fn bind_all<'q>(
         q = q.bind(b);
     }
     q
+}
+
+/// The class of a driver error, decided by what the driver says it is. The
+/// error type is `non_exhaustive`, so the arm that names what is left is the
+/// statement: whatever else goes wrong came back from a connection that worked.
+fn sql_kind(error: &sqlx::Error) -> FailureKind {
+    match error {
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => FailureKind::DbConnection,
+        // The server itself can say the connection is gone: SQLSTATE class 08
+        // (connection exception) and Postgres's 57P01..57P03 (the server is
+        // shutting down or cannot accept the connection).
+        sqlx::Error::Database(e)
+            if e.code().is_some_and(|c| {
+                c.starts_with("08") || ["57P01", "57P02", "57P03"].contains(&&*c)
+            }) =>
+        {
+            FailureKind::DbConnection
+        }
+        _ => FailureKind::DbStatement,
+    }
+}
+
+/// A failed statement, classified from the driver error and worded by the caller.
+pub fn sql_failure(error: &sqlx::Error, message: String) -> StepError {
+    StepError::new(sql_kind(error), message)
+}
+
+/// A result the database sent that could not be read: the statement ran, the
+/// answer is not what the step expects.
+pub fn db_read(message: impl Into<String>) -> StepError {
+    StepError::new(FailureKind::DbStatement, message)
 }
 
 /// Reads a column as text, tolerating a driver that reports it as a blob
@@ -184,12 +220,12 @@ impl Db {
     }
 
     /// Introspection with caching. std::Mutex is NOT held across an await.
-    pub async fn schema(&self, conn: &str, tref: &TableRef) -> Result<Arc<TableSchema>, String> {
+    pub async fn schema(&self, conn: &str, tref: &TableRef) -> Result<Arc<TableSchema>, StepError> {
         let key = (conn.to_string(), tref.sql_name());
         if let Some(s) = self.cache.lock().expect("cache mutex").get(&key) {
             return Ok(s.clone());
         }
-        let state = self.connection(conn)?;
+        let state = self.connection(conn).map_err(StepError::input)?;
         let schema = Arc::new(introspect::introspect(&state.pool, state.platform, tref).await?);
         self.cache
             .lock()
@@ -244,6 +280,20 @@ impl DbHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_connection_is_a_db_connection_failure_and_a_refusal_is_a_statement() {
+        let lost = sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert_eq!(sql_kind(&lost), FailureKind::DbConnection);
+        assert_eq!(
+            sql_kind(&sqlx::Error::PoolTimedOut),
+            FailureKind::DbConnection
+        );
+        assert_eq!(
+            sql_kind(&sqlx::Error::RowNotFound),
+            FailureKind::DbStatement
+        );
+    }
 
     /// `check_dsn` parses the DSN through `AnyConnectOptions`, which resolves
     /// the driver by scheme. `main` installs the drivers once at startup; unit

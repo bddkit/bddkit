@@ -1,24 +1,40 @@
+use crate::failure::StepError;
 use crate::options::PollingOptions;
 use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AttemptError {
-    NotYet(String),
-    Fatal(String),
+    NotYet(StepError),
+    Fatal(StepError),
 }
 
 pub type AttemptResult = Result<(), AttemptError>;
 
 impl AttemptError {
-    pub fn into_message(self) -> String {
+    pub fn into_error(self) -> StepError {
         match self {
-            Self::NotYet(message) | Self::Fatal(message) => message,
+            Self::NotYet(error) | Self::Fatal(error) => error,
         }
+    }
+
+    /// A check that did not hold, yet: polling may try again.
+    pub fn not_yet(message: impl Into<String>) -> Self {
+        Self::NotYet(StepError::assertion(message))
+    }
+
+    /// A check that did not hold and cannot change before the next attempt.
+    pub fn assertion(message: impl Into<String>) -> Self {
+        Self::Fatal(StepError::assertion(message))
+    }
+
+    /// The step itself is wrong: no attempt can fix it.
+    pub fn input(message: impl Into<String>) -> Self {
+        Self::Fatal(StepError::input(message))
     }
 }
 
-impl From<String> for AttemptError {
-    fn from(error: String) -> Self {
+impl From<StepError> for AttemptError {
+    fn from(error: StepError) -> Self {
         Self::Fatal(error)
     }
 }
@@ -45,14 +61,20 @@ impl<'a> Polling<'a> {
         }
     }
 
-    pub async fn after_not_yet(&mut self, last: &str) -> Result<(), String> {
+    /// Sleeps before the next attempt, or fails once the deadline has passed.
+    /// The failure keeps the class of the last attempt's: an assertion that
+    /// never held is `assertion`, a server that stayed down is `transport`.
+    pub async fn after_not_yet(&mut self, last: &StepError) -> Result<(), StepError> {
         self.attempts += 1;
         let now = tokio::time::Instant::now();
         if now >= self.deadline {
             let elapsed = now.saturating_duration_since(self.started);
-            return Err(format!(
-                "{} did not pass within {:?} (interval {:?}, {} attempts, elapsed {:?}): {}",
-                self.assertion, self.timeout, self.interval, self.attempts, elapsed, last
+            return Err(StepError::new(
+                last.kind,
+                format!(
+                    "{} did not pass within {:?} (interval {:?}, {} attempts, elapsed {:?}): {}",
+                    self.assertion, self.timeout, self.interval, self.attempts, elapsed, last
+                ),
             ));
         }
         tokio::time::sleep((self.deadline - now).min(self.interval)).await;
@@ -76,15 +98,34 @@ mod tests {
         let started = Instant::now();
         let mut polling = Polling::new("variable assertion", &options);
 
-        assert!(polling.after_not_yet("first").await.is_ok());
+        assert!(
+            polling
+                .after_not_yet(&StepError::assertion("first"))
+                .await
+                .is_ok()
+        );
         assert_eq!(Instant::now() - started, Duration::from_millis(100));
-        assert!(polling.after_not_yet("second").await.is_ok());
+        assert!(
+            polling
+                .after_not_yet(&StepError::assertion("second"))
+                .await
+                .is_ok()
+        );
         assert_eq!(Instant::now() - started, Duration::from_millis(200));
-        assert!(polling.after_not_yet("third").await.is_ok());
+        assert!(
+            polling
+                .after_not_yet(&StepError::assertion("third"))
+                .await
+                .is_ok()
+        );
         assert_eq!(Instant::now() - started, Duration::from_millis(250));
 
-        let error = polling.after_not_yet("still missing").await.unwrap_err();
-        assert!(error.contains("4 attempts"), "{error}");
-        assert!(error.contains("still missing"), "{error}");
+        let error = polling
+            .after_not_yet(&StepError::assertion("still missing"))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("4 attempts"), "{error}");
+        assert!(error.message.contains("still missing"), "{error}");
+        assert_eq!(error.kind, crate::failure::FailureKind::Assertion);
     }
 }

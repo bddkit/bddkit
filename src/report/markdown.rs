@@ -590,7 +590,11 @@ fn scenario(doc: &mut Doc, ctx: &Ctx<'_>, file: &File, s: &Scenario, id: &str) {
     list(doc, &s.items, 0, "", &mut evidence);
     doc.blank();
     if let Some(text) = &s.failure {
-        doc.raw(marker("begin", "failure", &[("id", id)]));
+        let mut attrs = vec![("id", id)];
+        if let Some(kind) = &s.failure_kind {
+            attrs.push(("kind", kind));
+        }
+        doc.raw(marker("begin", "failure", &attrs));
         doc.fenced("text", text);
         doc.raw(marker("end", "failure", &[("id", id)]));
         doc.blank();

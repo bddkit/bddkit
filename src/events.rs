@@ -7,6 +7,7 @@
 //! so a slow reader of a FIFO cannot change a test's timing.
 
 use crate::artifacts::{Artifacts, media_type};
+use crate::failure::FailureKind;
 use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
 use crate::http::Exchange;
 use crate::plugin::abi::Diagnostic;
@@ -381,17 +382,18 @@ impl Trace {
         events.emit("scenario_started", fields);
     }
 
-    pub fn scenario_finished(&self, failure: Option<&str>, duration: Duration) {
+    pub fn scenario_finished(&self, failure: Option<(&str, FailureKind)>, duration: Duration) {
         let Some(events) = &self.events else { return };
-        events.emit(
-            "scenario_finished",
-            json!({
-                "file": self.file, "scenario": self.scenario,
-                "status": if failure.is_some() { "failed" } else { "passed" },
-                "duration_us": micros(duration),
-                "failure": failure.map(|text| self.redactor.mask(text)),
-            }),
-        );
+        let mut fields = json!({
+            "file": self.file, "scenario": self.scenario,
+            "status": if failure.is_some() { "failed" } else { "passed" },
+            "duration_us": micros(duration),
+            "failure": failure.map(|(text, _)| self.redactor.mask(text)),
+        });
+        if let Some((_, kind)) = failure {
+            fields["failure_kind"] = kind.as_str().into();
+        }
+        events.emit("scenario_finished", fields);
     }
 
     /// Numbers the step, whatever its depth, and makes it the caller of every
@@ -430,18 +432,25 @@ impl Trace {
 
     /// Closes the innermost step in flight. `warnings` are those raised while
     /// it ran, nested steps' included.
-    pub fn step_finished(&mut self, passed: bool, duration: Duration, warnings: &[String]) {
+    /// `failed` is the class of the step's failure, `None` for a pass.
+    pub fn step_finished(
+        &mut self,
+        failed: Option<FailureKind>,
+        duration: Duration,
+        warnings: &[String],
+    ) {
         let Some(events) = &self.events else { return };
         let Some(step) = self.open.pop() else { return };
-        events.emit(
-            "step_finished",
-            json!({
-                "file": self.file, "scenario": self.scenario, "step": step,
-                "status": if passed { "passed" } else { "failed" },
-                "duration_us": micros(duration),
-                "warnings": warnings.iter().map(|w| self.redactor.mask(w)).collect::<Vec<_>>(),
-            }),
-        );
+        let mut fields = json!({
+            "file": self.file, "scenario": self.scenario, "step": step,
+            "status": if failed.is_none() { "passed" } else { "failed" },
+            "duration_us": micros(duration),
+            "warnings": warnings.iter().map(|w| self.redactor.mask(w)).collect::<Vec<_>>(),
+        });
+        if let Some(kind) = failed {
+            fields["kind"] = kind.as_str().into();
+        }
+        events.emit("step_finished", fields);
     }
 
     pub fn step_skipped(

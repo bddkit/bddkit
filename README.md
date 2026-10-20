@@ -129,6 +129,24 @@ Step text is the raw feature text, never interpolated, so two runs' reports diff
 
 **Every report path is created — truncated — before the config is read**, its directory made if missing; a path that cannot be prepared is exit 2 before any request. A run that dies on its config therefore leaves an empty file, which a parser rejects loudly, rather than yesterday's green one. A report that cannot be written after the run is also exit 2 — the one exception to "2 = the run never started", because a report silently lost behind a green code is the worse outcome. `bddkit doctor` accepts the same flags and makes the same check (a `reports` row per path); without them it touches nothing.
 
+### Why a scenario failed
+
+A failed scenario carries a class next to its text, so "a test caught a bug" and "staging was down" can be told apart by a CI rule, a report filter or a count. The class is that of the failure that ended the scenario; a macro or an include passes its inner step's class up unchanged.
+
+| Class | When |
+|---|---|
+| `assertion` | a check did not hold, including after polling ran out |
+| `transport` | connection refused, DNS, TLS, an HTTP timeout |
+| `db_connection` | a database connection was lost or could not be acquired mid-run |
+| `db_statement` | the database refused a statement: a constraint, a missing column or table, a bad literal |
+| `input` | the scenario itself is wrong: an undefined variable, a value that is not of its parameter's type, a malformed step argument, an include that cannot be resolved |
+| `plugin` | a plugin answered `fatal`, or did not answer |
+| `reset` | a plugin's per-scenario reset failed |
+| `panic` | the file panicked: a bug in bddkit |
+| `unclassified` | a host fault no class fits: the system clock or entropy could not be read |
+
+The console summary splits the failures when there are any: `files: 12, scenarios: 310, failed: 5 (4 assertion, 1 transport)`. The event stream carries `failure_kind` on `scenario_finished` and `kind` on a failed `step_finished`; the JUnit `<failure>` has it as `type`; the HTML report shows a badge on each failed scenario and a filter by class; the Markdown report puts it on the `failure` marker as `kind`. Cucumber JSON has no field for it. The exit code is `1` for any failed scenario, whatever its class. A polling assertion that never held is `assertion`, and one that kept meeting an unreachable service is `transport`. A database that cannot be reached when the run starts is not a scenario failure at all: the run exits `2` before the first request.
+
 ### Following a run live
 
 `--junit` and `--cucumber-json` describe a run after it is over. `bddkit run --events <path>` writes one JSON object per line while it happens, for whatever wants to follow a run — a local UI, a log tail, a program that ships the run somewhere. The path is a regular file, a FIFO, or anything else that opens for writing by name (`/dev/fd/N` from a process substitution); `-` is not special and stdout is never a target, since it carries the console output. `$BDDKIT_EVENTS` supplies the path when the flag is absent (an empty value counts as unset); the flag wins. Console output, both reports and the exit code are unchanged.
@@ -145,7 +163,7 @@ The path is opened once and held, never created and closed again, so a FIFO's re
 
 ### Reading a run: `bddkit report`
 
-`bddkit report run.ndjson` turns a stream written by `run --events` into `run.html` beside it: one self-contained file that opens from disk and shows every file and scenario with its description, tags and comments, the steps as written with status, duration, warnings and nested steps, sections as headings, disabled steps struck through, and the failure text of what failed. With `--evidence` in the run it also shows, under the step that owns them, each HTTP exchange (JSON pretty-printed, with a toggle back to the raw text), each SQL statement with its binds, screenshots and the polling attempts. Failed scenarios start open, passed ones closed; the filters (status, text, tag) and the open scenario live in the URL hash, so a link can point at one scenario. Banners say when masking was off, when the run collected no evidence, when the stream is incomplete (a killed run still renders) and when the artifacts are under the temporary directory. The page carries a Content-Security-Policy that allows no network access, and the same stream always gives the same bytes.
+`bddkit report run.ndjson` turns a stream written by `run --events` into `run.html` beside it: one self-contained file that opens from disk and shows every file and scenario with its description, tags and comments, the steps as written with status, duration, warnings and nested steps, sections as headings, disabled steps struck through, and the failure text of what failed. With `--evidence` in the run it also shows, under the step that owns them, each HTTP exchange (JSON pretty-printed, with a toggle back to the raw text), each SQL statement with its binds, screenshots and the polling attempts. Failed scenarios start open, passed ones closed; the filters (status, text, tag, failure class) and the open scenario live in the URL hash, so a link can point at one scenario. Banners say when masking was off, when the run collected no evidence, when the stream is incomplete (a killed run still renders) and when the artifacts are under the temporary directory. The page carries a Content-Security-Policy that allows no network access, and the same stream always gives the same bytes.
 
 `-o <file>` names the output and can be repeated; the format follows the extension, `.html` or `.htm` for HTML and `.md` or `.markdown` for Markdown (see below), so `-o report.html -o report.md` writes both from one read of the stream. Nothing is written unless every output is. Artifacts are linked by a path relative to the report's directory, unless `--embed-artifacts` is given (below): they are read from `run_started.artifacts_dir`, or from `--artifacts <dir>` when they have moved, so run with `--artifacts-dir` next to where the report will be kept and archive the two together. Exit `0` is every output written, `2` is nothing written (not a stream, unreadable input, unwritable output, an unknown extension).
 

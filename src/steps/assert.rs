@@ -10,8 +10,8 @@ pub(super) async fn replay_response(w: &mut World, attempt: u64) -> AttemptResul
         return Ok(());
     }
     w.http.replay_last().await.map_err(|error| match error {
-        ReplayError::NotYet(message) => AttemptError::NotYet(message),
-        ReplayError::Fatal(message) => AttemptError::Fatal(message),
+        ReplayError::NotYet(error) => AttemptError::NotYet(error),
+        ReplayError::Fatal(error) => AttemptError::Fatal(error),
     })
 }
 
@@ -24,19 +24,19 @@ pub(crate) fn last(w: &World) -> Result<&crate::http::Exchange, String> {
 pub fn response_code(w: &World, expected: &str) -> AttemptResult {
     let want: u16 = expected
         .parse()
-        .map_err(|_| AttemptError::Fatal(format!("invalid code {expected:?}")))?;
-    let got = last(w).map_err(AttemptError::Fatal)?.status;
+        .map_err(|_| AttemptError::input(format!("invalid code {expected:?}")))?;
+    let got = last(w).map_err(AttemptError::input)?.status;
     if got == want {
         Ok(())
     } else {
-        Err(AttemptError::NotYet(format!(
+        Err(AttemptError::not_yet(format!(
             "    expected: {want}\n    actual:   {got}"
         )))
     }
 }
 
 pub fn response_header(w: &World, name: &str, value: &str) -> AttemptResult {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
+    let ex = last(w).map_err(AttemptError::input)?;
     let got = ex
         .resp_headers
         .iter()
@@ -44,10 +44,10 @@ pub fn response_header(w: &World, name: &str, value: &str) -> AttemptResult {
         .map(|(_, v)| v.as_str());
     match got {
         Some(v) if v == value => Ok(()),
-        Some(v) => Err(AttemptError::NotYet(format!(
+        Some(v) => Err(AttemptError::not_yet(format!(
             "    expected: {value}\n    actual:   {v}"
         ))),
-        None => Err(AttemptError::NotYet(format!(
+        None => Err(AttemptError::not_yet(format!(
             "response header {name:?} is missing"
         ))),
     }
@@ -56,16 +56,16 @@ pub fn response_header(w: &World, name: &str, value: &str) -> AttemptResult {
 /// The doc string of a JSON step, parsed. Shared by the body and the variable steps.
 pub(super) fn expected_json(docstring: Option<&String>) -> Result<serde_json::Value, AttemptError> {
     let expected_src = docstring
-        .ok_or_else(|| AttemptError::Fatal("step requires a doc string with JSON".to_string()))?;
+        .ok_or_else(|| AttemptError::input("step requires a doc string with JSON".to_string()))?;
     serde_json::from_str(expected_src)
-        .map_err(|e| AttemptError::Fatal(format!("expected JSON is invalid: {e}")))
+        .map_err(|e| AttemptError::input(format!("expected JSON is invalid: {e}")))
 }
 
 fn body_json(w: &World) -> Result<serde_json::Value, AttemptError> {
     last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)
+        .map_err(AttemptError::not_yet)
 }
 
 pub fn body_contains_json(w: &World, docstring: Option<&String>) -> AttemptResult {
@@ -82,24 +82,24 @@ pub(super) fn check_contains_json(
     actual: &serde_json::Value,
     expected: &serde_json::Value,
 ) -> AttemptResult {
-    matcher::contains(actual, expected).map_err(|m| AttemptError::NotYet(m.to_string()))
+    matcher::contains(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
 }
 
 pub(super) fn check_equals_json(
     actual: &serde_json::Value,
     expected: &serde_json::Value,
 ) -> AttemptResult {
-    matcher::equals(actual, expected).map_err(|m| AttemptError::NotYet(m.to_string()))
+    matcher::equals(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
 }
 
 pub fn array_length(w: &World, expected: &str) -> AttemptResult {
     let want: usize = expected
         .parse()
-        .map_err(|_| AttemptError::Fatal(format!("invalid length {expected:?}")))?;
+        .map_err(|_| AttemptError::input(format!("invalid length {expected:?}")))?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
+        .map_err(AttemptError::not_yet)?;
     check_array_length(&v, want)
 }
 
@@ -109,11 +109,11 @@ pub fn array_length(w: &World, expected: &str) -> AttemptResult {
 fn check_array_length(v: &serde_json::Value, want: usize) -> AttemptResult {
     let arr = v
         .as_array()
-        .ok_or_else(|| AttemptError::NotYet("response body is not an array".to_string()))?;
+        .ok_or_else(|| AttemptError::not_yet("response body is not an array".to_string()))?;
     if arr.len() == want {
         Ok(())
     } else {
-        Err(AttemptError::NotYet(format!(
+        Err(AttemptError::not_yet(format!(
             "    expected: array of length {want}\n    actual:   length {}",
             arr.len()
         )))
@@ -121,20 +121,20 @@ fn check_array_length(v: &serde_json::Value, want: usize) -> AttemptResult {
 }
 
 pub fn json_node_exists(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::Fatal)?;
+    path::validate(p).map_err(AttemptError::input)?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
-    path::read(&v, p).map(|_| ()).map_err(AttemptError::NotYet)
+        .map_err(AttemptError::not_yet)?;
+    path::read(&v, p).map(|_| ()).map_err(AttemptError::not_yet)
 }
 
 pub fn json_node_not_exists(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::Fatal)?;
+    path::validate(p).map_err(AttemptError::input)?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
+        .map_err(AttemptError::not_yet)?;
     check_not_exists(&v, p)
 }
 
@@ -142,27 +142,27 @@ pub fn json_node_not_exists(w: &World, p: &str) -> AttemptResult {
 fn check_not_exists(v: &serde_json::Value, p: &str) -> AttemptResult {
     match path::read(v, p) {
         Err(_) => Ok(()),
-        Ok(node) => Err(AttemptError::NotYet(format!(
+        Ok(node) => Err(AttemptError::not_yet(format!(
             "    expected: node {p:?} to not exist\n    actual:   {node}"
         ))),
     }
 }
 
 pub fn json_node_is_null(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::Fatal)?;
+    path::validate(p).map_err(AttemptError::input)?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
+        .map_err(AttemptError::not_yet)?;
     check_is_null(&v, p)
 }
 
 pub fn json_node_not_null(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::Fatal)?;
+    path::validate(p).map_err(AttemptError::input)?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
+        .map_err(AttemptError::not_yet)?;
     check_not_null(&v, p)
 }
 
@@ -170,9 +170,9 @@ pub fn json_node_not_null(w: &World, p: &str) -> AttemptResult {
 /// a missing node is always its own NotYet message, never folded into "not null".
 fn check_is_null(v: &serde_json::Value, p: &str) -> AttemptResult {
     match path::read(v, p) {
-        Err(_) => Err(AttemptError::NotYet(format!("node {p:?} does not exist"))),
+        Err(_) => Err(AttemptError::not_yet(format!("node {p:?} does not exist"))),
         Ok(node) if node.is_null() => Ok(()),
-        Ok(node) => Err(AttemptError::NotYet(format!(
+        Ok(node) => Err(AttemptError::not_yet(format!(
             "    expected: null\n    actual:   {node}"
         ))),
     }
@@ -180,9 +180,9 @@ fn check_is_null(v: &serde_json::Value, p: &str) -> AttemptResult {
 
 fn check_not_null(v: &serde_json::Value, p: &str) -> AttemptResult {
     match path::read(v, p) {
-        Err(_) => Err(AttemptError::NotYet(format!("node {p:?} does not exist"))),
-        Ok(node) if node.is_null() => Err(AttemptError::NotYet(
-            "    expected: not null\n    actual:   null".to_string(),
+        Err(_) => Err(AttemptError::not_yet(format!("node {p:?} does not exist"))),
+        Ok(node) if node.is_null() => Err(AttemptError::not_yet(
+            "    expected: not null\n    actual:   null",
         )),
         Ok(_) => Ok(()),
     }
@@ -199,7 +199,7 @@ pub(super) fn check_not_contains_json(
     expected: &serde_json::Value,
 ) -> AttemptResult {
     match matcher::contains(actual, expected) {
-        Ok(()) => Err(AttemptError::NotYet(format!(
+        Ok(()) => Err(AttemptError::not_yet(format!(
             "    expected: {subject} to NOT contain JSON matching:\n{}\n    actual:   it does",
             serde_json::to_string_pretty(expected).unwrap_or_default()
         ))),
@@ -208,11 +208,11 @@ pub(super) fn check_not_contains_json(
 }
 
 pub fn json_node_not_contains(w: &World, p: &str, needle: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::Fatal)?;
+    path::validate(p).map_err(AttemptError::input)?;
     let v = last(w)
-        .map_err(AttemptError::Fatal)?
+        .map_err(AttemptError::input)?
         .json()
-        .map_err(AttemptError::NotYet)?;
+        .map_err(AttemptError::not_yet)?;
     check_not_contains_substring(&v, p, needle)
 }
 
@@ -221,24 +221,24 @@ pub fn json_node_not_contains(w: &World, p: &str, needle: &str) -> AttemptResult
 fn check_not_contains_substring(v: &serde_json::Value, p: &str, needle: &str) -> AttemptResult {
     match path::read(v, p) {
         Err(_) => Ok(()),
-        Ok(serde_json::Value::String(s)) if s.contains(needle) => Err(AttemptError::NotYet(
+        Ok(serde_json::Value::String(s)) if s.contains(needle) => Err(AttemptError::not_yet(
             format!("    node {p:?} should not contain {needle:?}\n    actual:   {s:?}"),
         )),
         Ok(serde_json::Value::String(_)) => Ok(()),
-        Ok(other) => Err(AttemptError::Fatal(format!(
+        Ok(other) => Err(AttemptError::assertion(format!(
             "node {p:?} is not a string, got: {other}"
         ))),
     }
 }
 
 pub fn body_empty(w: &World) -> AttemptResult {
-    check_empty("body", &last(w).map_err(AttemptError::Fatal)?.body)
+    check_empty("body", &last(w).map_err(AttemptError::input)?.body)
 }
 
 pub fn body_contains_text(w: &World, needle: &str) -> AttemptResult {
     check_contains(
         "body",
-        &last(w).map_err(AttemptError::Fatal)?.body,
+        &last(w).map_err(AttemptError::input)?.body,
         needle,
         false,
     )
@@ -247,7 +247,7 @@ pub fn body_contains_text(w: &World, needle: &str) -> AttemptResult {
 pub fn body_not_contains_text(w: &World, needle: &str) -> AttemptResult {
     check_contains(
         "body",
-        &last(w).map_err(AttemptError::Fatal)?.body,
+        &last(w).map_err(AttemptError::input)?.body,
         needle,
         true,
     )
@@ -256,7 +256,7 @@ pub fn body_not_contains_text(w: &World, needle: &str) -> AttemptResult {
 pub fn body_matches(w: &World, pattern: &str) -> AttemptResult {
     check_matches(
         "body",
-        &last(w).map_err(AttemptError::Fatal)?.body,
+        &last(w).map_err(AttemptError::input)?.body,
         pattern,
         false,
     )
@@ -265,7 +265,7 @@ pub fn body_matches(w: &World, pattern: &str) -> AttemptResult {
 pub fn body_not_matches(w: &World, pattern: &str) -> AttemptResult {
     check_matches(
         "body",
-        &last(w).map_err(AttemptError::Fatal)?.body,
+        &last(w).map_err(AttemptError::input)?.body,
         pattern,
         true,
     )
@@ -277,7 +277,7 @@ pub(super) fn check_empty(subject: &str, text: &str) -> AttemptResult {
     if text.trim().is_empty() {
         Ok(())
     } else {
-        Err(AttemptError::NotYet(format!(
+        Err(AttemptError::not_yet(format!(
             "    expected: empty {subject}\n    actual:   {text:?}"
         )))
     }
@@ -293,7 +293,7 @@ pub(super) fn check_contains(
         return Ok(());
     }
     let not = if negate { "NOT " } else { "" };
-    Err(AttemptError::NotYet(format!(
+    Err(AttemptError::not_yet(format!(
         "    expected {subject} to {not}contain: {needle:?}\n    actual {subject}:\n{text}"
     )))
 }
@@ -305,22 +305,22 @@ pub(super) fn check_matches(
     negate: bool,
 ) -> AttemptResult {
     let re = Regex::new(pattern)
-        .map_err(|e| AttemptError::Fatal(format!("invalid regex {pattern:?}: {e}")))?;
+        .map_err(|e| AttemptError::input(format!("invalid regex {pattern:?}: {e}")))?;
     if re.is_match(text) != negate {
         return Ok(());
     }
     let not = if negate { "NOT " } else { "" };
-    Err(AttemptError::NotYet(format!(
+    Err(AttemptError::not_yet(format!(
         "    expected {subject} to {not}match: {pattern}\n    actual {subject}:\n{text}"
     )))
 }
 
 fn selected_element(w: &World, selector: &str) -> Result<String, AttemptError> {
-    let ex = last(w).map_err(AttemptError::Fatal)?;
+    let ex = last(w).map_err(AttemptError::input)?;
     let kind = markup::classify(markup::content_type(&ex.resp_headers));
     markup::select(kind, &ex.body, selector, true).map_err(|e| match e {
-        MarkupError::NoMatch(msg) => AttemptError::NotYet(msg),
-        MarkupError::Fatal(msg) => AttemptError::Fatal(msg),
+        MarkupError::NoMatch(msg) => AttemptError::not_yet(msg),
+        MarkupError::Fatal(msg) => AttemptError::input(msg),
     })
 }
 
@@ -334,7 +334,7 @@ pub fn body_has_element_with_text(w: &World, selector: &str, text: &str) -> Atte
     if got == text {
         Ok(())
     } else {
-        Err(AttemptError::NotYet(format!(
+        Err(AttemptError::not_yet(format!(
             "    expected: {text:?}\n    actual:   {got:?}"
         )))
     }
@@ -342,7 +342,7 @@ pub fn body_has_element_with_text(w: &World, selector: &str, text: &str) -> Atte
 
 pub fn body_not_has_element(w: &World, selector: &str) -> AttemptResult {
     match selected_element(w, selector) {
-        Ok(got) => Err(AttemptError::NotYet(format!(
+        Ok(got) => Err(AttemptError::not_yet(format!(
             "    expected: no element to match {selector:?}\n    actual:   matched {got:?}"
         ))),
         Err(AttemptError::NotYet(_)) => Ok(()),
@@ -578,9 +578,7 @@ mod tests {
         // Issue #22, item 5: "not an array" and "wrong length" must stay distinguishable.
         assert_eq!(
             check_array_length(&json!({"a": 1}), 2),
-            Err(AttemptError::NotYet(
-                "response body is not an array".to_string()
-            ))
+            Err(AttemptError::not_yet("response body is not an array"))
         );
     }
 
@@ -589,7 +587,7 @@ mod tests {
         let err = check_array_length(&json!([1, 2]), 3).unwrap_err();
         assert_ne!(
             err,
-            AttemptError::NotYet("response body is not an array".to_string())
+            AttemptError::not_yet("response body is not an array".to_string())
         );
     }
 
@@ -714,7 +712,7 @@ mod tests {
         };
         // Debug-quoted so the whitespace difference is visible, not silently swallowed.
         assert!(
-            msg.contains("\\n"),
+            msg.message.contains("\\n"),
             "message should show escaped whitespace: {msg}"
         );
     }

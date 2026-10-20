@@ -13,6 +13,7 @@ mod db;
 mod dirs;
 mod doctor;
 mod events;
+mod failure;
 mod feature;
 mod hawk;
 mod http;

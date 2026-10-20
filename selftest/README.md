@@ -23,6 +23,7 @@ cargo build
 | `bddkit.yaml` | the suite's config: the `exec` group, anchored at the repository root |
 | `macros.yaml` | `I run the masking fixture "<config>" with options "<options>"`, `I run the annotations fixture and read it through "<filter>"` |
 | `features/privacy.feature` | what must stay out of the console, the JUnit report and the stream |
+| `features/failure_classes.feature` | the class of each failure in the summary, the JUnit `type` and the stream |
 | `features/annotations.feature` | the order, numbering and comments of `section`, `step_disabled` and `comment`, and what a description keeps, in the stream |
 | `fixtures/masking/` | a project whose six scenarios fail on purpose, with a config per variation (default, `words_only`, a committed `reveal`) |
 | `fixtures/annotations/` | a project with one scenario that fails halfway, and the jq filters (`order`, `numbers`, `comments`, `description`) that put its stream on one line |

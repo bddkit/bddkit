@@ -1,3 +1,4 @@
+use crate::failure::StepError;
 use crate::hawk;
 use crate::options::Options;
 use crate::privacy::Redactor;
@@ -63,15 +64,25 @@ struct RequestRecipe {
 
 #[derive(Debug)]
 pub enum ReplayError {
-    NotYet(String),
-    Fatal(String),
+    NotYet(StepError),
+    Fatal(StepError),
 }
 
 impl ReplayError {
-    fn into_message(self) -> String {
+    fn into_error(self) -> StepError {
         match self {
-            Self::NotYet(message) | Self::Fatal(message) => message,
+            Self::NotYet(error) | Self::Fatal(error) => error,
         }
+    }
+
+    /// The request itself cannot be built or signed: no attempt can fix it.
+    fn input(message: impl Into<String>) -> Self {
+        Self::Fatal(StepError::input(message))
+    }
+
+    /// The service did not answer; a later attempt may find it back.
+    fn transport(message: impl Into<String>) -> Self {
+        Self::NotYet(StepError::transport(message))
     }
 }
 
@@ -472,7 +483,7 @@ impl HttpState {
         self.apis.options(&recipe.api)
     }
 
-    pub async fn send(&mut self, path: &str, method: &str) -> Result<(), String> {
+    pub async fn send(&mut self, path: &str, method: &str) -> Result<(), StepError> {
         // Clear both before constructing the new request so no failure can
         // expose an exchange or recipe belonging to an earlier explicit send.
         self.last = None;
@@ -492,7 +503,7 @@ impl HttpState {
         let exchange = self
             .execute(&recipe)
             .await
-            .map_err(ReplayError::into_message)?;
+            .map_err(ReplayError::into_error)?;
         self.evidence_of(&recipe.api, &exchange, started);
         self.last = Some(exchange);
         self.replay = Some(recipe);
@@ -504,7 +515,7 @@ impl HttpState {
         let recipe = self
             .replay
             .clone()
-            .ok_or_else(|| ReplayError::Fatal("request has not been sent".to_string()))?;
+            .ok_or_else(|| ReplayError::input("request has not been sent"))?;
         let started = std::time::Instant::now();
         let exchange = self.execute(&recipe).await?;
         self.evidence_of(&recipe.api, &exchange, started);
@@ -513,11 +524,11 @@ impl HttpState {
     }
 
     async fn execute(&self, recipe: &RequestRecipe) -> Result<Exchange, ReplayError> {
-        let api = self.apis.get(&recipe.api).map_err(ReplayError::Fatal)?;
+        let api = self.apis.get(&recipe.api).map_err(ReplayError::input)?;
         let mut url = api
             .base_url
             .join(&recipe.path)
-            .map_err(|e| ReplayError::Fatal(format!("invalid path {:?}: {e}", recipe.path)))?;
+            .map_err(|e| ReplayError::input(format!("invalid path {:?}: {e}", recipe.path)))?;
         if !recipe.query.is_empty() {
             let mut qp = url.query_pairs_mut();
             for (k, v) in &recipe.query {
@@ -525,7 +536,7 @@ impl HttpState {
             }
         }
         let method = reqwest::Method::from_bytes(recipe.method.as_bytes()).map_err(|e| {
-            ReplayError::Fatal(format!("invalid HTTP method {:?}: {e}", recipe.method))
+            ReplayError::input(format!("invalid HTTP method {:?}: {e}", recipe.method))
         })?;
 
         // Built before headers: a pending Hawk signer needs the exact bytes
@@ -565,18 +576,17 @@ impl HttpState {
         let mut request_headers = recipe.headers.clone();
         if let Some(credentials) = &recipe.signer {
             if multipart {
-                return Err(ReplayError::Fatal(
-                    "Hawk signing supports raw request bodies only, not multipart bodies"
-                        .to_string(),
+                return Err(ReplayError::input(
+                    "Hawk signing supports raw request bodies only, not multipart bodies",
                 ));
             }
             if recipe.form.is_some() {
-                return Err(ReplayError::Fatal(
-                    "Hawk signing supports raw request bodies only, not form bodies".to_string(),
+                return Err(ReplayError::input(
+                    "Hawk signing supports raw request bodies only, not form bodies",
                 ));
             }
-            let nonce = generate_nonce().map_err(ReplayError::Fatal)?;
-            let timestamp = unix_timestamp().map_err(ReplayError::Fatal)?;
+            let nonce = generate_nonce().map_err(host_failure)?;
+            let timestamp = unix_timestamp().map_err(host_failure)?;
             request_headers = apply_signer(
                 request_headers,
                 credentials,
@@ -586,7 +596,7 @@ impl HttpState {
                 timestamp,
                 &nonce,
             )
-            .map_err(ReplayError::Fatal)?;
+            .map_err(ReplayError::input)?;
         }
 
         // The multipart Content-Type carries the boundary, so it replaces
@@ -618,7 +628,7 @@ impl HttpState {
 
         let request = req
             .build()
-            .map_err(|e| ReplayError::Fatal(format!("failed to build HTTP request: {e}")))?;
+            .map_err(|e| ReplayError::input(format!("failed to build HTTP request: {e}")))?;
         // Before the request leaves, signed headers included: a transport
         // failure never reaches the response half below.
         let sensitive = |name: &str| {
@@ -633,7 +643,7 @@ impl HttpState {
             // reqwest quotes the URL, query string included: its short
             // sensitive values are hidden by position, as in the dump.
             let masked_url = crate::privacy::mask_ranges(&url_text, &ranges(&url_hits));
-            ReplayError::NotYet(format!(
+            ReplayError::transport(format!(
                 "request failed: {}",
                 e.to_string().replace(&url_text, &masked_url)
             ))
@@ -652,7 +662,7 @@ impl HttpState {
         let body = resp
             .text()
             .await
-            .map_err(|e| ReplayError::NotYet(format!("failed to read response body: {e}")))?;
+            .map_err(|e| ReplayError::transport(format!("failed to read response body: {e}")))?;
 
         for (name, value) in resp_headers.iter().filter(|(name, _)| sensitive(name)) {
             register_header(&self.redactor, name, value);
@@ -705,6 +715,12 @@ fn register_header(redactor: &Redactor, name: &str, value: &str) {
     }
 }
 
+/// The clock or the system entropy failed: neither the scenario nor the
+/// service is at fault, so no class fits.
+fn host_failure(message: String) -> ReplayError {
+    ReplayError::Fatal(StepError::host(message))
+}
+
 /// A fresh `multipart::Form` per attempt: a form is consumed by the request
 /// that carries it, so a replay rebuilds it from the recipe.
 fn multipart_form(recipe: &RequestRecipe) -> Result<reqwest::multipart::Form, ReplayError> {
@@ -718,7 +734,7 @@ fn multipart_form(recipe: &RequestRecipe) -> Result<reqwest::multipart::Form, Re
             .file_name(file.file_name.clone())
             .mime_str(&file.mime)
             .map_err(|e| {
-                ReplayError::Fatal(format!("invalid content type {:?}: {e}", file.mime))
+                ReplayError::input(format!("invalid content type {:?}: {e}", file.mime))
             })?;
         form = form.part(file.name.clone(), part);
     }
@@ -1212,7 +1228,14 @@ pub(crate) mod tests {
         let mut state = state();
         state.set_form(vec![("name".into(), "value".into())]);
         state.sign_next("id", "key");
-        assert!(state.send("/x", "POST").await.unwrap_err().contains("form"));
+        assert!(
+            state
+                .send("/x", "POST")
+                .await
+                .unwrap_err()
+                .message
+                .contains("form")
+        );
     }
 
     /// Echoes what the server actually received: every Content-Type header
@@ -1412,7 +1435,7 @@ pub(crate) mod tests {
         attach(&mut state, "content", "x.bin", b"B");
         state.sign_next("id", "key");
         let error = state.send("/x", "POST").await.unwrap_err();
-        assert!(error.contains("multipart"), "{error}");
+        assert!(error.message.contains("multipart"), "{error}");
     }
 
     #[test]
