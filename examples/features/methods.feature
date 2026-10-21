@@ -31,12 +31,15 @@ Feature: every HTTP method against the mock API
       Given the "Content-Type" request header is "application/json"
 
     Scenario: POST creates a resource and points at it
-      Given the request body is:
+      # Marked for `--evidence=marked`: this exchange is kept even on a pass.
+      Given I am collecting evidence
+      And the request body is:
         """
         {"title": "new post", "body": "demo", "userId": 1}
         """
       When I request "/posts" using HTTP POST
       Then the response code is 201
+      And I am not collecting evidence
       And the "Location" response header is "/posts/101"
       And extract "id" from JSON as "postId"
       And variable "postId" should be equal to "101"

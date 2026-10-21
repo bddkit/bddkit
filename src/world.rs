@@ -123,10 +123,15 @@ impl World {
         self.redactor = redactor;
     }
 
-    /// `--evidence`: this file's steps also write what they resolved, sent and read.
-    pub fn collect_evidence(&mut self) {
+    /// `--evidence`: this file's steps also write what they resolved, sent and
+    /// read. Every exchange is kept; `Trace` decides per step what is written.
+    pub fn collect_evidence(&mut self, sources: crate::events::Sources, cap: usize) {
+        if !sources.any() {
+            return;
+        }
         self.http.collect_evidence();
-        self.trace.collect_evidence(self.artifacts.clone());
+        self.trace
+            .collect_evidence(self.artifacts.clone(), sources, cap);
     }
 
     /// Emits the exchanges stored since the last call as evidence of the

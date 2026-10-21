@@ -750,7 +750,10 @@ pub struct RunContext {
     /// `--events`; `None` costs each emit site one branch.
     pub events: Option<Events>,
     /// `--evidence`: the stream also carries what steps resolved, sent and read.
-    pub evidence: bool,
+    pub evidence: crate::events::Sources,
+    /// `$BDDKIT_EVIDENCE_BUFFER`: bytes of long deferred text a scenario holds
+    /// in memory before it goes to disk.
+    pub evidence_buffer: usize,
     /// The run-wide privacy vocabulary and the secrets known before the first
     /// request; each file forks it. `main` sets it; masks nothing until then.
     pub redactor: crate::privacy::Redactor,
@@ -788,7 +791,8 @@ impl RunContext {
             options,
             artifacts,
             events: None,
-            evidence: false,
+            evidence: crate::events::Sources::default(),
+            evidence_buffer: crate::events::EVIDENCE_BUFFER,
             redactor: crate::privacy::Redactor::disabled(),
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
@@ -802,6 +806,12 @@ impl RunContext {
     /// line of the event stream — to the winner, so the three always agree.
     pub fn claim_end(&self) -> bool {
         !self.ending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The end is claimed while a file still runs only by the interrupt
+    /// handler: `run` claims it after the pool has drained.
+    pub fn interrupted(&self) -> bool {
+        self.ending.load(Ordering::SeqCst)
     }
 
     /// Arms the stop — only when `--fail-fast` is enabled. Without the flag a
@@ -846,9 +856,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     let redactor = ctx.redactor.fork();
     world.trace = Trace::new(ctx.events.clone(), &lf, redactor.clone());
     world.set_redactor(redactor);
-    if ctx.evidence {
-        world.collect_evidence();
-    }
+    world.collect_evidence(ctx.evidence, ctx.evidence_buffer);
     let mut scenarios = Vec::new();
 
     // The generator handle is cloned once: inside the loop `&world.generator`
@@ -963,6 +971,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             world.trace.scenario_finished(
                 failure.as_ref().map(|(text, kind)| (text.as_str(), *kind)),
                 duration,
+                ctx.interrupted(),
             );
             let (failure, failure_kind) = match failure {
                 Some((text, kind)) => (Some(text), Some(kind)),

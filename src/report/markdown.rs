@@ -316,6 +316,10 @@ fn front_matter(doc: &mut Doc, ctx: &Ctx<'_>, total: usize) {
     doc.raw(format!("scenarios: {scenarios}"));
     doc.raw(format!("failed: {failed}"));
     doc.raw(format!("evidence: {}", run.evidence));
+    if !run.evidence_sources.is_empty() {
+        let names: Vec<String> = run.evidence_sources.iter().map(|n| quoted(n)).collect();
+        doc.raw(format!("evidence_sources: [{}]", names.join(", ")));
+    }
     doc.raw(format!("masking: {}", run.masking));
     doc.raw(format!("complete: {}", !run.incomplete));
     doc.raw(format!("detail: {}", ctx.detail.name()));
@@ -424,13 +428,19 @@ fn run_part(doc: &mut Doc, ctx: &Ctx<'_>) {
         doc.raw(format!("- concurrency: {concurrency}"));
     }
     let state = |on: bool| if on { "on" } else { "off" };
+    let sources = if run.evidence_sources.is_empty() {
+        "off".to_owned()
+    } else {
+        one_line(&run.evidence_sources.join(", "))
+    };
     doc.raw(format!(
-        "- masking: {} · evidence: {}",
-        state(run.masking),
-        state(run.evidence)
+        "- masking: {} · evidence: {sources}",
+        state(run.masking)
     ));
     if !run.evidence {
         doc.raw("> **Warning:** no evidence was collected. Run with `--evidence` (and `--events`) to see requests, responses and SQL.");
+    } else if !run.evidence_sources.iter().any(|source| source == "all") {
+        doc.raw(format!("> **Note:** evidence was recorded only for {sources}, so a step outside them shows no exchange. Run with `--evidence` (`all`) to record every step."));
     }
     if run.incomplete {
         doc.raw("> **Warning:** this stream is incomplete: the run was killed or cut short, so the report ends where the stream does.");
@@ -569,6 +579,9 @@ fn scenario(doc: &mut Doc, ctx: &Ctx<'_>, file: &File, s: &Scenario, id: &str) {
     }
     if !s.tags.is_empty() {
         location.push_str(&format!(" · {}", one_line(&s.tags.join(" "))));
+    }
+    if let Some(coverage) = s.evidence.as_ref().filter(|_| ctx.run.evidence) {
+        location.push_str(&format!(" · evidence: {}", one_line(coverage)));
     }
     doc.raw(location);
     doc.blank();
@@ -971,6 +984,33 @@ mod tests {
 
     fn standard(detail: Detail) -> String {
         render_events(&events(true, true), detail)
+    }
+
+    #[test]
+    fn partial_sources_are_named_with_the_flag_that_records_more_and_coverage_is_per_scenario() {
+        let mut events = events(true, true);
+        events[0]["evidence_sources"] = json!(["marked", "failures"]);
+        for event in &mut events {
+            if event["type"] == "scenario_finished" && event["scenario"] == 1 {
+                event["evidence"] = "partial".into();
+            }
+        }
+        let text = render_events(&events, Detail::Failed);
+        assert!(
+            text.contains("\nevidence_sources: [\"marked\", \"failures\"]\n"),
+            "{text}"
+        );
+        assert!(text.contains("evidence: marked, failures"), "{text}");
+        assert!(
+            text.contains("only for marked, failures") && text.contains("`--evidence` (`all`)"),
+            "{text}"
+        );
+        assert!(text.contains("· evidence: partial"), "{text}");
+
+        // `all` has nothing to warn about, and an old stream reads as `all`.
+        let text = standard(Detail::Failed);
+        assert!(!text.contains("evidence was recorded only"), "{text}");
+        assert!(text.contains("evidence_sources: [\"all\"]"), "{text}");
     }
 
     #[test]

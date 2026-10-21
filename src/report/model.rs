@@ -21,6 +21,9 @@ pub struct Run {
     pub concurrency: Option<u64>,
     /// `--evidence` was given. A stream that predates the field reads as off.
     pub evidence: bool,
+    /// What it recorded: `marked`, `failures`, `all`. A stream that predates
+    /// the field and has `evidence` recorded everything.
+    pub evidence_sources: Vec<String>,
     /// False under `--reveal`.
     pub masking: bool,
     pub artifacts_dir: Option<String>,
@@ -69,6 +72,9 @@ pub struct Scenario {
     pub failure: Option<String>,
     /// The class of `failure`; absent in a stream older than failure classes.
     pub failure_kind: Option<String>,
+    /// How many of its steps have evidence: `full`, `partial` or `none`;
+    /// absent in a stream older than evidence sources.
+    pub evidence: Option<String>,
     pub items: Vec<Item>,
 }
 
@@ -185,6 +191,14 @@ impl Builder {
             selection: object(event, "selection").unwrap_or(Value::Null),
             concurrency: event["concurrency"].as_u64(),
             evidence: event["evidence"].as_bool().unwrap_or(false),
+            evidence_sources: match event["evidence_sources"].as_array() {
+                Some(names) => names
+                    .iter()
+                    .filter_map(|name| name.as_str().map(str::to_owned))
+                    .collect(),
+                None if event["evidence"] == true => vec!["all".to_owned()],
+                None => Vec::new(),
+            },
             masking: event["privacy"]["masking"].as_bool().unwrap_or(true),
             artifacts_dir: text(event, "artifacts_dir"),
             planned_files: event["files"].as_u64().unwrap_or(0),
@@ -212,6 +226,12 @@ impl Builder {
             "step_finished" => self.step_finished(event),
             "evidence" => self.attach(event, |item, value| item.evidence.push(value)),
             "attempt" => self.attach(event, |item, value| item.attempts.push(value)),
+            // A deferred step's resolved values, written after it finished.
+            "vars" => {
+                if let Some(item) = self.item_of(event) {
+                    item.vars = event.get("vars").cloned();
+                }
+            }
             "scenario_finished" => self.scenario_finished(event),
             "file_finished" => {
                 if let Some(file) = self.file_of(event) {
@@ -279,6 +299,7 @@ impl Builder {
             duration_us: None,
             failure: None,
             failure_kind: None,
+            evidence: None,
             items: Vec::new(),
         });
     }
@@ -385,6 +406,7 @@ impl Builder {
         scenario.duration_us = event["duration_us"].as_u64();
         scenario.failure = text(event, "failure");
         scenario.failure_kind = text(event, "failure_kind");
+        scenario.evidence = text(event, "evidence");
     }
 
     fn finish(mut self, cut: bool) -> Run {
@@ -480,6 +502,28 @@ mod tests {
         assert_eq!(scenario.failure.as_deref(), Some("boom"));
         assert_eq!(scenario.failure_kind.as_deref(), Some("transport"));
         assert!(!run.incomplete && !run.masking && run.evidence);
+    }
+
+    #[test]
+    fn deferred_evidence_and_vars_attach_to_their_step_after_it_finished() {
+        let mut events = base();
+        events[0]["evidence_sources"] = json!(["failures"]);
+        events.extend([
+            json!({"type": "step_started", "file": "a.feature", "scenario": 0, "step": 0, "keyword": "Given ", "text": "x <<a>>", "line": 4}),
+            json!({"type": "step_finished", "file": "a.feature", "scenario": 0, "step": 0, "status": "failed", "duration_us": 1, "warnings": []}),
+            json!({"type": "vars", "file": "a.feature", "scenario": 0, "step": 0, "vars": [["a", "1"]], "deferred": true}),
+            json!({"type": "evidence", "file": "a.feature", "scenario": 0, "step": 0, "kind": "sql", "deferred": true, "content": {"sql": "select 1"}}),
+            json!({"type": "scenario_finished", "file": "a.feature", "scenario": 0, "status": "failed", "evidence": "full"}),
+        ]);
+        let run = model(&events);
+        assert_eq!(run.evidence_sources, ["failures"]);
+        let scenario = &run.files[0].scenarios[0];
+        assert_eq!(scenario.evidence.as_deref(), Some("full"));
+        assert_eq!(scenario.items[0].vars, Some(json!([["a", "1"]])));
+        assert_eq!(scenario.items[0].evidence[0]["deferred"], true);
+
+        // A stream older than the sources recorded everything it recorded.
+        assert_eq!(model(&base()).evidence_sources, ["all"]);
     }
 
     #[test]

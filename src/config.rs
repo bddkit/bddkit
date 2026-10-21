@@ -34,6 +34,10 @@ pub struct Config {
     /// folds it with the environment and the flags.
     #[serde(default)]
     pub privacy: crate::privacy::PrivacyLayer,
+    /// `evidence: [marked, failures]`: the suite's default sources, used only
+    /// when the run has a stream and neither the flag nor the variable is set.
+    #[serde(default)]
+    pub evidence: Option<crate::events::Sources>,
     /// Everything the host does not name itself: `default_<group>` keys for
     /// plugin groups. Captured rather than rejected — a group's default is
     /// spelled the same way as `default_api`, and the host cannot know the

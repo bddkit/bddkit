@@ -14,12 +14,13 @@ use crate::plugin::abi::Diagnostic;
 use crate::privacy::{Redactor, mask_ranges};
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -196,6 +197,108 @@ fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// What `--evidence` records: the `marked` steps, every step of a scenario
+/// that failed (`failures`), or `all`. The flag, `$BDDKIT_EVIDENCE` and the config key are
+/// read by the one parser here, so all three refuse the same names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sources {
+    marked: bool,
+    failures: bool,
+    all: bool,
+}
+
+impl Sources {
+    /// A comma-separated list, as the flag and the variable carry it.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        text.split(',')
+            .try_fold(Self::default(), |sources, name| sources.with(name.trim()))
+    }
+
+    fn with(mut self, name: &str) -> Result<Self, String> {
+        match name {
+            "marked" => self.marked = true,
+            "failures" => self.failures = true,
+            "all" => self.all = true,
+            _ => {
+                return Err(format!(
+                    "unknown evidence source {name:?}: expected marked, failures or all"
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// True when anything is recorded at all.
+    pub fn any(self) -> bool {
+        self.marked || self.failures || self.all
+    }
+
+    /// For `run_started.evidence_sources`: canonical order, each once.
+    pub fn names(self) -> Vec<&'static str> {
+        [
+            (self.marked, "marked"),
+            (self.failures, "failures"),
+            (self.all, "all"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    }
+}
+
+/// `$BDDKIT_EVIDENCE`, as `run` reads it and `doctor` checks it.
+pub fn sources_from_env() -> Result<Option<Sources>> {
+    crate::privacy::process_env("BDDKIT_EVIDENCE")
+        .map(|value| Sources::parse(&value))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("$BDDKIT_EVIDENCE: {error}"))
+}
+
+/// The default of `$BDDKIT_EVIDENCE_BUFFER`: 64 MiB.
+pub const EVIDENCE_BUFFER: usize = 64 * 1024 * 1024;
+
+/// `$BDDKIT_EVIDENCE_BUFFER`, in bytes: what a scenario may hold of long
+/// deferred text before it goes to disk. Read by `run`, checked by `doctor`.
+pub fn buffer_from_env() -> Result<usize> {
+    crate::privacy::process_env("BDDKIT_EVIDENCE_BUFFER").map_or(Ok(EVIDENCE_BUFFER), |value| {
+        value.parse().map_err(|_| {
+            anyhow::anyhow!("$BDDKIT_EVIDENCE_BUFFER: expected a number of bytes, got {value:?}")
+        })
+    })
+}
+
+/// The config key is a YAML list, `evidence: [marked, failures]`.
+impl<'de> Deserialize<'de> for Sources {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .iter()
+            .try_fold(Self::default(), |sources, name| sources.with(name))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// What happens to the evidence of the step in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Off,
+    /// Written as it happens.
+    Live,
+    /// Held until the scenario ends; written only if it failed.
+    Deferred,
+}
+
+/// A scenario's deferred evidence: events in the order they were produced,
+/// and the long texts they reference, kept in memory until the scenario fails.
+/// ponytail: only `files` counts against the cap; the events (each at most
+/// `INLINE_LIMIT` of text) are not, so thousands of polling replays can exceed
+/// it. Spill them to disk too if that ever bites.
+#[derive(Default)]
+struct Held {
+    events: Vec<(&'static str, Value)>,
+    files: Vec<(PathBuf, String)>,
+    bytes: usize,
+}
+
 /// Where a step's text is written, when it is not where its caller is.
 #[derive(Clone, Copy)]
 pub struct Origin<'a> {
@@ -215,9 +318,22 @@ pub struct Trace {
     scenario: usize,
     steps: usize,
     open: Vec<usize>,
+    /// The mode of each step in `open`, decided when it started.
+    modes: Vec<Mode>,
     /// `--evidence`: where long text goes. `None` leaves every evidence method
     /// a no-op, as `events: None` does for the rest.
     evidence: Option<Arc<Artifacts>>,
+    sources: Sources,
+    /// Bytes of long text a scenario may hold in memory before it goes to disk.
+    cap: usize,
+    /// Scenario state: `I am collecting evidence`, and an `@evidence` tag.
+    marked: bool,
+    tagged: bool,
+    held: Mutex<Held>,
+    /// Steps started in the scenario, and how many of them were live or deferred.
+    started: usize,
+    live: usize,
+    deferred: usize,
     /// Masks every string BEFORE it becomes JSON, so a secret holding a quote
     /// or a backslash cannot slip past in its escaped form. Applies the file's
     /// set as it stands when each event is emitted; the stream is never rewritten.
@@ -233,20 +349,77 @@ impl Trace {
             scenario: 0,
             steps: 0,
             open: Vec::new(),
+            modes: Vec::new(),
             evidence: None,
+            sources: Sources::default(),
+            cap: 0,
+            marked: false,
+            tagged: false,
+            held: Mutex::default(),
+            started: 0,
+            live: 0,
+            deferred: 0,
             redactor: Redactor::disabled(),
         }
     }
 
-    /// Turns on `vars`, `evidence` and `attempt` events.
-    pub fn collect_evidence(&mut self, artifacts: Arc<Artifacts>) {
-        if self.events.is_some() {
+    /// Turns on `vars`, `evidence` and `attempt` events from `sources`; a
+    /// scenario holds at most `cap` bytes of long deferred text in memory.
+    pub fn collect_evidence(&mut self, artifacts: Arc<Artifacts>, sources: Sources, cap: usize) {
+        if self.events.is_some() && sources.any() {
             self.evidence = Some(artifacts);
+            self.sources = sources;
+            self.cap = cap;
         }
     }
 
+    /// Whether the evidence of the step in flight may be kept, live or deferred.
     pub fn evidence_on(&self) -> bool {
-        self.evidence.is_some()
+        self.mode() != Mode::Off
+    }
+
+    fn mode(&self) -> Mode {
+        self.modes.last().copied().unwrap_or(Mode::Off)
+    }
+
+    /// `I am collecting evidence` / `I am not collecting evidence`: decides
+    /// the mode of the steps that start after it, until the scenario ends.
+    pub fn mark(&mut self, on: bool) {
+        self.marked = on;
+    }
+
+    fn decide(&self) -> Mode {
+        let Sources {
+            marked,
+            failures,
+            all,
+        } = self.sources;
+        if self.evidence.is_none() {
+            Mode::Off
+        } else if all || (marked && (self.marked || self.tagged)) {
+            Mode::Live
+        } else if failures {
+            Mode::Deferred
+        } else {
+            Mode::Off
+        }
+    }
+
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// An evidence event of the step in flight: written, held or dropped.
+    fn record(&self, kind: &'static str, mut fields: Value) {
+        let Some(events) = &self.events else { return };
+        match self.mode() {
+            Mode::Live => events.emit(kind, fields),
+            Mode::Deferred => {
+                fields["deferred"] = true.into();
+                self.held().events.push((kind, fields));
+            }
+            Mode::Off => {}
+        }
     }
 
     pub fn set_redactor(&mut self, redactor: Redactor) {
@@ -293,6 +466,15 @@ impl Trace {
         trace
     }
 
+    fn mask_strings(&self, value: &mut Value) {
+        match value {
+            Value::String(text) => *text = self.redactor.mask(text),
+            Value::Array(items) => items.iter_mut().for_each(|v| self.mask_strings(v)),
+            Value::Object(fields) => fields.values_mut().for_each(|v| self.mask_strings(v)),
+            _ => {}
+        }
+    }
+
     /// Inserts `text`, masked, unless nothing is left of it: the stream leaves
     /// out a field that would be empty rather than writing `""` or `null`.
     fn put(&self, fields: &mut Value, key: &str, text: &str) {
@@ -329,6 +511,14 @@ impl Trace {
         self.scenarios += 1;
         self.steps = 0;
         self.open.clear();
+        self.modes.clear();
+        self.marked = false;
+        self.tagged = lf
+            .effective_tags(sc)
+            .iter()
+            .any(|(name, _)| *name == "evidence");
+        *self.held() = Held::default();
+        (self.started, self.live, self.deferred) = (0, 0, 0);
         let tags = lf.effective_tags(sc).into_iter().map(|(name, _)| name);
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(&ex.name),
@@ -382,13 +572,46 @@ impl Trace {
         events.emit("scenario_started", fields);
     }
 
-    pub fn scenario_finished(&self, failure: Option<(&str, FailureKind)>, duration: Duration) {
+    /// A failed scenario's deferred evidence is written first, unless the run
+    /// was `interrupted`: a scenario stopped by a signal did not fail.
+    pub fn scenario_finished(
+        &self,
+        failure: Option<(&str, FailureKind)>,
+        duration: Duration,
+        interrupted: bool,
+    ) {
         let Some(events) = &self.events else { return };
+        let held = std::mem::take(&mut *self.held());
+        let flush = failure.is_some() && !interrupted;
+        if flush {
+            // Files first, so an event never points at one not yet complete.
+            // ponytail: a file that cannot be written leaves its reference
+            // dangling; inline it like `text` does if that ever bites.
+            // Masked again with the set as it stands now: a value can become a
+            // secret after the step that sent it, and these are emitted now.
+            for (path, text) in held.files {
+                let _ = path
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| std::fs::write(&path, self.redactor.mask(&text)));
+            }
+            for (kind, mut fields) in held.events {
+                self.mask_strings(&mut fields);
+                events.emit(kind, fields);
+            }
+        }
+        let recorded = self.live + if flush { self.deferred } else { 0 };
+        let coverage = match recorded {
+            0 => "none",
+            n if n == self.started => "full",
+            _ => "partial",
+        };
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario,
             "status": if failure.is_some() { "failed" } else { "passed" },
             "duration_us": micros(duration),
             "failure": failure.map(|(text, _)| self.redactor.mask(text)),
+            "evidence": coverage,
         });
         if let Some((_, kind)) = failure {
             fields["failure_kind"] = kind.as_str().into();
@@ -411,6 +634,13 @@ impl Trace {
         let Some(events) = &self.events else { return };
         let step = self.steps;
         self.steps += 1;
+        let mode = self.decide();
+        self.started += 1;
+        match mode {
+            Mode::Live => self.live += 1,
+            Mode::Deferred => self.deferred += 1,
+            Mode::Off => {}
+        }
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "step": step,
             "keyword": keyword, "text": self.redactor.mask(text), "line": origin.line,
@@ -422,11 +652,23 @@ impl Trace {
         if let Some(index) = origin.index {
             fields["index"] = index.into();
         }
-        if self.evidence_on() && !vars.is_empty() {
-            fields["vars"] = vars.into();
+        if !vars.is_empty() {
+            match mode {
+                Mode::Live => fields["vars"] = vars.into(),
+                // `step_started` cannot wait for the scenario's outcome.
+                Mode::Deferred => self.held().events.push((
+                    "vars",
+                    json!({
+                        "file": self.file, "scenario": self.scenario, "step": step,
+                        "vars": vars, "deferred": true,
+                    }),
+                )),
+                Mode::Off => {}
+            }
         }
         self.put(&mut fields, "comment", origin.comment.unwrap_or(""));
         self.open.push(step);
+        self.modes.push(mode);
         events.emit("step_started", fields);
     }
 
@@ -441,6 +683,7 @@ impl Trace {
     ) {
         let Some(events) = &self.events else { return };
         let Some(step) = self.open.pop() else { return };
+        self.modes.pop();
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "step": step,
             "status": if failed.is_none() { "passed" } else { "failed" },
@@ -532,6 +775,21 @@ impl Trace {
         if masked.len() <= INLINE_LIMIT {
             return masked.into();
         }
+        // Held in memory under the cap, so a passing scenario leaves nothing
+        // of it on disk; past the cap it is written at once.
+        if self.mode() == Mode::Deferred {
+            let mut held = self.held();
+            if held.bytes + masked.len() <= self.cap {
+                let path = artifacts.next_dir().join(file_name);
+                let reference = json!({
+                    "path": artifacts.relative(&path).unwrap_or_default(),
+                    "size": masked.len(), "media_type": media_type(file_name),
+                });
+                held.bytes += masked.len();
+                held.files.push((path, masked));
+                return reference;
+            }
+        }
         match artifacts.write(file_name, masked.as_bytes()) {
             Ok(path) => {
                 json!({"path": path, "size": masked.len(), "media_type": media_type(file_name)})
@@ -554,12 +812,9 @@ impl Trace {
         title: Option<&str>,
         payload: Value,
     ) {
-        let (Some(events), Some(step)) = (&self.events, self.open.last()) else {
+        let Some(step) = self.open.last() else {
             return;
         };
-        if self.evidence.is_none() {
-            return;
-        }
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "step": step,
             "group": group, "resource": resource, "kind": kind,
@@ -570,14 +825,14 @@ impl Trace {
         if let (Some(into), Value::Object(from)) = (fields.as_object_mut(), payload) {
             into.extend(from);
         }
-        events.emit("evidence", fields);
+        self.record("evidence", fields);
     }
 
     /// One HTTP exchange, as `HttpState` stored it. Header values are hidden by
     /// name, sensitive fields by position, the rest by value — the order the
     /// failure dump uses — and only then is a body weighed against the limit.
     pub fn http(&self, resource: &str, exchange: &Exchange, elapsed: Duration) {
-        if self.evidence.is_none() {
+        if !self.evidence_on() {
             return;
         }
         let masked = |text: &str, spans: &[std::ops::Range<usize>]| {
@@ -626,7 +881,7 @@ impl Trace {
 
     /// One statement with its binds, after it ran.
     pub fn sql(&self, resource: &str, sql: &str, binds: &[Option<String>], elapsed: Duration) {
-        if self.evidence.is_none() {
+        if !self.evidence_on() {
             return;
         }
         let binds: Vec<Value> = binds
@@ -657,7 +912,7 @@ impl Trace {
         dispatch_dir: &Path,
         diagnostic: &Diagnostic,
     ) -> Vec<String> {
-        let Some(artifacts) = &self.evidence else {
+        let Some(artifacts) = self.evidence.as_ref().filter(|_| self.evidence_on()) else {
             return Vec::new();
         };
         let mut warnings = Vec::new();
@@ -723,11 +978,10 @@ impl Trace {
 
     /// One `not_yet` of an eventual assertion; `n` counts from 1.
     pub fn attempt(&self, n: u64, message: &str) {
-        let (Some(events), Some(step), Some(_)) = (&self.events, self.open.last(), &self.evidence)
-        else {
+        let Some(step) = self.open.last() else {
             return;
         };
-        events.emit(
+        self.record(
             "attempt",
             json!({
                 "file": self.file, "scenario": self.scenario, "step": step,
@@ -864,6 +1118,81 @@ mod tests {
             sizes.iter().all(|size| *size < BATCH_LIMIT + 1_024),
             "{sizes:?}"
         );
+    }
+
+    /// One failed scenario whose step ran a statement, its evidence deferred;
+    /// the types of the lines written once the scenario finished.
+    fn deferred_scenario(interrupted: bool) -> Vec<Value> {
+        let sink = Sink::default();
+        let events = Events::start(sink.clone());
+        let mut trace = Trace {
+            events: Some(events.clone()),
+            file: "a.feature".into(),
+            ..Trace::off()
+        };
+        let sources = Sources::parse("failures").expect("parses");
+        trace.collect_evidence(Artifacts::for_test(), sources, 0);
+        let origin = Origin {
+            line: 3,
+            index: None,
+            comment: None,
+        };
+        trace.step_started("Given ", "s", origin, Path::new("a.feature"), Vec::new());
+        assert!(trace.evidence_on(), "a plugin is told evidence is wanted");
+        trace.sql("main", "select 1", &[], Duration::ZERO);
+        trace.step_finished(Some(FailureKind::Assertion), Duration::ZERO, &[]);
+        let failure = Some(("boom", FailureKind::Assertion));
+        trace.scenario_finished(failure, Duration::ZERO, interrupted);
+        events.finish(json!({"exit": 1})).expect("finish");
+        sink.lines()
+    }
+
+    #[test]
+    fn a_scenario_that_fails_after_an_interrupt_drops_its_deferred_evidence() {
+        let kinds = |lines: Vec<Value>| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| line["type"].as_str().expect("type").to_owned())
+                .collect()
+        };
+        assert_eq!(
+            kinds(deferred_scenario(false)),
+            [
+                "step_started",
+                "step_finished",
+                "evidence",
+                "scenario_finished",
+                "run_finished"
+            ]
+        );
+        // A plugin instance dropped by the interrupt's shutdown fails the step:
+        // that scenario was stopped, not failed.
+        let lines = deferred_scenario(true);
+        assert_eq!(
+            kinds(lines.clone()),
+            [
+                "step_started",
+                "step_finished",
+                "scenario_finished",
+                "run_finished"
+            ]
+        );
+        assert_eq!(lines[2]["evidence"], "none");
+    }
+
+    #[test]
+    fn sources_are_named_once_in_canonical_order_and_an_unknown_one_is_refused() {
+        let sources = Sources::parse("all, failures,marked,all").expect("parses");
+        assert_eq!(sources.names(), ["marked", "failures", "all"]);
+        assert!(!Sources::default().any());
+        let error = Sources::parse("marked,").expect_err("an empty name");
+        assert!(
+            error.contains("expected marked, failures or all"),
+            "{error}"
+        );
+        let from_yaml: Sources = serde_yaml_ng::from_str("[failures]").expect("a list");
+        assert_eq!(from_yaml.names(), ["failures"]);
+        assert!(serde_yaml_ng::from_str::<Sources>("[nope]").is_err());
     }
 
     #[test]

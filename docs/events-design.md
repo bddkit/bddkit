@@ -122,7 +122,7 @@ Steps after a failure are reported as skipped at the top level and in an include
 | `step_skipped` | for each step after a failure, including the remainder of an included scenario | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source` |
 | `step_disabled` | where a commented step matches the loaded registry | `file`, `scenario`, `keyword`, `text`, `line`, optional `comment`; inside includes add `parent`, `source`; no `step` number |
 | `section` | before the items it groups, or after the last item for a closing note | `file`, `scenario`, `title`, `line`, optional `note`; inside includes add `parent`, `source` |
-| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`), `failure_kind` (only when failed: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic` or `unclassified`) |
+| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`), `failure_kind` (only when failed: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic` or `unclassified`), `evidence` (`full`, `partial` or `none` of its started steps recorded; section 9.1) |
 | `file_finished` | end of `run_file`; by the worker for a panicked file | `file`, `scenarios`, `failed`, `panicked` |
 | `run_finished` | last line | `exit`, `signal` (only when interrupted), `files`, `scenarios`, `failed`, `duration_ms` |
 
@@ -400,6 +400,12 @@ privacy:
 
 Off by default because evidence puts response bodies and query parameters of passing steps on disk, and masking cannot recognise what nobody marked (7.11).
 
+**Sources (bddkit/bddkit#125).** `--evidence=<sources>` takes a comma-separated list, after an `=` so that `--evidence features/a.feature` keeps meaning a bare flag and a path: `marked` (the steps a scenario's author marked, passed or failed), `failures` (every step of a scenario that failed), `all` (every step; what a bare `--evidence` means). They combine. `$BDDKIT_EVIDENCE` and the config key `evidence: [marked, failures]` are the other two forms, flag first; the config key applies only when the run has a stream, while the flag or the variable without one is refused (exit 2), and an unknown source is refused in all three (exit 2). `run_started` keeps `evidence` as a boolean (any source active) and adds `evidence_sources`, canonical order, each once.
+
+A step is marked between `I am collecting evidence` and `I am not collecting evidence` (group `debug`, at any depth, reset at the end of the scenario like debug mode), or by an `@evidence` tag on the scenario, its rule or its feature (Backgrounds included; a step cannot switch the tag off). The mode of a step is decided when it starts: **live** when it is marked and `marked` is a source, or `all` is; **deferred** when `failures` is a source and it is not live; otherwise nothing is collected for it and a plugin is told evidence is not wanted.
+
+A deferred step's `evidence` and `attempt` events are held per scenario and carry `"deferred": true` beside their `step`; its resolved values become a `vars` event (`file`, `scenario`, `step`, `vars`, `deferred`), since `step_started` is written before the outcome is known. If the scenario fails the buffer is written just before `scenario_finished`, in the order the events were produced; if it passes, or the run was interrupted while it ran, the buffer is dropped. Long text of a deferred step stays in memory and is written under the artifact root only on a failure, up to 64 MiB per file in flight (`$BDDKIT_EVIDENCE_BUFFER`, bytes, read only when a source is active); past that it is written at once and the buffer keeps the reference, and the file stays on disk if the scenario passes (section 8: the core deletes nothing). The cap bounds long text only; held events (each at most 16 KiB of text) are not counted. A diagnostic file a plugin names outside the root is copied in at once even when deferred, since a plugin may reuse the path. Held events are masked again with the file's set at flush, since that is when they are emitted. Their `t` is the flush time: the writer keeps `t` rising in `seq` order, so an earlier stamp could not survive; timing comes from `step_finished.duration_us` and the content's `duration_us`. `scenario_finished` gains `evidence`: `full`, `partial` or `none` of the steps that started were recorded.
+
 ### 9.2 Resolved values: `vars`
 
 **Decided.** `step_started` keeps the raw text and carries the resolved slots beside it, the way a SQL log shows a statement and its parameters:
@@ -444,7 +450,7 @@ Illustrative values again:
 
 ### 9.4 `attempt`
 
-One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence`, because the message quotes the values that did not match.
+One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence` (live or deferred, like any evidence of its step), because the message quotes the values that did not match.
 
 ## 10. Plugins (package 6)
 

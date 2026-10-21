@@ -1689,6 +1689,33 @@ fn a_plugin_is_told_whether_evidence_is_wanted() {
 }
 
 #[test]
+fn a_plugin_is_told_evidence_is_wanted_for_deferred_steps() {
+    let feature = "Feature: f\n  Scenario: s\n    When I echo the evidence hint\n    Then variable \"echo_hint\" should be equal to \"EXPECTED\"\n";
+    // Deferred: the scenario may yet fail, so the step's evidence may be kept.
+    let deferred = project(
+        "hint-deferred",
+        &feature.replace("EXPECTED", "true"),
+        ECHO_GROUP,
+    );
+    assert_green(&run_with(
+        &deferred,
+        &["--events", "events.ndjson", "--evidence=failures"],
+        &[],
+    ));
+    // An unmarked step under `marked` alone can never be kept.
+    let off = project(
+        "hint-unmarked",
+        &feature.replace("EXPECTED", "false"),
+        ECHO_GROUP,
+    );
+    assert_green(&run_with(
+        &off,
+        &["--events", "events.ndjson", "--evidence=marked"],
+        &[],
+    ));
+}
+
+#[test]
 fn a_declared_media_type_replaces_the_guess_and_declared_secrets_are_masked() {
     let dir = project(
         "declared-secret",

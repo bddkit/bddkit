@@ -3432,6 +3432,9 @@ fn run_with_events(
         .arg("--events")
         .arg(&events)
         .env_remove("BDDKIT_ARTIFACTS_DIR")
+        // The developer's own choice must not decide what a test records.
+        .env_remove("BDDKIT_EVIDENCE")
+        .env_remove("BDDKIT_EVIDENCE_BUFFER")
         .args(extra)
         .output()
         .expect("run bddkit");
@@ -4380,6 +4383,69 @@ async fn doctor_reports_the_events_path() {
         String::from_utf8_lossy(&out.stdout).contains("✗ reports"),
         "{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// `run` refuses a malformed evidence variable, and `$BDDKIT_EVIDENCE`
+/// without a stream; `doctor` must not be the more lenient of the two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_fails_on_an_evidence_variable_run_would_refuse() {
+    let base = common::spawn().await;
+    let cfg = write_doctor_project(
+        "doctor-evidence",
+        &base,
+        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let doctor = |vars: &[(&str, &str)], stream: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command
+            .args(["doctor", "--config"])
+            .arg(&cfg)
+            .env_remove("BDDKIT_EVENTS")
+            .env_remove("BDDKIT_EVIDENCE")
+            .env_remove("BDDKIT_EVIDENCE_BUFFER")
+            .envs(vars.iter().copied());
+        if stream {
+            command.arg("--events").arg(cfg.with_file_name("e.ndjson"));
+        }
+        let out = command.output().expect("run bddkit");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    for (vars, stream, says) in [
+        (&[("BDDKIT_EVIDENCE", "bogus")][..], true, "BDDKIT_EVIDENCE"),
+        (
+            &[("BDDKIT_EVIDENCE", "failures")][..],
+            false,
+            "requires --events",
+        ),
+        (
+            &[
+                ("BDDKIT_EVIDENCE", "failures"),
+                ("BDDKIT_EVIDENCE_BUFFER", "lots"),
+            ][..],
+            true,
+            "BDDKIT_EVIDENCE_BUFFER",
+        ),
+    ] {
+        let (code, stdout) = doctor(vars, stream);
+        assert_eq!(code, Some(1), "{vars:?}: {stdout}");
+        assert!(
+            stdout.contains("✗ evidence") && stdout.contains(says),
+            "{stdout}"
+        );
+    }
+    // A buffer nothing would use is not read, as in `run`.
+    let (code, stdout) = doctor(&[("BDDKIT_EVIDENCE_BUFFER", "lots")], true);
+    assert_eq!(code, Some(0), "{stdout}");
+    let (code, stdout) = doctor(&[("BDDKIT_EVIDENCE", "marked,failures")], true);
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(
+        stdout.contains("marked, failures ($BDDKIT_EVIDENCE)"),
+        "{stdout}"
     );
 }
 
@@ -6274,6 +6340,617 @@ async fn a_referenced_file_is_complete_when_its_event_is_read() {
             .len();
         assert_eq!(body["size"], on_disk, "{side}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// `--evidence <sources>`: marked steps and failed scenarios
+// ---------------------------------------------------------------------------
+
+/// `features` against the stub, run with `--events` and then `args`.
+fn modes_run(
+    name: &str,
+    base: &str,
+    features: &[(&str, &str)],
+    macros: Option<&str>,
+    args: &[&str],
+) -> Vec<Value> {
+    let cfg = write_events_project(name, base, features, macros);
+    run_with_events(&cfg, args).1
+}
+
+/// The `step` of every `evidence` event of scenario `scenario`, in order.
+fn evidence_steps(stream: &[Value], scenario: u64) -> Vec<u64> {
+    of_type(stream, "evidence")
+        .into_iter()
+        .filter(|e| e["scenario"] == scenario)
+        .map(|e| e["step"].as_u64().expect("step"))
+        .collect()
+}
+
+const PASS_AND_FAIL: &str = "Feature: e
+  Scenario: passes
+    Given set variable \"who\" to \"ann\"
+    When I request \"/ping?who=<<who>>\"
+  Scenario: fails
+    Given set variable \"who\" to \"bob\"
+    When I request \"/ping?who=<<who>>\"
+    Then the response code is 500
+";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn marked_records_only_the_steps_between_the_two_steps() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "marked-between",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given I request \"/ping\"\n    And I am collecting evidence\n    When I request \"/ping\"\n    And I am not collecting evidence\n    Then I request \"/ping\"\n",
+        )],
+        None,
+        &["--evidence=marked"],
+    );
+    assert_eq!(evidence_steps(&stream, 0), [2], "{stream:?}");
+    assert!(
+        of_type(&stream, "evidence")[0].get("deferred").is_none(),
+        "a marked step is written live"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_evidence_tag_marks_a_whole_scenario_and_is_inherited_from_feature_and_rule() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "marked-tag",
+        &base,
+        &[
+            (
+                "a.feature",
+                "Feature: a\n  Background:\n    Given I request \"/ping\"\n\n  @evidence\n  Scenario: tagged\n    When I request \"/ping\"\n    And I am not collecting evidence\n    Then I request \"/ping\"\n\n  Scenario: plain\n    When I request \"/ping\"\n\n  @evidence\n  Rule: r\n    Scenario: in the rule\n      When I request \"/ping\"\n",
+            ),
+            (
+                "b.feature",
+                "@evidence\nFeature: b\n  Scenario: s\n    When I request \"/ping\"\n",
+            ),
+        ],
+        None,
+        &["--evidence=marked"],
+    );
+    let of = |file: &str, scenario: u64| -> Vec<u64> {
+        of_type(&stream, "evidence")
+            .into_iter()
+            .filter(|e| e["file"].as_str().is_some_and(|f| f.ends_with(file)))
+            .filter(|e| e["scenario"] == scenario)
+            .map(|e| e["step"].as_u64().expect("step"))
+            .collect()
+    };
+    assert_eq!(
+        of("a.feature", 0),
+        [0, 1, 3],
+        "the Background too, and a step cannot switch the tag off"
+    );
+    assert_eq!(of("a.feature", 1), Vec::<u64>::new());
+    assert_eq!(of("a.feature", 2), [0, 1], "inherited from the rule");
+    assert_eq!(of("b.feature", 0), [0], "inherited from the feature");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mark_ends_with_the_scenario() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "marked-reset",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: marks\n    Given I am collecting evidence\n    When I request \"/ping\"\n  Scenario: next\n    When I request \"/ping\"\n",
+        )],
+        None,
+        &["--evidence=marked"],
+    );
+    assert_eq!(evidence_steps(&stream, 0), [1]);
+    assert_eq!(evidence_steps(&stream, 1), Vec::<u64>::new());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mark_covers_macro_and_include_bodies_called_inside_it() {
+    let base = common::spawn().await;
+    let cfg = write_events_project(
+        "marked-nested",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given I am collecting evidence\n    When I ping the service\n    And I include \"../lib/inc.feature\"\n",
+        )],
+        Some("- step: 'I ping the service'\n  do:\n    - I request \"/ping\"\n"),
+    );
+    std::fs::create_dir_all(cfg.with_file_name("lib")).expect("mkdir");
+    std::fs::write(
+        cfg.with_file_name("lib/inc.feature"),
+        "Feature: inc\n  Scenario: i\n    When I request \"/ping\"\n",
+    )
+    .expect("include");
+    let (_, stream, _) = run_with_events(&cfg, &["--evidence=marked"]);
+    // 0 marks, 1 the macro, 2 its body, 3 the include, 4 its step.
+    assert_eq!(evidence_steps(&stream, 0), [2, 4], "{stream:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn marks_record_nothing_without_the_marked_source() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "marked-unused",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  @evidence\n  Scenario: s\n    Given I am collecting evidence\n    When I request \"/ping\"\n",
+        )],
+        None,
+        &["--evidence=failures"],
+    );
+    assert!(of_type(&stream, "evidence").is_empty(), "{stream:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failures_records_every_step_of_a_failed_scenario_and_nothing_of_a_passing_one() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "failures",
+        &base,
+        &[("e.feature", PASS_AND_FAIL)],
+        None,
+        &["--evidence=failures"],
+    );
+    assert_eq!(evidence_steps(&stream, 0), Vec::<u64>::new());
+    assert_eq!(evidence_steps(&stream, 1), [1]);
+    assert!(
+        of_type(&stream, "step_started")
+            .iter()
+            .all(|e| e.get("vars").is_none()),
+        "a deferred step's values cannot ride on step_started"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_events_carry_their_step_and_arrive_before_scenario_finished() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "failures-order",
+        &base,
+        &[("e.feature", PASS_AND_FAIL)],
+        None,
+        &["--evidence=failures"],
+    );
+    let seq = |e: &Value| e["seq"].as_u64().expect("seq");
+    let evidence = of_type(&stream, "evidence");
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0]["deferred"], true);
+    assert_eq!(evidence[0]["step"], 1);
+    let finished = of_type(&stream, "scenario_finished")[1];
+    let last_step = of_type(&stream, "step_finished")
+        .into_iter()
+        .filter(|e| e["scenario"] == 1)
+        .map(seq)
+        .max()
+        .expect("steps");
+    assert!(last_step < seq(evidence[0]) && seq(evidence[0]) < seq(finished));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_vars_arrive_as_a_vars_event() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "failures-vars",
+        &base,
+        &[("e.feature", PASS_AND_FAIL)],
+        None,
+        &["--evidence=failures"],
+    );
+    let vars = of_type(&stream, "vars");
+    assert_eq!(vars.len(), 1, "only the failed scenario's: {vars:?}");
+    assert_eq!(vars[0]["scenario"], 1);
+    assert_eq!(vars[0]["step"], 1);
+    assert_eq!(vars[0]["vars"], json!([["who", "bob"]]));
+    assert_eq!(vars[0]["deferred"], true);
+}
+
+/// A scenario that POSTs a body over the inline limit, then passes or fails.
+fn long_deferred_run(
+    name: &str,
+    base: &str,
+    fail: bool,
+    env: &[(&str, &str)],
+) -> std::path::PathBuf {
+    let cfg = write_events_project(name, base, &[], None);
+    std::fs::write(
+        cfg.with_file_name("features/e.feature"),
+        format!(
+            "Feature: e\n  Scenario: s\n    Given the request body is:\n      \"\"\"\n      {{\"note\": \"{}\"}}\n      \"\"\"\n    When I request \"/echo\" using HTTP POST\n    Then the response code is {}\n",
+            "x".repeat(20_000),
+            if fail { 500 } else { 201 }
+        ),
+    )
+    .expect("feature");
+    let root = cfg.with_file_name("evidence");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(cfg.with_file_name("events.ndjson"))
+        .args(["--evidence=failures", "--artifacts-dir"])
+        .arg(&root)
+        .env_remove("BDDKIT_EVIDENCE_BUFFER")
+        .envs(env.iter().copied())
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(i32::from(fail)));
+    root
+}
+
+fn files_under(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root).map_or(0, |dirs| {
+        dirs.flatten()
+            .map(|dir| std::fs::read_dir(dir.path()).map_or(0, Iterator::count))
+            .sum()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_body_of_a_passing_scenario_never_reaches_the_disk_under_the_buffer_cap() {
+    let base = common::spawn().await;
+    let root = long_deferred_run("deferred-long-pass", &base, false, &[]);
+    assert_eq!(files_under(&root), 0, "held in memory, then dropped");
+
+    let root = long_deferred_run("deferred-long-fail", &base, true, &[]);
+    assert_eq!(
+        files_under(&root),
+        2,
+        "request and response, once it failed"
+    );
+    let stream = read_stream(&root.with_file_name("events.ndjson"));
+    let body = &of_type(&stream, "evidence")[0]["content"]["response"]["body"];
+    let on_disk = std::fs::metadata(root.join(body["path"].as_str().expect("path")))
+        .expect("exists")
+        .len();
+    assert_eq!(body["size"], on_disk);
+
+    let root = long_deferred_run(
+        "deferred-long-cap",
+        &base,
+        false,
+        &[("BDDKIT_EVIDENCE_BUFFER", "0")],
+    );
+    assert_eq!(files_under(&root), 2, "past the cap it is written at once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn marked_and_failures_combine() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "marked-failures",
+        &base,
+        &[(
+            "e.feature",
+            &PASS_AND_FAIL.replace(
+                "  Scenario: passes\n",
+                "  Scenario: passes\n    Given I am collecting evidence\n",
+            ),
+        )],
+        None,
+        &["--evidence=marked,failures"],
+    );
+    let evidence = of_type(&stream, "evidence");
+    assert_eq!(evidence.len(), 2, "{evidence:?}");
+    assert_eq!(evidence[0]["scenario"], 0);
+    assert!(evidence[0].get("deferred").is_none(), "marked: live");
+    assert_eq!(evidence[1]["scenario"], 1);
+    assert_eq!(evidence[1]["deferred"], true, "failed: deferred");
+    assert_eq!(stream[0]["evidence_sources"], json!(["marked", "failures"]));
+}
+
+#[test]
+fn bare_evidence_means_all() {
+    let stream = evidence_run(
+        "bare-evidence",
+        "",
+        "    Given set variable \"who\" to \"ann\"\n    And set variable \"hi\" to \"<<who>>\"\n",
+        &[],
+    );
+    assert_eq!(stream[0]["evidence_sources"], json!(["all"]));
+    assert_eq!(
+        step_text(&stream, "\"hi\"")["vars"],
+        json!([["who", "ann"]])
+    );
+}
+
+/// Sources take an `=`, so a bare `--evidence` before a feature path is still
+/// the flag and the path, as when the flag took no value.
+#[test]
+fn a_bare_evidence_before_a_path_keeps_its_meaning() {
+    let cfg = write_events_project(
+        "bare-before-path",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let feature = cfg.with_file_name("features/e.feature");
+    let (out, stream, _) = run_with_events(&cfg, &["--evidence", feature.to_str().expect("UTF-8")]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stream[0]["evidence_sources"], json!(["all"]));
+
+    // Without the `=`, a source name is a path that does not exist.
+    let (out, _, _) = run_with_events(&cfg, &["--evidence", "marked"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn an_unknown_source_is_refused() {
+    let cfg = write_events_project(
+        "unknown-source",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let events = cfg.with_file_name("events.ndjson");
+    let run = |args: &[&str], env: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command
+            .args(["run", "--config"])
+            .arg(&cfg)
+            .arg("--events")
+            .arg(&events)
+            .args(args)
+            .env_remove("BDDKIT_EVIDENCE");
+        if let Some(value) = env {
+            command.env("BDDKIT_EVIDENCE", value);
+        }
+        command.output().expect("run bddkit")
+    };
+    for out in [
+        run(&["--evidence=marked,bogus"], None),
+        run(&[], Some("bogus")),
+    ] {
+        assert_eq!(out.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("\"bogus\""), "{stderr}");
+        assert!(stderr.contains("marked, failures or all"), "{stderr}");
+    }
+
+    let text = std::fs::read_to_string(&cfg).expect("config");
+    std::fs::write(&cfg, format!("{text}evidence: [bogus]\n")).expect("config");
+    let out = run(&[], None);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("marked, failures or all"), "{stderr}");
+}
+
+#[test]
+fn the_config_key_without_a_stream_is_ignored_and_the_flag_without_a_stream_is_refused() {
+    let cfg = write_events_project(
+        "config-evidence",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let text = std::fs::read_to_string(&cfg).expect("config");
+    std::fs::write(&cfg, format!("{text}evidence: [marked]\n")).expect("config");
+    let bare = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+        command
+            .args(["run", "--config"])
+            .arg(&cfg)
+            .env_remove("BDDKIT_EVENTS")
+            .env_remove("BDDKIT_EVIDENCE");
+        command
+    };
+
+    let out = bare().output().expect("run bddkit");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = bare()
+        .env("BDDKIT_EVIDENCE", "all")
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("$BDDKIT_EVIDENCE requires --events"),
+        "{stderr}"
+    );
+
+    // With a stream: the config applies, the variable beats it, the flag both.
+    let sources = |args: &[&str], env: Option<&str>| {
+        let events = cfg.with_file_name("events.ndjson");
+        let mut command = bare();
+        command.arg("--events").arg(&events).args(args);
+        if let Some(value) = env {
+            command.env("BDDKIT_EVIDENCE", value);
+        }
+        command.output().expect("run bddkit");
+        read_stream(&events)[0]["evidence_sources"].clone()
+    };
+    assert_eq!(sources(&[], None), json!(["marked"]));
+    assert_eq!(sources(&[], Some("failures")), json!(["failures"]));
+    assert_eq!(sources(&["--evidence"], Some("failures")), json!(["all"]));
+}
+
+/// A scenario whose evidence is deferred, held in a `sleep` when the signal
+/// lands: nothing of it reaches the stream. This pins the outcome end to end
+/// only; the guard for a scenario that FAILS after the signal (a plugin
+/// instance dropped by the shutdown) is pinned by the unit test
+/// `a_scenario_that_fails_after_an_interrupt_drops_its_deferred_evidence`.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_scenario_writes_no_deferred_evidence() {
+    let cfg = write_events_project(
+        "deferred-interrupt",
+        "",
+        &[(
+            "a.feature",
+            "Feature: held\n  Scenario: s\n    Given set variable \"who\" to \"ann\"\n    And set variable \"hi\" to \"<<who>>\"\n    And I sleep \"10\" seconds\n",
+        )],
+        None,
+    );
+    let events = cfg.with_file_name("events.ndjson");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&cfg)
+        .arg("--events")
+        .arg(&events)
+        .args(["--evidence=failures"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn bddkit");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !std::fs::read_to_string(&events).is_ok_and(|text| text.contains("I sleep")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the sleep never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(sent.success());
+    assert_eq!(child.wait().expect("wait").code(), Some(130));
+
+    let stream = read_stream(&events);
+    assert_eq!(stream.last().expect("lines")["type"], "run_finished");
+    assert!(of_type(&stream, "vars").is_empty(), "{stream:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scenario_finished_reports_evidence_coverage() {
+    let base = common::spawn().await;
+    let feature = PASS_AND_FAIL.replace(
+        "  Scenario: passes\n",
+        "  Scenario: passes\n    Given I am collecting evidence\n",
+    );
+    let coverage = |args: &[&str]| -> Vec<Value> {
+        let stream = modes_run("coverage", &base, &[("e.feature", &feature)], None, args);
+        of_type(&stream, "scenario_finished")
+            .into_iter()
+            .map(|e| e["evidence"].clone())
+            .collect()
+    };
+    assert_eq!(coverage(&[]), [json!("none"), json!("none")]);
+    assert_eq!(coverage(&["--evidence"]), [json!("full"), json!("full")]);
+    assert_eq!(
+        coverage(&["--evidence=marked,failures"]),
+        [json!("partial"), json!("full")],
+        "the marking step itself is not marked; the failed scenario is whole"
+    );
+    assert_eq!(
+        coverage(&["--evidence=failures"]),
+        [json!("none"), json!("full")]
+    );
+}
+
+/// A run refused over an evidence variable empties a stale stream like any
+/// other refusal; a buffer nothing would use is never read.
+#[test]
+fn an_evidence_variable_refusal_empties_the_stream_and_an_unused_buffer_is_ignored() {
+    let cfg = write_events_project(
+        "evidence-refused",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let events = cfg.with_file_name("events.ndjson");
+    let run = |vars: &[(&str, &str)], args: &[&str]| {
+        std::fs::write(&events, "{\"type\":\"yesterday\"}\n").expect("stale stream");
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["run", "--config"])
+            .arg(&cfg)
+            .arg("--events")
+            .arg(&events)
+            .args(args)
+            .env_remove("BDDKIT_EVIDENCE")
+            .env_remove("BDDKIT_EVIDENCE_BUFFER")
+            .envs(vars.iter().copied())
+            .output()
+            .expect("run bddkit");
+        (out.status.code(), read_stream(&events))
+    };
+    for (vars, args) in [
+        (&[("BDDKIT_EVIDENCE", "bogus")][..], &[][..]),
+        (
+            &[("BDDKIT_EVIDENCE_BUFFER", "64M")][..],
+            &["--evidence=failures"][..],
+        ),
+    ] {
+        let (code, stream) = run(vars, args);
+        assert_eq!(code, Some(2), "{vars:?}");
+        assert!(stream.is_empty(), "{vars:?}: {stream:?}");
+    }
+    let (code, _) = run(&[("BDDKIT_EVIDENCE_BUFFER", "64M")], &[]);
+    assert_eq!(code, Some(0), "no evidence, no buffer to read");
+}
+
+/// Held evidence is emitted at the end of the scenario, so a value that
+/// became a secret after the step that sent it is masked there too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_evidence_is_masked_with_the_secrets_known_when_it_is_written() {
+    let base = common::spawn().await;
+    let stream = modes_run(
+        "deferred-late-secret",
+        &base,
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given the \"X-Note\" request header is \"late-secret-value-1\"\n    When I request \"/ping\"\n    And set variable \"my_secret\" to \"late-secret-value-1\"\n    Then the response code is 500\n",
+        )],
+        None,
+        &["--evidence=failures"],
+    );
+    let evidence = of_type(&stream, "evidence");
+    assert_eq!(evidence.len(), 1, "{stream:?}");
+    let text = evidence[0].to_string();
+    assert!(!text.contains("late-secret-value-1"), "{text}");
+    assert!(text.contains("***"), "{text}");
+}
+
+#[test]
+fn run_started_keeps_the_evidence_boolean_and_adds_the_sources() {
+    let cfg = write_events_project(
+        "run-started-sources",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let started = |args: &[&str]| run_with_events(&cfg, args).1[0].clone();
+    let off = started(&[]);
+    assert_eq!(off["evidence"], false);
+    assert_eq!(off["evidence_sources"], json!([]));
+    let on = started(&["--evidence=failures,marked,failures"]);
+    assert_eq!(on["evidence"], true);
+    assert_eq!(on["evidence_sources"], json!(["marked", "failures"]));
 }
 
 /// Writes `files` (path relative to the project, content) plus the usual

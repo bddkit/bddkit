@@ -81,6 +81,8 @@ pub enum StepId {
     UseConnection,
     DebugOn,
     DebugOff,
+    EvidenceOn,
+    EvidenceOff,
     HaveWith,
     HaveWhere,
     HaveMulti,
@@ -554,6 +556,18 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "debug",
         "I am not in debug mode",
         "stops the debug output turned on earlier in the scenario",
+    ),
+    action(
+        StepId::EvidenceOn,
+        "debug",
+        "I am collecting evidence",
+        "marks the steps that follow, until the scenario ends, for --evidence=marked",
+    ),
+    action(
+        StepId::EvidenceOff,
+        "debug",
+        "I am not collecting evidence",
+        "ends the mark set earlier in the scenario",
     ),
     action(
         StepId::HaveWhere,
@@ -1322,6 +1336,14 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::UseConnection => db::use_connection(w, a.cap(0)),
         StepId::DebugOn => db::debug_on(w),
         StepId::DebugOff => db::debug_off(w),
+        StepId::EvidenceOn => {
+            w.trace.mark(true);
+            Ok(())
+        }
+        StepId::EvidenceOff => {
+            w.trace.mark(false);
+            Ok(())
+        }
         StepId::HaveWith => db::have_with(w, a.cap(0), a.cap(1)).await,
         StepId::HaveWhere => db::have_where(w, a.cap(0), a.table.as_ref()).await,
         StepId::HaveMulti => db::have_multi(w, a.table.as_ref()).await,
@@ -1930,6 +1952,8 @@ mod tests {
             r#"I use "billing" api"#,
             "I am in debug mode",
             "I am not in debug mode",
+            "I am collecting evidence",
+            "I am not collecting evidence",
             r#"I have "users" where:"#,
             r#"I have "users" with "email: a@b.net""#,
             "I have:",

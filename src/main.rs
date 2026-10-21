@@ -595,10 +595,16 @@ struct RunArgs {
     #[arg(long)]
     events: Option<PathBuf>,
     /// Add evidence to the event stream: resolved values, HTTP exchanges, SQL
-    /// and plugin diagnostics, also of passing steps. Off by default because it
-    /// puts bodies and query parameters on disk. Requires --events
-    #[arg(long)]
-    evidence: bool,
+    /// and plugin diagnostics, from these comma-separated sources (written
+    /// `--evidence=marked,failures`): `marked`
+    /// (steps the scenario marks), `failures` (every step of a failed
+    /// scenario), `all` (the default without a value). Off by default because
+    /// it puts bodies and query parameters on disk. Requires --events
+    /// [default: $BDDKIT_EVIDENCE, else the config's `evidence`]
+    // `require_equals`: `--evidence features/a.feature` keeps meaning a bare
+    // flag and a path, as it did when the flag took no value.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "all", value_parser = events::Sources::parse)]
+    evidence: Option<events::Sources>,
     /// Root for the evidence files plugins write [default: $BDDKIT_ARTIFACTS_DIR,
     /// else <temp dir>/bddkit-<run id>]
     #[arg(long = "artifacts-dir")]
@@ -1073,16 +1079,34 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .events
         .clone()
         .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from));
+    let events_file = events_path
+        .as_ref()
+        .map(|path| events::open(path))
+        .transpose()?;
+    let evidence = match cli.evidence {
+        Some(sources) => Some(("--evidence", sources)),
+        None => events::sources_from_env()?.map(|sources| ("$BDDKIT_EVIDENCE", sources)),
+    };
     // `$BDDKIT_EVENTS` counts, so this is not clap's `requires`.
-    anyhow::ensure!(
-        !cli.evidence || events_path.is_some(),
-        "--evidence requires --events (or $BDDKIT_EVENTS)"
-    );
-    let events_file = events_path.map(|path| events::open(&path)).transpose()?;
+    if let (Some((source, _)), None) = (evidence, &events_file) {
+        anyhow::bail!("{source} requires --events (or $BDDKIT_EVENTS)");
+    }
     let resolved = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
     let config_path = resolved.path;
     let cfg = config::load(&config_path, cli.env.as_deref())?;
+    // The config key is the suite's default: a run without a stream ignores it.
+    let evidence = match evidence {
+        Some((_, sources)) => sources,
+        None if events_file.is_some() => cfg.evidence.unwrap_or_default(),
+        None => events::Sources::default(),
+    };
+    // Only a run that defers anything has a use for it.
+    let evidence_buffer = if evidence.any() {
+        events::buffer_from_env()?
+    } else {
+        events::EVIDENCE_BUFFER
+    };
     let privacy = privacy::Privacy::from_sources(
         Some(&cfg.privacy),
         &privacy::process_env,
@@ -1215,7 +1239,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
                     "tags": cli.tags,
                     "paths": cli.paths.iter().map(|p| feature::display_path(p)).collect::<Vec<_>>(),
                 },
-                "evidence": cli.evidence,
+                "evidence": evidence.any(),
+                "evidence_sources": evidence.names(),
                 "concurrency": cfg.concurrency,
                 "privacy": {
                     "masking": !privacy.reveal,
@@ -1241,7 +1266,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
         cli.fail_fast,
     );
     ctx.events = events;
-    ctx.evidence = cli.evidence;
+    ctx.evidence = evidence;
+    ctx.evidence_buffer = evidence_buffer;
     ctx.redactor = privacy::Redactor::new(&privacy, privacy::recorded());
     let ctx = Arc::new(ctx);
 
