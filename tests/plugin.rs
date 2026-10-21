@@ -1699,7 +1699,7 @@ fn a_plugin_is_told_evidence_is_wanted_for_deferred_steps() {
     );
     assert_green(&run_with(
         &deferred,
-        &["--events", "events.ndjson", "--evidence", "failures"],
+        &["--events", "events.ndjson", "--evidence=failures"],
         &[],
     ));
     // An unmarked step under `marked` alone can never be kept.
@@ -1710,7 +1710,7 @@ fn a_plugin_is_told_evidence_is_wanted_for_deferred_steps() {
     );
     assert_green(&run_with(
         &off,
-        &["--events", "events.ndjson", "--evidence", "marked"],
+        &["--events", "events.ndjson", "--evidence=marked"],
         &[],
     ));
 }

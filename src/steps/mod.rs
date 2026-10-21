@@ -561,7 +561,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         StepId::EvidenceOn,
         "debug",
         "I am collecting evidence",
-        "marks the steps that follow, until the scenario ends, for --evidence marked",
+        "marks the steps that follow, until the scenario ends, for --evidence=marked",
     ),
     action(
         StepId::EvidenceOff,

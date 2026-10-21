@@ -595,12 +595,15 @@ struct RunArgs {
     #[arg(long)]
     events: Option<PathBuf>,
     /// Add evidence to the event stream: resolved values, HTTP exchanges, SQL
-    /// and plugin diagnostics, from these comma-separated sources: `marked`
+    /// and plugin diagnostics, from these comma-separated sources (written
+    /// `--evidence=marked,failures`): `marked`
     /// (steps the scenario marks), `failures` (every step of a failed
     /// scenario), `all` (the default without a value). Off by default because
     /// it puts bodies and query parameters on disk. Requires --events
     /// [default: $BDDKIT_EVIDENCE, else the config's `evidence`]
-    #[arg(long, num_args = 0..=1, default_missing_value = "all", value_parser = events::Sources::parse)]
+    // `require_equals`: `--evidence features/a.feature` keeps meaning a bare
+    // flag and a path, as it did when the flag took no value.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "all", value_parser = events::Sources::parse)]
     evidence: Option<events::Sources>,
     /// Root for the evidence files plugins write [default: $BDDKIT_ARTIFACTS_DIR,
     /// else <temp dir>/bddkit-<run id>]

@@ -6388,7 +6388,7 @@ async fn marked_records_only_the_steps_between_the_two_steps() {
             "Feature: e\n  Scenario: s\n    Given I request \"/ping\"\n    And I am collecting evidence\n    When I request \"/ping\"\n    And I am not collecting evidence\n    Then I request \"/ping\"\n",
         )],
         None,
-        &["--evidence", "marked"],
+        &["--evidence=marked"],
     );
     assert_eq!(evidence_steps(&stream, 0), [2], "{stream:?}");
     assert!(
@@ -6414,7 +6414,7 @@ async fn the_evidence_tag_marks_a_whole_scenario_and_is_inherited_from_feature_a
             ),
         ],
         None,
-        &["--evidence", "marked"],
+        &["--evidence=marked"],
     );
     let of = |file: &str, scenario: u64| -> Vec<u64> {
         of_type(&stream, "evidence")
@@ -6445,7 +6445,7 @@ async fn a_mark_ends_with_the_scenario() {
             "Feature: e\n  Scenario: marks\n    Given I am collecting evidence\n    When I request \"/ping\"\n  Scenario: next\n    When I request \"/ping\"\n",
         )],
         None,
-        &["--evidence", "marked"],
+        &["--evidence=marked"],
     );
     assert_eq!(evidence_steps(&stream, 0), [1]);
     assert_eq!(evidence_steps(&stream, 1), Vec::<u64>::new());
@@ -6469,7 +6469,7 @@ async fn a_mark_covers_macro_and_include_bodies_called_inside_it() {
         "Feature: inc\n  Scenario: i\n    When I request \"/ping\"\n",
     )
     .expect("include");
-    let (_, stream, _) = run_with_events(&cfg, &["--evidence", "marked"]);
+    let (_, stream, _) = run_with_events(&cfg, &["--evidence=marked"]);
     // 0 marks, 1 the macro, 2 its body, 3 the include, 4 its step.
     assert_eq!(evidence_steps(&stream, 0), [2, 4], "{stream:?}");
 }
@@ -6485,7 +6485,7 @@ async fn marks_record_nothing_without_the_marked_source() {
             "Feature: e\n  @evidence\n  Scenario: s\n    Given I am collecting evidence\n    When I request \"/ping\"\n",
         )],
         None,
-        &["--evidence", "failures"],
+        &["--evidence=failures"],
     );
     assert!(of_type(&stream, "evidence").is_empty(), "{stream:?}");
 }
@@ -6498,7 +6498,7 @@ async fn failures_records_every_step_of_a_failed_scenario_and_nothing_of_a_passi
         &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
-        &["--evidence", "failures"],
+        &["--evidence=failures"],
     );
     assert_eq!(evidence_steps(&stream, 0), Vec::<u64>::new());
     assert_eq!(evidence_steps(&stream, 1), [1]);
@@ -6518,7 +6518,7 @@ async fn deferred_events_carry_their_step_and_arrive_before_scenario_finished() 
         &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
-        &["--evidence", "failures"],
+        &["--evidence=failures"],
     );
     let seq = |e: &Value| e["seq"].as_u64().expect("seq");
     let evidence = of_type(&stream, "evidence");
@@ -6543,7 +6543,7 @@ async fn deferred_vars_arrive_as_a_vars_event() {
         &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
-        &["--evidence", "failures"],
+        &["--evidence=failures"],
     );
     let vars = of_type(&stream, "vars");
     assert_eq!(vars.len(), 1, "only the failed scenario's: {vars:?}");
@@ -6576,7 +6576,7 @@ fn long_deferred_run(
         .arg(&cfg)
         .arg("--events")
         .arg(cfg.with_file_name("events.ndjson"))
-        .args(["--evidence", "failures", "--artifacts-dir"])
+        .args(["--evidence=failures", "--artifacts-dir"])
         .arg(&root)
         .env_remove("BDDKIT_EVIDENCE_BUFFER")
         .envs(env.iter().copied())
@@ -6636,7 +6636,7 @@ async fn marked_and_failures_combine() {
             ),
         )],
         None,
-        &["--evidence", "marked,failures"],
+        &["--evidence=marked,failures"],
     );
     let evidence = of_type(&stream, "evidence");
     assert_eq!(evidence.len(), 2, "{evidence:?}");
@@ -6660,6 +6660,34 @@ fn bare_evidence_means_all() {
         step_text(&stream, "\"hi\"")["vars"],
         json!([["who", "ann"]])
     );
+}
+
+/// Sources take an `=`, so a bare `--evidence` before a feature path is still
+/// the flag and the path, as when the flag took no value.
+#[test]
+fn a_bare_evidence_before_a_path_keeps_its_meaning() {
+    let cfg = write_events_project(
+        "bare-before-path",
+        "",
+        &[(
+            "e.feature",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+        )],
+        None,
+    );
+    let feature = cfg.with_file_name("features/e.feature");
+    let (out, stream, _) = run_with_events(&cfg, &["--evidence", feature.to_str().expect("UTF-8")]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stream[0]["evidence_sources"], json!(["all"]));
+
+    // Without the `=`, a source name is a path that does not exist.
+    let (out, _, _) = run_with_events(&cfg, &["--evidence", "marked"]);
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]
@@ -6689,7 +6717,7 @@ fn an_unknown_source_is_refused() {
         command.output().expect("run bddkit")
     };
     for out in [
-        run(&["--evidence", "marked,bogus"], None),
+        run(&["--evidence=marked,bogus"], None),
         run(&[], Some("bogus")),
     ] {
         assert_eq!(out.status.code(), Some(2));
@@ -6787,7 +6815,7 @@ fn an_interrupted_scenario_writes_no_deferred_evidence() {
         .arg(&cfg)
         .arg("--events")
         .arg(&events)
-        .args(["--evidence", "failures"])
+        .args(["--evidence=failures"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -6829,12 +6857,12 @@ async fn scenario_finished_reports_evidence_coverage() {
     assert_eq!(coverage(&[]), [json!("none"), json!("none")]);
     assert_eq!(coverage(&["--evidence"]), [json!("full"), json!("full")]);
     assert_eq!(
-        coverage(&["--evidence", "marked,failures"]),
+        coverage(&["--evidence=marked,failures"]),
         [json!("partial"), json!("full")],
         "the marking step itself is not marked; the failed scenario is whole"
     );
     assert_eq!(
-        coverage(&["--evidence", "failures"]),
+        coverage(&["--evidence=failures"]),
         [json!("none"), json!("full")]
     );
 }
@@ -6872,7 +6900,7 @@ fn an_evidence_variable_refusal_empties_the_stream_and_an_unused_buffer_is_ignor
         (&[("BDDKIT_EVIDENCE", "bogus")][..], &[][..]),
         (
             &[("BDDKIT_EVIDENCE_BUFFER", "64M")][..],
-            &["--evidence", "failures"][..],
+            &["--evidence=failures"][..],
         ),
     ] {
         let (code, stream) = run(vars, args);
@@ -6896,7 +6924,7 @@ async fn deferred_evidence_is_masked_with_the_secrets_known_when_it_is_written()
             "Feature: e\n  Scenario: s\n    Given the \"X-Note\" request header is \"late-secret-value-1\"\n    When I request \"/ping\"\n    And set variable \"my_secret\" to \"late-secret-value-1\"\n    Then the response code is 500\n",
         )],
         None,
-        &["--evidence", "failures"],
+        &["--evidence=failures"],
     );
     let evidence = of_type(&stream, "evidence");
     assert_eq!(evidence.len(), 1, "{stream:?}");
@@ -6920,7 +6948,7 @@ fn run_started_keeps_the_evidence_boolean_and_adds_the_sources() {
     let off = started(&[]);
     assert_eq!(off["evidence"], false);
     assert_eq!(off["evidence_sources"], json!([]));
-    let on = started(&["--evidence", "failures,marked,failures"]);
+    let on = started(&["--evidence=failures,marked,failures"]);
     assert_eq!(on["evidence"], true);
     assert_eq!(on["evidence_sources"], json!(["marked", "failures"]));
 }

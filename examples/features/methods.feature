@@ -31,7 +31,7 @@ Feature: every HTTP method against the mock API
       Given the "Content-Type" request header is "application/json"
 
     Scenario: POST creates a resource and points at it
-      # Marked for `--evidence marked`: this exchange is kept even on a pass.
+      # Marked for `--evidence=marked`: this exchange is kept even on a pass.
       Given I am collecting evidence
       And the request body is:
         """
