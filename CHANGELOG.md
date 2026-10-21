@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3](https://github.com/bddkit/bddkit/compare/v0.3.2...v0.3.3) - 2026-10-21
+
+### Added
+
+- *(doctor)* an evidence row for the variables run would refuse (bddkit/bddkit#125)
+- *(events)* evidence sources — marked steps and failed scenarios (bddkit/bddkit#125)
+- *(report)* failure classes in the event stream and every report (bddkit/bddkit#113)
+- *(report)* Markdown report for agents (bddkit/bddkit#112)
+- *(report)* an interrupt leaves no temporary file; docs and CI for --embed-artifacts (bddkit/bddkit#111)
+- *(report)* a progress line on a terminal (bddkit/bddkit#111)
+- *(report)* --embed-images lossy and --embed-quality (bddkit/bddkit#111)
+- *(report)* --embed-images lossless, PNG as lossless WebP (bddkit/bddkit#111)
+- *(report)* embed the files a report links to, as they are (bddkit/bddkit#111)
+- *(report)* --embed-* flags and their refusals (bddkit/bddkit#111)
+
+### Fixed
+
+- *(cli)* --evidence takes its sources after an = (bddkit/bddkit#125)
+- *(events)* review fixes for evidence sources (bddkit/bddkit#125)
+
 ## [0.3.2](https://github.com/bddkit/bddkit/compare/v0.3.1...v0.3.2) - 2026-10-18
 
 ### Added
