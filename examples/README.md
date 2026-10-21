@@ -15,7 +15,7 @@ The mocks live in `examples/mocks/api-server.yaml` and are seeded into Smocker a
 
 | File | What it demonstrates |
 |---|---|
-| `features/methods.feature` | GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, `Location`/`Allow` headers, a 404 asserted like any other answer; the scenarios are grouped under `Rule:` blocks, and the write rule's `Background:` sets the JSON `Content-Type` once |
+| `features/methods.feature` | GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, `Location`/`Allow` headers, a 404 asserted like any other answer; the scenarios are grouped under `Rule:` blocks, and the write rule's `Background:` sets the JSON `Content-Type` once; the POST is marked with `I am collecting evidence` / `I am not collecting evidence`, so `--events run.ndjson --evidence marked` keeps that exchange and no other |
 | `features/json_matchers.feature` | `@variableType`, `@regExp`, `@arrayLength`, paths into arrays, `contains` vs `equals`, grouped under `Rule:` blocks |
 | `features/variables.feature` | `set variable`, extraction from JSON and cookies, reuse across steps and scenarios, `<<unique()>>`, a `<<variable>>` in a typed position (an HTTP method, a status code), `Show all variables` and `Print table:` |
 | `features/variable_assertions.feature` | substring, regex and JSON assertions over a variable, extraction from a variable by JSON path or regex, and a macro in `macros/users.yaml` that publishes its extracts with `global` |

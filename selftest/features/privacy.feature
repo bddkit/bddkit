@@ -81,6 +81,17 @@ Feature: Secrets stay out of what bddkit prints and writes
     When I run the command "grep -v step_started selftest/out/events.ndjson"
     Then the command output does not contain "query-token-value-5"
 
+  Scenario: --evidence failures writes a failed scenario's slots late, still hidden
+    # Deferred: the values are held until the scenario fails, then written as a
+    # `vars` event of their own, masked before they were held.
+    When I run the masking fixture "bddkit" with options "--evidence failures"
+    And I run the command "grep '\"type\":\"vars\"' selftest/out/events.ndjson"
+    Then the command output contains "deferred"
+    And the command output contains "***"
+    And the command output does not contain "pin-secret-value-1"
+    When I run the command "grep -c '\"evidence\":\"full\"' selftest/out/events.ndjson"
+    Then the command output contains "7"
+
   Scenario: secrets in comments, disabled steps and sections are masked
     When I run the masking fixture "bddkit" with options ""
     And I run the command "grep -E '\"type\":\"(section|step_disabled)\"|\"comment\"' selftest/out/events.ndjson"

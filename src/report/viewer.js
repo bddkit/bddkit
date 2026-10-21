@@ -117,6 +117,7 @@
   function banner(text) { root.appendChild(el('div', 'banner', text)); }
   if (!run.masking) banner('Masking was off for this run (--reveal): secrets may appear in clear text.');
   if (!run.evidence) banner('No evidence was collected. Run with --evidence (and --events) to see requests, responses and SQL.');
+  else if (run.evidence_sources.indexOf('all') < 0) banner('Evidence was recorded only for ' + run.evidence_sources.join(', ') + ', so a step outside them shows no exchange. Run with --evidence (all) to record every step.');
   if (run.incomplete) banner('This stream is incomplete: the run was killed or cut short, so the report ends where the stream does.');
   if (page.artifacts_temporary && (page.not_embedded || !page.embedded)) banner('Artifacts are under the temporary directory and links will break when it is cleaned. Use --artifacts-dir next to where this report is kept.');
 
@@ -325,7 +326,8 @@
         const d = el('details', 'scenario ' + s.status);
         d.id = 's' + id;
         const sum = el('summary');
-        add(sum, el('span', 'badge ' + s.status, s.status), el('span', 'badge kind', s.failure_kind || ''), el('span', 'name', s.name), tagList(s.tags),
+        add(sum, el('span', 'badge ' + s.status, s.status), el('span', 'badge kind', s.failure_kind || ''),
+          el('span', 'badge cov', run.evidence && s.evidence && s.evidence !== 'full' ? 'evidence: ' + s.evidence : ''), el('span', 'name', s.name), tagList(s.tags),
           el('span', 'dur', fmtDuration(s.duration_us)));
         d.appendChild(sum);
         let built = false;

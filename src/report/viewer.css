@@ -33,7 +33,8 @@ details.scenario > summary .dur { margin-left: auto; }
 .badge.passed { color: var(--pass); } .badge.failed, .badge.open { color: var(--fail); }
 .badge.skipped, .badge.disabled { color: var(--skip); }
 .badge.kind { color: var(--fail); }
-.badge.kind:empty { display: none; }
+.badge.kind:empty, .badge.cov:empty { display: none; }
+.badge.cov { color: var(--skip); }
 .step { margin: 2px 0; } .step > summary { cursor: pointer; }
 .step .line { display: inline-flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .step .kw { color: var(--muted); } .step.failed > .line .txt, .step.failed > summary .txt { color: var(--fail); }

@@ -400,6 +400,12 @@ privacy:
 
 Off by default because evidence puts response bodies and query parameters of passing steps on disk, and masking cannot recognise what nobody marked (7.11).
 
+**Sources (bddkit/bddkit#125).** `--evidence` takes a comma-separated list: `marked` (the steps a scenario's author marked, passed or failed), `failures` (every step of a scenario that failed), `all` (every step; what a bare `--evidence` means). They combine. `$BDDKIT_EVIDENCE` and the config key `evidence: [marked, failures]` are the other two forms, flag first; the config key applies only when the run has a stream, while the flag or the variable without one is refused (exit 2), and an unknown source is refused in all three (exit 2). `run_started` keeps `evidence` as a boolean (any source active) and adds `evidence_sources`, canonical order, each once.
+
+A step is marked between `I am collecting evidence` and `I am not collecting evidence` (group `debug`, at any depth, reset at the end of the scenario like debug mode), or by an `@evidence` tag on the scenario, its rule or its feature (Backgrounds included; a step cannot switch the tag off). The mode of a step is decided when it starts: **live** when it is marked and `marked` is a source, or `all` is; **deferred** when `failures` is a source and it is not live; otherwise nothing is collected for it and a plugin is told evidence is not wanted.
+
+A deferred step's `evidence` and `attempt` events are held per scenario and carry `"deferred": true` beside their `step`; its resolved values become a `vars` event (`file`, `scenario`, `step`, `vars`, `deferred`), since `step_started` is written before the outcome is known. If the scenario fails the buffer is written just before `scenario_finished`, in the order the events were produced; if it passes, or the run was interrupted while it ran, the buffer is dropped. Long text of a deferred step stays in memory and is written under the artifact root only on a failure, up to 64 MiB per file in flight (`$BDDKIT_EVIDENCE_BUFFER`, bytes); past that it is written at once and the buffer keeps the reference, and the file stays on disk if the scenario passes (section 8: the core deletes nothing). `scenario_finished` gains `evidence`: `full`, `partial` or `none` of the steps that started were recorded.
+
 ### 9.2 Resolved values: `vars`
 
 **Decided.** `step_started` keeps the raw text and carries the resolved slots beside it, the way a SQL log shows a statement and its parameters:
@@ -444,7 +450,7 @@ Illustrative values again:
 
 ### 9.4 `attempt`
 
-One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence`, because the message quotes the values that did not match.
+One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence` (live or deferred, like any evidence of its step), because the message quotes the values that did not match.
 
 ## 10. Plugins (package 6)
 
