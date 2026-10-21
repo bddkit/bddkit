@@ -792,7 +792,7 @@ impl RunContext {
             artifacts,
             events: None,
             evidence: crate::events::Sources::default(),
-            evidence_buffer: EVIDENCE_BUFFER,
+            evidence_buffer: crate::events::EVIDENCE_BUFFER,
             redactor: crate::privacy::Redactor::disabled(),
             fail_fast,
             stop: std::sync::atomic::AtomicBool::new(false),
@@ -838,9 +838,6 @@ impl RunContext {
         self.stop.store(true, Ordering::Relaxed);
     }
 }
-
-/// The default of `$BDDKIT_EVIDENCE_BUFFER`: 64 MiB.
-pub const EVIDENCE_BUFFER: usize = 64 * 1024 * 1024;
 
 /// Runs one feature file. The variable frame is shared for the file; HTTP
 /// state is recreated for each scenario; the Background reruns before each

@@ -4383,6 +4383,46 @@ async fn doctor_reports_the_events_path() {
     );
 }
 
+/// `run` refuses a malformed evidence variable before the config is read;
+/// `doctor` must not be the more lenient of the two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_fails_on_an_evidence_variable_run_would_refuse() {
+    let base = common::spawn().await;
+    let cfg = write_doctor_project(
+        "doctor-evidence",
+        &base,
+        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
+        "",
+    );
+    let doctor = |name: &str, value: &str| {
+        Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["doctor", "--config"])
+            .arg(&cfg)
+            .env_remove("BDDKIT_EVIDENCE")
+            .env_remove("BDDKIT_EVIDENCE_BUFFER")
+            .env(name, value)
+            .output()
+            .expect("run bddkit")
+    };
+    for (name, value) in [
+        ("BDDKIT_EVIDENCE", "bogus"),
+        ("BDDKIT_EVIDENCE_BUFFER", "lots"),
+    ] {
+        let out = doctor(name, value);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(1), "{name}: {stdout}");
+        assert!(stdout.contains("✗ evidence"), "{stdout}");
+        assert!(stdout.contains(name), "{stdout}");
+    }
+    let out = doctor("BDDKIT_EVIDENCE", "marked,failures");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.contains("marked, failures ($BDDKIT_EVIDENCE)"),
+        "{stdout}"
+    );
+}
+
 /// Opening a FIFO for writing blocks until a reader shows up, and there is
 /// none: a doctor that opened it would hang here.
 #[cfg(unix)]

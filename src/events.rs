@@ -246,6 +246,34 @@ impl Sources {
     }
 }
 
+/// A variable that is set and not empty, as text.
+fn env_text(name: &str) -> Option<String> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// `$BDDKIT_EVIDENCE`, as `run` reads it and `doctor` checks it.
+pub fn sources_from_env() -> Result<Option<Sources>> {
+    env_text("BDDKIT_EVIDENCE")
+        .map(|value| Sources::parse(&value))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("$BDDKIT_EVIDENCE: {error}"))
+}
+
+/// The default of `$BDDKIT_EVIDENCE_BUFFER`: 64 MiB.
+pub const EVIDENCE_BUFFER: usize = 64 * 1024 * 1024;
+
+/// `$BDDKIT_EVIDENCE_BUFFER`, in bytes: what a scenario may hold of long
+/// deferred text before it goes to disk. Read by `run`, checked by `doctor`.
+pub fn buffer_from_env() -> Result<usize> {
+    env_text("BDDKIT_EVIDENCE_BUFFER").map_or(Ok(EVIDENCE_BUFFER), |value| {
+        value.parse().map_err(|_| {
+            anyhow::anyhow!("$BDDKIT_EVIDENCE_BUFFER: expected a number of bytes, got {value:?}")
+        })
+    })
+}
+
 /// The config key is a YAML list, `evidence: [marked, failures]`.
 impl<'de> Deserialize<'de> for Sources {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

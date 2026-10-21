@@ -1078,25 +1078,13 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from));
     let evidence = match cli.evidence {
         Some(sources) => Some(("--evidence", sources)),
-        None => env_var("BDDKIT_EVIDENCE")
-            .map(|value| events::Sources::parse(&value.to_string_lossy()))
-            .transpose()
-            .map_err(|error| anyhow::anyhow!("$BDDKIT_EVIDENCE: {error}"))?
-            .map(|sources| ("$BDDKIT_EVIDENCE", sources)),
+        None => events::sources_from_env()?.map(|sources| ("$BDDKIT_EVIDENCE", sources)),
     };
     // `$BDDKIT_EVENTS` counts, so this is not clap's `requires`.
     if let (Some((source, _)), None) = (evidence, &events_path) {
         anyhow::bail!("{source} requires --events (or $BDDKIT_EVENTS)");
     }
-    let evidence_buffer = env_var("BDDKIT_EVIDENCE_BUFFER")
-        .map(|value| {
-            value
-                .to_string_lossy()
-                .parse::<usize>()
-                .map_err(|_| anyhow::anyhow!("$BDDKIT_EVIDENCE_BUFFER: expected a number of bytes"))
-        })
-        .transpose()?
-        .unwrap_or(runner::EVIDENCE_BUFFER);
+    let evidence_buffer = events::buffer_from_env()?;
     let events_file = events_path.map(|path| events::open(&path)).transpose()?;
     let resolved = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;

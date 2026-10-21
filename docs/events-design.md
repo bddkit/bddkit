@@ -122,7 +122,7 @@ Steps after a failure are reported as skipped at the top level and in an include
 | `step_skipped` | for each step after a failure, including the remainder of an included scenario | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source` |
 | `step_disabled` | where a commented step matches the loaded registry | `file`, `scenario`, `keyword`, `text`, `line`, optional `comment`; inside includes add `parent`, `source`; no `step` number |
 | `section` | before the items it groups, or after the last item for a closing note | `file`, `scenario`, `title`, `line`, optional `note`; inside includes add `parent`, `source` |
-| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`), `failure_kind` (only when failed: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic` or `unclassified`) |
+| `scenario_finished` | after the last step | `file`, `scenario`, `status`, `duration_us`, `failure` (the text the console prints, or `null`), `failure_kind` (only when failed: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic` or `unclassified`), `evidence` (`full`, `partial` or `none` of its started steps recorded; section 9.1) |
 | `file_finished` | end of `run_file`; by the worker for a panicked file | `file`, `scenarios`, `failed`, `panicked` |
 | `run_finished` | last line | `exit`, `signal` (only when interrupted), `files`, `scenarios`, `failed`, `duration_ms` |
 

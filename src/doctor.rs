@@ -342,6 +342,7 @@ pub async fn check(
     );
     let unmarked = check_features(&mut report, &cfg, vocabulary, plugins.as_deref(), &words);
     push_privacy(&mut report, &privacy, &unmarked);
+    push_evidence(&mut report, &cfg);
     check_apis(&mut report, &cfg, live).await;
     check_databases(&mut report, &cfg, live).await;
     check_srp(&mut report, &cfg);
@@ -569,6 +570,29 @@ fn unmarked_names(
     }
     texts.extend(registry.into_iter().flat_map(|r| r.macro_texts()));
     crate::privacy::unmarked_names(texts, words)
+}
+
+/// The variables `run` reads for `--evidence`; a malformed one stops a run.
+/// Whether a stream exists is the run's own flags' business, so this row
+/// cannot say whether the sources will apply.
+fn push_evidence(report: &mut Report, cfg: &config::Config) {
+    let from = |sources: crate::events::Sources| match sources.names() {
+        names if names.is_empty() => "off".to_owned(),
+        names => names.join(", "),
+    };
+    let sources = crate::events::sources_from_env().map(|env| match env {
+        Some(sources) => format!("{} ($BDDKIT_EVIDENCE)", from(sources)),
+        None => match cfg.evidence {
+            Some(sources) => format!("{} (config, with a stream)", from(sources)),
+            None => "off".to_owned(),
+        },
+    });
+    match sources.and_then(|sources| {
+        crate::events::buffer_from_env().map(|cap| format!("{sources}; buffer {cap} bytes"))
+    }) {
+        Ok(detail) => report.push("evidence", None, Status::Ok, &detail),
+        Err(error) => report.push("evidence", None, Status::Failed, &format!("{error:#}")),
+    }
 }
 
 fn push_privacy(
