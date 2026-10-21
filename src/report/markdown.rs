@@ -317,10 +317,8 @@ fn front_matter(doc: &mut Doc, ctx: &Ctx<'_>, total: usize) {
     doc.raw(format!("failed: {failed}"));
     doc.raw(format!("evidence: {}", run.evidence));
     if !run.evidence_sources.is_empty() {
-        doc.raw(format!(
-            "evidence_sources: [{}]",
-            run.evidence_sources.join(", ")
-        ));
+        let names: Vec<String> = run.evidence_sources.iter().map(|n| quoted(n)).collect();
+        doc.raw(format!("evidence_sources: [{}]", names.join(", ")));
     }
     doc.raw(format!("masking: {}", run.masking));
     doc.raw(format!("complete: {}", !run.incomplete));
@@ -433,7 +431,7 @@ fn run_part(doc: &mut Doc, ctx: &Ctx<'_>) {
     let sources = if run.evidence_sources.is_empty() {
         "off".to_owned()
     } else {
-        run.evidence_sources.join(", ")
+        one_line(&run.evidence_sources.join(", "))
     };
     doc.raw(format!(
         "- masking: {} · evidence: {sources}",
@@ -583,7 +581,7 @@ fn scenario(doc: &mut Doc, ctx: &Ctx<'_>, file: &File, s: &Scenario, id: &str) {
         location.push_str(&format!(" · {}", one_line(&s.tags.join(" "))));
     }
     if let Some(coverage) = s.evidence.as_ref().filter(|_| ctx.run.evidence) {
-        location.push_str(&format!(" · evidence: {coverage}"));
+        location.push_str(&format!(" · evidence: {}", one_line(coverage)));
     }
     doc.raw(location);
     doc.blank();
@@ -999,7 +997,7 @@ mod tests {
         }
         let text = render_events(&events, Detail::Failed);
         assert!(
-            text.contains("\nevidence_sources: [marked, failures]\n"),
+            text.contains("\nevidence_sources: [\"marked\", \"failures\"]\n"),
             "{text}"
         );
         assert!(text.contains("evidence: marked, failures"), "{text}");
@@ -1012,7 +1010,7 @@ mod tests {
         // `all` has nothing to warn about, and an old stream reads as `all`.
         let text = standard(Detail::Failed);
         assert!(!text.contains("evidence was recorded only"), "{text}");
-        assert!(text.contains("evidence_sources: [all]"), "{text}");
+        assert!(text.contains("evidence_sources: [\"all\"]"), "{text}");
     }
 
     #[test]

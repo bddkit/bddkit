@@ -1076,16 +1076,18 @@ async fn run(cli: RunArgs) -> Result<i32> {
         .events
         .clone()
         .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from));
+    let events_file = events_path
+        .as_ref()
+        .map(|path| events::open(path))
+        .transpose()?;
     let evidence = match cli.evidence {
         Some(sources) => Some(("--evidence", sources)),
         None => events::sources_from_env()?.map(|sources| ("$BDDKIT_EVIDENCE", sources)),
     };
     // `$BDDKIT_EVENTS` counts, so this is not clap's `requires`.
-    if let (Some((source, _)), None) = (evidence, &events_path) {
+    if let (Some((source, _)), None) = (evidence, &events_file) {
         anyhow::bail!("{source} requires --events (or $BDDKIT_EVENTS)");
     }
-    let evidence_buffer = events::buffer_from_env()?;
-    let events_file = events_path.map(|path| events::open(&path)).transpose()?;
     let resolved = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
     let config_path = resolved.path;
@@ -1095,6 +1097,12 @@ async fn run(cli: RunArgs) -> Result<i32> {
         Some((_, sources)) => sources,
         None if events_file.is_some() => cfg.evidence.unwrap_or_default(),
         None => events::Sources::default(),
+    };
+    // Only a run that defers anything has a use for it.
+    let evidence_buffer = if evidence.any() {
+        events::buffer_from_env()?
+    } else {
+        events::EVIDENCE_BUFFER
     };
     let privacy = privacy::Privacy::from_sources(
         Some(&cfg.privacy),

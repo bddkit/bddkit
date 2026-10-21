@@ -342,7 +342,8 @@ pub async fn check(
     );
     let unmarked = check_features(&mut report, &cfg, vocabulary, plugins.as_deref(), &words);
     push_privacy(&mut report, &privacy, &unmarked);
-    push_evidence(&mut report, &cfg);
+    let stream = events_path.is_some() || crate::privacy::process_env("BDDKIT_EVENTS").is_some();
+    push_evidence(&mut report, &cfg, stream);
     check_apis(&mut report, &cfg, live).await;
     check_databases(&mut report, &cfg, live).await;
     check_srp(&mut report, &cfg);
@@ -572,24 +573,29 @@ fn unmarked_names(
     crate::privacy::unmarked_names(texts, words)
 }
 
-/// The variables `run` reads for `--evidence`; a malformed one stops a run.
-/// Whether a stream exists is the run's own flags' business, so this row
-/// cannot say whether the sources will apply.
-fn push_evidence(report: &mut Report, cfg: &config::Config) {
-    let from = |sources: crate::events::Sources| match sources.names() {
-        names if names.is_empty() => "off".to_owned(),
-        names => names.join(", "),
-    };
-    let sources = crate::events::sources_from_env().map(|env| match env {
-        Some(sources) => format!("{} ($BDDKIT_EVIDENCE)", from(sources)),
-        None => match cfg.evidence {
-            Some(sources) => format!("{} (config, with a stream)", from(sources)),
-            None => "off".to_owned(),
-        },
+/// What `run` decides about `--evidence` from the variables and the config,
+/// with `stream` standing for its `--events` (or `$BDDKIT_EVENTS`); doctor has
+/// no `--evidence` flag, so a run that passes one is not predicted here.
+fn push_evidence(report: &mut Report, cfg: &config::Config, stream: bool) {
+    let decided = crate::events::sources_from_env().and_then(|env| {
+        let (sources, from) = match env {
+            Some(_) if !stream => {
+                anyhow::bail!("$BDDKIT_EVIDENCE requires --events (or $BDDKIT_EVENTS)")
+            }
+            Some(sources) => (sources, "$BDDKIT_EVIDENCE"),
+            None if stream => (cfg.evidence.unwrap_or_default(), "config"),
+            None => (crate::events::Sources::default(), "no stream"),
+        };
+        if !sources.any() {
+            return Ok(format!("off ({from})"));
+        }
+        let cap = crate::events::buffer_from_env()?;
+        Ok(format!(
+            "{} ({from}); buffer {cap} bytes",
+            sources.names().join(", ")
+        ))
     });
-    match sources.and_then(|sources| {
-        crate::events::buffer_from_env().map(|cap| format!("{sources}; buffer {cap} bytes"))
-    }) {
+    match decided {
         Ok(detail) => report.push("evidence", None, Status::Ok, &detail),
         Err(error) => report.push("evidence", None, Status::Failed, &format!("{error:#}")),
     }

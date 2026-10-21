@@ -246,16 +246,9 @@ impl Sources {
     }
 }
 
-/// A variable that is set and not empty, as text.
-fn env_text(name: &str) -> Option<String> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string_lossy().into_owned())
-}
-
 /// `$BDDKIT_EVIDENCE`, as `run` reads it and `doctor` checks it.
 pub fn sources_from_env() -> Result<Option<Sources>> {
-    env_text("BDDKIT_EVIDENCE")
+    crate::privacy::process_env("BDDKIT_EVIDENCE")
         .map(|value| Sources::parse(&value))
         .transpose()
         .map_err(|error| anyhow::anyhow!("$BDDKIT_EVIDENCE: {error}"))
@@ -267,7 +260,7 @@ pub const EVIDENCE_BUFFER: usize = 64 * 1024 * 1024;
 /// `$BDDKIT_EVIDENCE_BUFFER`, in bytes: what a scenario may hold of long
 /// deferred text before it goes to disk. Read by `run`, checked by `doctor`.
 pub fn buffer_from_env() -> Result<usize> {
-    env_text("BDDKIT_EVIDENCE_BUFFER").map_or(Ok(EVIDENCE_BUFFER), |value| {
+    crate::privacy::process_env("BDDKIT_EVIDENCE_BUFFER").map_or(Ok(EVIDENCE_BUFFER), |value| {
         value.parse().map_err(|_| {
             anyhow::anyhow!("$BDDKIT_EVIDENCE_BUFFER: expected a number of bytes, got {value:?}")
         })
@@ -296,6 +289,9 @@ enum Mode {
 
 /// A scenario's deferred evidence: events in the order they were produced,
 /// and the long texts they reference, kept in memory until the scenario fails.
+/// ponytail: only `files` counts against the cap; the events (each at most
+/// `INLINE_LIMIT` of text) are not, so thousands of polling replays can exceed
+/// it. Spill them to disk too if that ever bites.
 #[derive(Default)]
 struct Held {
     events: Vec<(&'static str, Value)>,
@@ -470,6 +466,15 @@ impl Trace {
         trace
     }
 
+    fn mask_strings(&self, value: &mut Value) {
+        match value {
+            Value::String(text) => *text = self.redactor.mask(text),
+            Value::Array(items) => items.iter_mut().for_each(|v| self.mask_strings(v)),
+            Value::Object(fields) => fields.values_mut().for_each(|v| self.mask_strings(v)),
+            _ => {}
+        }
+    }
+
     /// Inserts `text`, masked, unless nothing is left of it: the stream leaves
     /// out a field that would be empty rather than writing `""` or `null`.
     fn put(&self, fields: &mut Value, key: &str, text: &str) {
@@ -582,13 +587,16 @@ impl Trace {
             // Files first, so an event never points at one not yet complete.
             // ponytail: a file that cannot be written leaves its reference
             // dangling; inline it like `text` does if that ever bites.
+            // Masked again with the set as it stands now: a value can become a
+            // secret after the step that sent it, and these are emitted now.
             for (path, text) in held.files {
                 let _ = path
                     .parent()
                     .map_or(Ok(()), std::fs::create_dir_all)
-                    .and_then(|()| std::fs::write(&path, text));
+                    .and_then(|()| std::fs::write(&path, self.redactor.mask(&text)));
             }
-            for (kind, fields) in held.events {
+            for (kind, mut fields) in held.events {
+                self.mask_strings(&mut fields);
                 events.emit(kind, fields);
             }
         }
