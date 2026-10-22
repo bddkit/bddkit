@@ -35,7 +35,7 @@ The build produces `libbddkit_s3.so` (Linux), `libbddkit_s3.dylib` (macOS) or `b
 **`tests/fixtures/echo-plugin/` in the bddkit repository is a complete, working plugin — about 330 lines, every export, every reply shape, the panic guard, the NUL handling.** Copy it and replace the body. Two things in it are deliberately bad examples for the host's own tests: its `validate_config` refuses a `password` key by quoting the value back, and `the echo should fail quoting "…"` quotes its argument in an error — each exists to prove the host hides what a careless plugin prints, and neither is a pattern to copy. It is also what the host's own test suite runs against, so it cannot rot: a change to the ABI that the fixture does not follow turns the suite red.
 
 For a plugin that does real work rather than echoing its arguments back, read
-[`sergeym/bddkit-s3`](https://github.com/sergeym/bddkit-s3): an S3/MinIO plugin
+[`bddkit/bddkit-s3`](https://github.com/bddkit/bddkit-s3): an S3/MinIO plugin
 with 22 steps, written against this document and nothing else — no part of it
 required reading the host's source, which is the claim this document opens
 with. It is where to look for what a skeleton cannot show: validating an
