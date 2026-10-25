@@ -112,3 +112,44 @@ fn a_locale_replaces_the_description_but_never_the_template() {
         "the description must be translated:\n{out}"
     );
 }
+
+/// bddkit.dev publishes `skills/bddkit/` at each release tag, fails its build
+/// when `SKILL.md` is missing, and copies `description` into an index as one
+/// line — so a `>-` block, a moved file or a dangling reference breaks the
+/// site, not this repo.
+#[test]
+fn the_agent_skill_keeps_the_front_matter_bddkit_dev_reads() {
+    let skill = include_str!("../skills/bddkit/SKILL.md");
+    let front = skill
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .map(|(front, _)| front)
+        .expect("SKILL.md opens with front matter");
+    let raw = front
+        .lines()
+        .find_map(|l| l.strip_prefix("description:"))
+        .expect("a description");
+    assert!(
+        !raw.trim().starts_with(['>', '|']),
+        "no block scalar: {raw}"
+    );
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(front).expect("YAML front matter");
+    assert_eq!(parsed["name"].as_str(), Some("bddkit"));
+    let description = parsed["description"]
+        .as_str()
+        .expect("a string description");
+    assert!(
+        description.starts_with("Use when"),
+        "a single-line \"when to use\": {description}"
+    );
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/bddkit");
+    for link in skill.split("](").skip(1) {
+        let target = &link[..link.find(')').expect("a closed link")];
+        if !target.contains("://") {
+            assert!(
+                dir.join(target).is_file(),
+                "SKILL.md links to a missing {target}"
+            );
+        }
+    }
+}

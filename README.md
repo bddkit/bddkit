@@ -592,6 +592,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | bddkit tested by bddkit (masking, end to end) | `selftest/README.md` |
 | Config schema | `src/config.rs` |
 | Writing a plugin | `docs/plugin-authoring.md`, `tests/fixtures/echo-plugin/` |
+| Teaching a coding agent to use bddkit | `skills/bddkit/` (the Agent Skill bddkit.dev publishes: `SKILL.md` and its `references/`) |
 
 ## Design notes
 
