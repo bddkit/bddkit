@@ -567,7 +567,7 @@ plugin:
 
 A plugin runs inside the bddkit process with full privileges and there is no sandbox — installing one is the same trust decision as installing any other binary.
 
-Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the complete contract, `tests/fixtures/echo-plugin/` is a minimal plugin to copy, and [`bddkit-s3`](https://github.com/sergeym/bddkit-s3) is a real one to read — it serves the `s3` group in the example above.
+Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the complete contract, `tests/fixtures/echo-plugin/` is a minimal plugin to copy, and [`bddkit-s3`](https://github.com/bddkit/bddkit-s3) is a real one to read — it serves the `s3` group in the example above.
 
 ## Where to look next
 
