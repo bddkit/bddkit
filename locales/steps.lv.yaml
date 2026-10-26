@@ -19,7 +19,7 @@ ResponseCode: pārbauda pēdējās atbildes HTTP statusa kodu
 ResponseBodyContainsJson: pārbauda, vai atbildes saturs ietver šo JSON — objekta apakškopa der, masīva secība netiek ņemta vērā
 ResponseBodyEqualsJson: pārbauda, vai atbildes saturs precīzi sakrīt ar šo JSON, atslēga pret atslēgu un elements pret elementu
 ResponseArrayLength: pārbauda, vai atbildes saturs ir norādītā garuma JSON masīvs
-ResponseHeader: pārbauda, vai atbildes galvene ir tieši šī vērtība
+ResponseHeader: pārbauda, vai atbildes galvene ir tieši šī vērtība — jebkurā rindā, ja serveris galveni atsūtīja vairākas reizes
 JsonNodeExists: pārbauda, vai atbildes saturā ir mezgls šajā JSON ceļā
 SetVariableGlobal: piešķir mainīgo, kas redzams visiem šī faila scenārijiem
 SetVariable: piešķir mainīgo visam feature failam

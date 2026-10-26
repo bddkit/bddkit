@@ -28,6 +28,7 @@ pub async fn spawn() -> String {
         .route("/html", get(html_doc))
         .route("/html-loose", get(html_doc_loose))
         .route("/plain", get(plain_text))
+        .route("/links", get(links))
         .route("/no-content", get(no_content))
         .route("/srp/register", post(srp_register))
         .route("/srp/step1", post(srp_step1))
@@ -184,6 +185,25 @@ async fn plain_text() -> impl IntoResponse {
     let mut h = HeaderMap::new();
     h.insert("content-type", "text/plain".parse().expect("header"));
     (StatusCode::OK, h, "hello")
+}
+
+/// A header repeated on two lines (`Link`) and one with a comma list (`Vary`).
+async fn links() -> impl IntoResponse {
+    let mut h = HeaderMap::new();
+    h.append(
+        "link",
+        "</llms.txt>; rel=\"describedby\"".parse().expect("header"),
+    );
+    h.append(
+        "link",
+        "</start.md>; rel=\"alternate\"; type=\"text/markdown\""
+            .parse()
+            .expect("header"),
+    );
+    h.insert("vary", "Accept, Accept-Encoding".parse().expect("header"));
+    h.append("x-tag", "a".parse().expect("header"));
+    h.append("x-tag", "b".parse().expect("header"));
+    (StatusCode::OK, h, "")
 }
 
 /// Checks only the header's shape and the body — it does not verify the Hawk
