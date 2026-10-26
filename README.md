@@ -13,7 +13,7 @@ between them.
 
 ```gherkin
 Scenario: registering a company charges the account
-  Given I have "accounts" with "email: <<unique(email)>>, balance: 100"
+  Given I have "accounts" with "email: user-<<unique()>>@example.com, balance: 100"
   And the request body is:
     """
     {"account_id": "<<last_insert_id_accounts>>", "name": "Acme"}
@@ -42,7 +42,7 @@ instead of silently shadowing each other.
 `I expect the next assertion to pass within "10" seconds` and it retries —
 re-sending the request or re-running the query — until it holds.
 
-**Test data shouldn't collide, and should be removable afterwards.** Every `<<unique()>>` value in a run shares one prefix drawn once per process, so uniqueness is guaranteed rather than probable — and `<<run_id>>` writes that prefix down, so cleanup afterwards is one step: `I delete "companies" where "slug~: u<<run_id>>%"`.
+**Test data shouldn't collide, and should be removable afterwards.** Every `<<unique()>>` value in a run shares one prefix drawn once per process, so uniqueness is guaranteed rather than probable — and `<<run_id>>` writes that prefix down, so cleanup afterwards is one step: `I delete "companies" where "slug~: u<<run_id>>%"`. `<<unique()>>` is a bare token; `unique(email)`, `unique(slug)` and `unique(url)` are aliases of it and give no address, slug or URL shape, so build the shape around it, as in `user-<<unique()>>@example.com`.
 
 **A failure should explain itself.** Every failed step prints the full last
 exchange — method, URL, headers, bodies, status — with no debug flag and no

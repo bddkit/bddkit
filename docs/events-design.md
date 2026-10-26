@@ -411,11 +411,11 @@ A deferred step's `evidence` and `attempt` events are held per scenario and carr
 **Decided.** `step_started` keeps the raw text and carries the resolved slots beside it, the way a SQL log shows a statement and its parameters:
 
 ```
-{"type":"step_started","seq":12,"t":51,"file":"features/company.feature","scenario":0,"step":2,"keyword":"Given ","line":14,"text":"I have \"accounts\" with \"email: <<unique(email)>>, balance: 100\"","vars":[["unique(email)","u3n2k9a0f1x7q7@example.test"]]}
+{"type":"step_started","seq":12,"t":51,"file":"features/company.feature","scenario":0,"step":2,"keyword":"Given ","line":14,"text":"I have \"accounts\" with \"email: user-<<unique()>>@example.com, balance: 100\"","vars":[["unique()","u3n2k9a0f1x7q7"]]}
 {"type":"step_started","seq":15,"t":60,"file":"features/company.feature","scenario":0,"step":3,"keyword":"And ","line":15,"text":"I sign the next request with Hawk id \"session-1\" and key \"<<hawk_key>>\"","vars":[["hawk_key","***"]]}
 ```
 
-- `vars` is a list of `[expression, value]` pairs, not a map: `<<unique(email)>>` yields a new value each time and can occur twice in one step. The order is the order of appearance — captures, then the docstring, then table cells row by row.
+- `vars` is a list of `[expression, value]` pairs, not a map: `<<unique()>>` yields a new value each time and can occur twice in one step. The order is the order of appearance — captures, then the docstring, then table cells row by row.
 - The text stays identical from run to run; only `vars` differs.
 - `<<null>>` is the JSON `null`, not a string.
 - A value is `***` when its variable's name is sensitive, when it sits in a `secret` parameter, or when the filter matches it.
