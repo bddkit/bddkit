@@ -5,6 +5,39 @@
 
 pub mod db;
 
+/// The payloads a command recorded to `BDDKIT_TELEMETRY_LOG`, one per line.
+pub fn read_payloads(log: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a payload is one JSON object"))
+        .collect()
+}
+
+/// Cuts a command off from this machine's own telemetry answer, config and CI
+/// environment. Call it before setting the variables a test wants.
+pub fn isolate_telemetry(command: &mut std::process::Command) -> &mut std::process::Command {
+    for name in [
+        "BDDKIT_TELEMETRY",
+        "DO_NOT_TRACK",
+        "BDDKIT_TELEMETRY_URL",
+        "BDDKIT_CONFIG",
+        "BDDKIT_DIR",
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "JENKINS_URL",
+        "BUILDKITE",
+        "CIRCLECI",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_BUILD_NUMBER",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
 use axum::extract::Query;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
