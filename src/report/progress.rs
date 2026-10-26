@@ -4,10 +4,11 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::io::{IsTerminal, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A person at a terminal: stderr is one and `CI` is unset or empty. The only
+/// A person at a terminal: stderr is one and no CI system's variable is set
+/// (`telemetry::ci`, which also names it for the payload). The only
 /// definition of it, so every command that draws agrees.
 pub fn interactive() -> bool {
-    std::io::stderr().is_terminal() && std::env::var_os("CI").is_none_or(|v| v.is_empty())
+    std::io::stderr().is_terminal() && crate::telemetry::ci(&crate::privacy::process_env).is_none()
 }
 
 /// A person who can answer a question: `interactive`, and stdin is a terminal

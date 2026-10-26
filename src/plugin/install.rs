@@ -2,12 +2,60 @@
 //! and checksum, and the one library inside. Lock files and layers are
 //! `manage.rs`'s business, not this module's.
 
+use crate::telemetry::payload::PluginResult;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// An error with the class telemetry reports it under, set where the error is
+/// born and never parsed back out of its text. It wraps the error and shows
+/// exactly what the error showed, including its causes, so a message is the
+/// same whether or not it was classed. `anyhow` keeps it downcastable through
+/// any context added on top.
+#[derive(Debug)]
+pub struct Classed {
+    pub class: PluginResult,
+    inner: anyhow::Error,
+}
+
+impl std::fmt::Display for Classed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::error::Error for Classed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let inner: &(dyn std::error::Error + 'static) = self.inner.as_ref();
+        inner.source()
+    }
+}
+
+/// `error` under `class`, unless it already has one: the class of the place it
+/// was born in stands.
+pub fn classed(error: anyhow::Error, class: PluginResult) -> anyhow::Error {
+    if error.downcast_ref::<Classed>().is_some() {
+        error
+    } else {
+        anyhow::Error::new(Classed {
+            class,
+            inner: error,
+        })
+    }
+}
+
+/// `Ok`, or the class an error was born with (`Other` for one that has none).
+pub fn result_of<T>(outcome: &Result<T>) -> PluginResult {
+    match outcome {
+        Ok(_) => PluginResult::Ok,
+        Err(error) => error
+            .downcast_ref::<Classed>()
+            .map_or(PluginResult::Other, |c| c.class),
+    }
+}
 
 /// What `plugin install` was asked for: an index name or `owner/repo`, and a
 /// release version without its `v` — `None` meaning the latest release.
@@ -128,7 +176,12 @@ pub fn host_target() -> Result<&'static str> {
         ("x86_64", "macos") => "x86_64-apple-darwin",
         ("aarch64", "macos") => "aarch64-apple-darwin",
         ("x86_64", "windows") => "x86_64-pc-windows-msvc",
-        (arch, os) => bail!("no plugin releases are published for {arch}-{os}"),
+        (arch, os) => {
+            return Err(classed(
+                anyhow::anyhow!("no plugin releases are published for {arch}-{os}"),
+                PluginResult::NoBuild,
+            ));
+        }
     })
 }
 
@@ -159,7 +212,12 @@ pub fn verify_sha256(archive: &[u8], sha_file: &str) -> Result<String> {
         .to_lowercase();
     let actual = format!("{:x}", Sha256::digest(archive));
     if expected != actual {
-        bail!("checksum mismatch: the release says {expected}, the download is {actual}");
+        return Err(classed(
+            anyhow::anyhow!(
+                "checksum mismatch: the release says {expected}, the download is {actual}"
+            ),
+            PluginResult::Checksum,
+        ));
     }
     Ok(actual)
 }
@@ -299,9 +357,18 @@ async fn get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
         .get(url)
         .send()
         .await
-        .with_context(|| format!("GET {url}"))?;
+        .with_context(|| format!("GET {url}"))
+        .map_err(|error| classed(error, PluginResult::Network))?;
     if !response.status().is_success() {
-        bail!("GET {url}: {}", response.status());
+        let class = if response.status() == reqwest::StatusCode::NOT_FOUND {
+            PluginResult::NotFound
+        } else {
+            PluginResult::Network
+        };
+        return Err(classed(
+            anyhow::anyhow!("GET {url}: {}", response.status()),
+            class,
+        ));
     }
     Ok(response)
 }
@@ -337,7 +404,8 @@ pub async fn latest_version(client: &reqwest::Client, github: &str, repo: &str) 
     let response = get(client, &url).await?;
     let landed = response.url().clone();
     let tag = tag_from_redirect(&landed)
-        .with_context(|| format!("{repo} has no published release ({url} led to {landed})"))?;
+        .with_context(|| format!("{repo} has no published release ({url} led to {landed})"))
+        .map_err(|error| classed(error, PluginResult::NotFound))?;
     let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
     check_segment("version", &version).with_context(|| format!("{repo} released tag {tag:?}"))?;
     Ok(version)
@@ -360,12 +428,16 @@ pub async fn release_abi(
         .get(&url)
         .send()
         .await
-        .with_context(|| format!("GET {url}"))?;
+        .with_context(|| format!("GET {url}"))
+        .map_err(|error| classed(error, PluginResult::Network))?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     if !response.status().is_success() {
-        bail!("GET {url}: {}", response.status());
+        return Err(classed(
+            anyhow::anyhow!("GET {url}: {}", response.status()),
+            PluginResult::Network,
+        ));
     }
     let declared: Declared = serde_json::from_slice(&response.bytes().await?)
         .with_context(|| format!("malformed {url}"))?;
@@ -421,8 +493,29 @@ pub async fn download(
 ) -> Result<Download> {
     let asset = asset_name(repo, version, target);
     let url = format!("{github}/{repo}/releases/download/v{version}/{asset}");
-    let bytes = get(client, &url).await?.bytes().await?.to_vec();
-    let sha_file = get(client, &format!("{url}.sha256")).await?.text().await?;
+    // A missing archive or checksum is no build of this version for this
+    // platform, not a missing repository.
+    let no_build = |error: anyhow::Error| match error.downcast_ref::<Classed>() {
+        Some(Classed {
+            class: PluginResult::NotFound,
+            ..
+        }) => anyhow::Error::new(Classed {
+            class: PluginResult::NoBuild,
+            inner: error,
+        }),
+        _ => error,
+    };
+    let bytes = get(client, &url)
+        .await
+        .map_err(no_build)?
+        .bytes()
+        .await?
+        .to_vec();
+    let sha_file = get(client, &format!("{url}.sha256"))
+        .await
+        .map_err(no_build)?
+        .text()
+        .await?;
     let sha256 = verify_sha256(&bytes, &sha_file).with_context(|| asset.clone())?;
     Ok(Download {
         asset,

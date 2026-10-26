@@ -803,6 +803,14 @@ impl PartialEq<StepId> for StepTarget {
     }
 }
 
+/// The group a builtin step is declared under, for telemetry's `usage`.
+pub fn group_of(id: StepId) -> &'static str {
+    BUILTIN_STEPS
+        .iter()
+        .find(|def| def.id == id)
+        .map_or(crate::telemetry::OTHER, |def| def.group)
+}
+
 /// `BUILTIN_STEPS`, compiled once and index-aligned with it. The builtins are
 /// constants, so a failure here is a bug in the table, pinned by
 /// `all_builtin_expressions_compile`.

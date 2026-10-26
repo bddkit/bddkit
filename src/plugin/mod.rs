@@ -26,6 +26,9 @@ const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
 #[derive(Debug)]
 pub struct Plugins {
     libs: Vec<Library>,
+    /// Index-aligned with `libs`: whether the lock entry's `source` is a
+    /// repository of the `bddkit` owner (`telemetry::is_official`).
+    official: Vec<bool>,
     /// group -> index into `libs`
     groups: BTreeMap<String, usize>,
     /// (group, instance) -> declared config and resolved options
@@ -71,8 +74,10 @@ impl Plugins {
         global: &Options,
     ) -> Result<Self> {
         let mut libs: Vec<Library> = Vec::with_capacity(entries.len());
+        let mut official = Vec::with_capacity(entries.len());
         let mut groups: BTreeMap<String, usize> = BTreeMap::new();
         for entry in entries {
+            official.push(crate::telemetry::is_official(entry.source.as_deref()));
             let lib = Library::load(&entry.name, &entry.path)?;
             // The lock entry's name is the one every diagnostic and every
             // `plugin remove`/`plugin update` keys on, so it must be the
@@ -149,6 +154,7 @@ impl Plugins {
 
         let plugins = Self {
             libs,
+            official,
             groups,
             declared,
             defaults,
@@ -299,6 +305,41 @@ impl Plugins {
 
     pub fn group_of_step(&self, lib: usize, step: usize) -> &str {
         &self.libs[lib].steps[step].group
+    }
+
+    /// The `usage` key of telemetry for a plugin step: its own group when an
+    /// official plugin serves it, `other` for every other plugin.
+    pub fn usage_group(&self, lib: usize, step: usize) -> &str {
+        if self.official[lib] {
+            self.group_of_step(lib, step)
+        } else {
+            crate::telemetry::OTHER
+        }
+    }
+
+    /// The groups that get a `usage` key of their own.
+    pub fn official_groups(&self) -> impl Iterator<Item = &str> {
+        self.groups
+            .iter()
+            .filter(|(_, lib)| self.official[**lib])
+            .map(|(group, _)| group.as_str())
+    }
+
+    /// Declared instances per official plugin name, and the rest in total.
+    pub fn instance_counts(&self) -> (BTreeMap<String, u64>, u64) {
+        let mut named = BTreeMap::new();
+        let mut other = 0;
+        for (group, _) in self.declared.keys() {
+            let Some(&lib) = self.groups.get(group) else {
+                continue;
+            };
+            if self.official[lib] {
+                *named.entry(self.libs[lib].name.clone()).or_insert(0) += 1;
+            } else {
+                other += 1;
+            }
+        }
+        (named, other)
     }
 
     /// Whether the group has anything to run on — a declared instance or the
@@ -575,6 +616,13 @@ pub struct PluginState {
 }
 
 impl PluginState {
+    /// The telemetry `usage` key of a plugin step.
+    pub fn usage_group(&self, lib: usize, step: usize) -> &str {
+        self.plugins
+            .as_ref()
+            .map_or(crate::telemetry::OTHER, |p| p.usage_group(lib, step))
+    }
+
     pub fn new(plugins: Option<Arc<Plugins>>) -> Self {
         let defaults = plugins
             .as_ref()

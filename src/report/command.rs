@@ -3,6 +3,7 @@
 use super::markdown::{self, Detail};
 use super::progress::{Counting, Progress};
 use super::{embed, html, model};
+use crate::telemetry::payload::ReportInfo;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -80,6 +81,22 @@ pub fn remove_temporaries(outputs: &[PathBuf]) {
     }
 }
 
+/// The format of each output, by its extension; one that is neither is not a
+/// format and not listed.
+pub fn format_names(outputs: &[PathBuf]) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = outputs
+        .iter()
+        .filter_map(|output| match format_of(output) {
+            Ok(Format::Html) => Some("html"),
+            Ok(Format::Markdown) => Some("md"),
+            Err(_) => None,
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// Renders `events` to every output, or to none: each is written beside its
 /// target under a temporary name and renamed only once all are complete.
 /// Returns the exit code (0), every failure being an error for `main` to turn
@@ -91,6 +108,7 @@ pub fn run(
     embed: Option<&embed::Options>,
     detail: Option<Detail>,
     progress: &Progress,
+    info: &mut ReportInfo,
 ) -> Result<i32> {
     let defaulted = outputs.is_empty();
     let outputs = outputs_for(events, outputs);
@@ -133,6 +151,10 @@ pub fn run(
     };
     let run = model::build(std::io::BufReader::new(reader))
         .with_context(|| format!("{} is not a usable event stream", events.display()))?;
+    // Read before anything is written, so a render that fails still reports them.
+    info.events = run.events;
+    info.evidence = run.evidence;
+    info.complete = !run.incomplete;
 
     let root = artifacts
         .map(Path::to_path_buf)
@@ -254,7 +276,16 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         assert_eq!(
-            run(&d.join("run.ndjson"), &[], None, None, None, &quiet()).expect("ok"),
+            run(
+                &d.join("run.ndjson"),
+                &[],
+                None,
+                None,
+                None,
+                &quiet(),
+                &mut ReportInfo::default()
+            )
+            .expect("ok"),
             0
         );
         assert!(d.join("run.html").is_file());
@@ -267,7 +298,16 @@ mod tests {
         for bad in ["out.txt", "out", "out.mdx"] {
             let outputs = [d.join("ok.html"), d.join(bad)];
             assert!(
-                run(&d.join("run.ndjson"), &outputs, None, None, None, &quiet()).is_err(),
+                run(
+                    &d.join("run.ndjson"),
+                    &outputs,
+                    None,
+                    None,
+                    None,
+                    &quiet(),
+                    &mut ReportInfo::default()
+                )
+                .is_err(),
                 "{bad}"
             );
         }
@@ -279,7 +319,18 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("./a.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None, None, None, &quiet()).is_err());
+        assert!(
+            run(
+                &d.join("run.ndjson"),
+                &outputs,
+                None,
+                None,
+                None,
+                &quiet(),
+                &mut ReportInfo::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -294,7 +345,8 @@ mod tests {
                 None,
                 None,
                 None,
-                &quiet()
+                &quiet(),
+                &mut ReportInfo::default()
             )
             .is_err()
         );
@@ -309,7 +361,18 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("missing/b.html")];
-        assert!(run(&d.join("run.ndjson"), &outputs, None, None, None, &quiet()).is_err());
+        assert!(
+            run(
+                &d.join("run.ndjson"),
+                &outputs,
+                None,
+                None,
+                None,
+                &quiet(),
+                &mut ReportInfo::default()
+            )
+            .is_err()
+        );
         assert!(!d.join("a.html").exists());
         let leftovers = std::fs::read_dir(&d).expect("dir").count();
         assert_eq!(leftovers, 1, "only the stream is left");
@@ -325,7 +388,16 @@ mod tests {
         )
         .expect("stream");
         assert_eq!(
-            run(&d.join("run.ndjson"), &[], None, None, None, &quiet()).expect("ok"),
+            run(
+                &d.join("run.ndjson"),
+                &[],
+                None,
+                None,
+                None,
+                &quiet(),
+                &mut ReportInfo::default()
+            )
+            .expect("ok"),
             0
         );
         assert!(d.join("run.html").is_file());
@@ -336,7 +408,16 @@ mod tests {
         let d = dir();
         std::fs::write(d.join("run.ndjson"), STREAM).expect("stream");
         let outputs = [d.join("a.html"), d.join("b.HTM")];
-        run(&d.join("run.ndjson"), &outputs, None, None, None, &quiet()).expect("ok");
+        run(
+            &d.join("run.ndjson"),
+            &outputs,
+            None,
+            None,
+            None,
+            &quiet(),
+            &mut ReportInfo::default(),
+        )
+        .expect("ok");
         assert!(d.join("a.html").is_file() && d.join("b.HTM").is_file());
     }
 

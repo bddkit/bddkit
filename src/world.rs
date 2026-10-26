@@ -84,6 +84,9 @@ pub struct World {
     /// Per feature file: the secrets this file has met. Masks nothing until
     /// `run_file` hands it a vocabulary.
     pub redactor: Redactor,
+    /// The run's leaf-step counters, for the telemetry payload. `run_file`
+    /// hands them over; a World built for a test counts nothing.
+    pub counters: Option<Arc<crate::telemetry::counters::Counters>>,
 }
 
 impl World {
@@ -112,6 +115,7 @@ impl World {
             warnings: Vec::new(),
             trace: crate::events::Trace::off(),
             redactor: Redactor::disabled(),
+            counters: None,
         }
     }
 

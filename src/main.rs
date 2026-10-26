@@ -30,6 +30,7 @@ mod resource;
 mod runner;
 mod srp;
 mod steps;
+mod telemetry;
 mod unique;
 mod upgrade;
 mod validate;
@@ -81,6 +82,8 @@ enum Command {
     Plugin(PluginArgs),
     /// Replace bddkit and its plugins with another release, with a way back
     Upgrade(UpgradeArgs),
+    /// Anonymous usage counts: what is decided, what was recorded, turn them on or off
+    Telemetry(TelemetryCommandArgs),
     /// Print the version, and where to look next
     Version {
         /// Machine-readable: version, target and plugin ABI
@@ -245,6 +248,18 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
         println!();
         return Ok(0);
     };
+    let started = std::time::Instant::now();
+    let telemetry_command = match &command {
+        PluginCommand::Install { .. } => Some(telemetry::payload::Command::PluginInstall),
+        PluginCommand::Update { dry_run: false, .. } => {
+            Some(telemetry::payload::Command::PluginUpdate)
+        }
+        PluginCommand::Remove { .. } => Some(telemetry::payload::Command::PluginRemove),
+        _ => None,
+    };
+    let setting =
+        telemetry::command::Setting::discover(args.config.as_deref(), args.bddkit_dir.clone()).ok();
+    let acted = std::sync::Mutex::new(Vec::new());
     let outcome: Result<i32> = async {
         if let PluginCommand::Check { path } = &command {
             // `ManuallyDrop` for the reason `Library::load` gives: never unloaded.
@@ -262,7 +277,7 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
         };
         let ctx =
             plugin::manage::Context::new(dirs::Env::from_process(args.bddkit_dir), &config_dir)?;
-        match command {
+        let outcome = match command {
             PluginCommand::List { query } => ctx.list(query.as_deref()).await,
             PluginCommand::Install { plugin, layer } => {
                 ctx.install(&plugin, layer.as_deref()).await
@@ -276,17 +291,95 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
             PluginCommand::Prune { dry_run, yes } => ctx.prune(dry_run, yes),
             PluginCommand::Show { name } => ctx.show(name.as_deref()).await,
             PluginCommand::Check { .. } => unreachable!("answered before the layers are read"),
-        }
+        };
+        *acted.lock().expect("acted is never poisoned") = ctx.take_acted();
+        outcome
     }
     .await;
-    Ok(outcome.unwrap_or_else(|error| {
+    let code = outcome.unwrap_or_else(|error| {
         eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
         1
-    }))
+    });
+    if let Some(command) = telemetry_command {
+        let mut payload = telemetry::payload::Payload::new(command, code, started.elapsed());
+        payload.plugin = Some(acted.into_inner().expect("acted is never poisoned"));
+        telemetry::command::record_if_on(setting.as_ref(), &payload);
+    }
+    Ok(code)
+}
+
+#[derive(Args)]
+#[command(after_help = "Examples:
+  bddkit telemetry status               on or off, and what decided
+  bddkit telemetry show                 the last payload recorded on this machine
+  bddkit telemetry off                  for this user, on this machine
+  bddkit telemetry on --layer shared    for every user of this machine (/etc/bddkit)")]
+struct TelemetryCommandArgs {
+    #[command(subcommand)]
+    command: TelemetryCommand,
+    /// Only used to find the project's `.bddkit/` and the suite's `telemetry` key [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Use this directory only, skipping the shared, user and project layers
+    /// (overrides $BDDKIT_DIR)
+    #[arg(long = "bddkit-dir", global = true)]
+    bddkit_dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum TelemetryCommand {
+    /// Whether it is on, and which source decided
+    Status,
+    /// Print the last payload recorded on this machine
+    Show,
+    /// Allow anonymous usage counts
+    On {
+        /// The layer to write [default: user]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
+        layer: Option<String>,
+    },
+    /// Refuse anonymous usage counts
+    Off {
+        /// The layer to write [default: user]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
+        layer: Option<String>,
+    },
+}
+
+/// Exit 1 on any failure, like `plugin`: nothing ran that a 2 would date.
+fn telemetry_command(args: TelemetryCommandArgs) -> Result<i32> {
+    let outcome: Result<String> = (|| {
+        let setting =
+            telemetry::command::Setting::discover(args.config.as_deref(), args.bddkit_dir)?;
+        match args.command {
+            TelemetryCommand::Status => Ok(telemetry::command::status(&setting)),
+            TelemetryCommand::Show => telemetry::command::show(&setting),
+            TelemetryCommand::On { layer } => {
+                telemetry::command::set(&setting, true, layer.as_deref())
+            }
+            TelemetryCommand::Off { layer } => {
+                telemetry::command::set(&setting, false, layer.as_deref())
+            }
+        }
+    })();
+    Ok(match outcome {
+        Ok(text) => {
+            print!("{text}");
+            0
+        }
+        Err(error) => {
+            eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
+            1
+        }
+    })
 }
 
 /// Every failure is exit 1, like `plugin`: nothing ran that a 2 would date.
 async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
+    let started = std::time::Instant::now();
+    let setting =
+        telemetry::command::Setting::discover(args.config.as_deref(), args.bddkit_dir.clone()).ok();
+    let mut note = telemetry::payload::UpgradeInfo::default();
     let outcome: Result<i32> = async {
         let config_dir = match config::resolve_config_path(args.config.as_deref())? {
             Some(resolved) => config_dir(&resolved.path).to_path_buf(),
@@ -303,14 +396,23 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
                 force: args.force,
                 yes: args.yes,
             },
+            &mut note,
         )
         .await
     }
     .await;
-    Ok(outcome.unwrap_or_else(|error| {
+    let code = outcome.unwrap_or_else(|error| {
         eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
         1
-    }))
+    });
+    let mut payload = telemetry::payload::Payload::new(
+        telemetry::payload::Command::Upgrade,
+        code,
+        started.elapsed(),
+    );
+    payload.upgrade = Some(note);
+    telemetry::command::record_if_on(setting.as_ref(), &payload);
+    Ok(code)
 }
 
 #[derive(Args)]
@@ -494,12 +596,15 @@ struct DoctorArgs {
     reports: ReportArgs,
     #[command(flatten)]
     privacy: PrivacyArgs,
+    #[command(flatten)]
+    telemetry: TelemetryArgs,
 }
 
 /// Unlike `run`, every outcome here is a report: a config that cannot be
 /// parsed is the most ordinary thing `doctor` has to say, not a reason to
 /// answer in a different currency. Hence 0/1 and no `?`.
 async fn doctor_command(args: DoctorArgs) -> Result<i32> {
+    let started = std::time::Instant::now();
     privacy::set_flags(args.privacy.layer());
     let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
     let report = doctor::check(
@@ -510,6 +615,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         &args.reports.paths(),
         args.events.as_deref(),
         &args.privacy.layer(),
+        args.telemetry.enabled,
     )
     .await;
     if args.json {
@@ -517,6 +623,8 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
     } else {
         print!("{}", report.render());
     }
+    // After the report, like `run`'s question after its summary.
+    telemetry::doctor::finish(&report, started.elapsed()).await;
     Ok(report.exit_code())
 }
 
@@ -618,6 +726,17 @@ struct RunArgs {
     reports: ReportArgs,
     #[command(flatten)]
     privacy: PrivacyArgs,
+    #[command(flatten)]
+    telemetry: TelemetryArgs,
+}
+
+/// The one flag of the telemetry decision (`telemetry::decide`), shared by
+/// the commands that ask the question.
+#[derive(Args)]
+struct TelemetryArgs {
+    /// Allow or refuse anonymous usage counts for this command; beats every other source
+    #[arg(long = "telemetry", action = clap::ArgAction::Set, value_name = "BOOL")]
+    enabled: Option<bool>,
 }
 
 /// A report is a property of the run, not of the suite, so these live on the
@@ -796,6 +915,7 @@ async fn main() {
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
+        Command::Telemetry(args) => (telemetry_command(args), "nothing changed"),
         Command::Version { json: true } => {
             let target = plugin::install::host_target().unwrap_or("unknown");
             println!(
@@ -1027,6 +1147,8 @@ async fn handle_interrupt(
 /// the target is never partial, so all a signal can leave is the temporary
 /// files beside the outputs, and those are removed here.
 async fn report_command(args: RenderArgs) -> Result<i32> {
+    let started = std::time::Instant::now();
+    let setting = telemetry::command::Setting::discover(None, None).ok();
     let embed = args
         .embed_artifacts
         .then(|| {
@@ -1039,6 +1161,26 @@ async fn report_command(args: RenderArgs) -> Result<i32> {
         .transpose()?;
     let mut interrupts = Interrupts::install();
     let outputs = report::command::outputs_for(&args.events, &args.outputs);
+    let formats = report::command::format_names(&outputs);
+    let mut info = telemetry::payload::ReportInfo {
+        detail: formats.contains(&"md").then(|| {
+            args.detail
+                .unwrap_or(report::markdown::Detail::Failed)
+                .name()
+        }),
+        embed: formats.contains(&"html").then_some(match &embed {
+            None => "none",
+            Some(options) => match options.images {
+                report::embed::Images::Original => "original",
+                report::embed::Images::Lossless => "lossless",
+                report::embed::Images::Lossy => "lossy",
+            },
+        }),
+        formats,
+        artifacts: args.artifacts.is_some(),
+        result: "error",
+        ..Default::default()
+    };
     let progress = Arc::new(report::progress::Progress::new(
         report::progress::interactive(),
         1 + usize::from(embed.is_some()),
@@ -1046,21 +1188,33 @@ async fn report_command(args: RenderArgs) -> Result<i32> {
     let work = {
         let progress = Arc::clone(&progress);
         tokio::task::spawn_blocking(move || {
-            report::command::run(
+            let result = report::command::run(
                 &args.events,
                 &args.outputs,
                 args.artifacts.as_deref(),
                 embed.as_ref(),
                 args.detail,
                 &progress,
-            )
+                &mut info,
+            );
+            (result, info)
         })
     };
     tokio::select! {
         done = work => {
             // Every way out, an error included, leaves the line clean.
             progress.clear();
-            done.context("the report task failed")?
+            let (result, mut info) = done.context("the report task failed")?;
+            let code = result.as_ref().map_or(2, |code| *code);
+            let mut payload = telemetry::payload::Payload::new(
+                telemetry::payload::Command::Report,
+                code,
+                started.elapsed(),
+            );
+            info.result = if result.is_ok() { "ok" } else { "error" };
+            payload.report = Some(info);
+            telemetry::command::record_if_on(setting.as_ref(), &payload);
+            result
         },
         (_, code) = interrupts.wait() => {
             report::command::cancel();
@@ -1071,7 +1225,54 @@ async fn report_command(args: RenderArgs) -> Result<i32> {
     }
 }
 
+/// What `run` knows once the config is read: from here on a refusal or a
+/// finished run has a payload to report. Before it, nothing does.
+fn note_config(
+    probe: &mut telemetry::RunProbe,
+    cli: &RunArgs,
+    cfg: &config::Config,
+    config_path: &std::path::Path,
+    events: bool,
+    evidence: events::Sources,
+) {
+    let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
+    // A missing override directory fails the run at its plugins; here it only
+    // means the layers have nothing to say.
+    probe.layers =
+        dirs::layers(dirs::Os::current(), &env, config_dir(config_path)).unwrap_or_default();
+    probe.decision = Some(telemetry::decide_here(
+        cli.telemetry.enabled,
+        (&cfg.telemetry).into(),
+        &probe.layers,
+    ));
+    probe.concurrency = cfg.concurrency as u64;
+    probe.fail_fast = cli.fail_fast;
+    probe.features = telemetry::payload::Features {
+        junit: cli.reports.junit.is_some(),
+        cucumber_json: cli.reports.cucumber_json.is_some(),
+        events,
+        evidence: evidence.names(),
+        artifacts_dir: cli.artifacts_dir.is_some() || env_var("BDDKIT_ARTIFACTS_DIR").is_some(),
+        tags: !cli.tags.is_empty(),
+        paths: !cli.paths.is_empty(),
+        env: cli.env.is_some(),
+    };
+    probe.resources = telemetry::run::resources_of(cfg);
+    probe.read = true;
+}
+
+/// `run_suite`, plus what telemetry makes of how it ended. Nothing in here may
+/// change the code: the probe only reads what `run_suite` noted on its way.
 async fn run(cli: RunArgs) -> Result<i32> {
+    let started = std::time::Instant::now();
+    let mut probe = telemetry::RunProbe::default();
+    let outcome = run_suite(cli, &mut probe).await;
+    let code = outcome.as_ref().map_or(2, |code| *code);
+    probe.finish(code, started.elapsed(), outcome.is_ok()).await;
+    outcome
+}
+
+async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32> {
     privacy::set_flags(cli.privacy.layer());
     cli.reports
         .paths()
@@ -1105,6 +1306,14 @@ async fn run(cli: RunArgs) -> Result<i32> {
         None if events_file.is_some() => cfg.evidence.unwrap_or_default(),
         None => events::Sources::default(),
     };
+    note_config(
+        probe,
+        &cli,
+        &cfg,
+        &config_path,
+        events_file.is_some(),
+        evidence,
+    );
     // Only a run that defers anything has a use for it.
     let evidence_buffer = if evidence.any() {
         events::buffer_from_env()?
@@ -1116,6 +1325,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
         &privacy::process_env,
         cli.privacy.layer(),
     )?;
+    probe.privacy = Some(telemetry::payload::PrivacyFlags::of(&privacy));
     if privacy.reveal {
         eprintln!("{}", privacy.reveal_notice());
     }
@@ -1127,8 +1337,13 @@ async fn run(cli: RunArgs) -> Result<i32> {
         generator.run_id(),
     )?);
     let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
+    probe.stage = Some(telemetry::payload::Stage::Plugins);
     let plugins = load_plugins(&config_path, &cfg, &env)?;
+    if let Some(plugins) = &plugins {
+        (probe.resources.plugins, probe.resources.plugins_other) = plugins.instance_counts();
+    }
 
+    probe.stage = Some(telemetry::payload::Stage::Steps);
     let reg = match build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => registry,
         Err(error) => {
@@ -1136,10 +1351,11 @@ async fn run(cli: RunArgs) -> Result<i32> {
                 "error: 1 problem, run not started\n\n  {}",
                 privacy::mask_text(&error.to_string())
             );
-            std::process::exit(2);
+            return Ok(2);
         }
     };
 
+    probe.stage = Some(telemetry::payload::Stage::Selection);
     let filter = feature::TagFilter::new(&cli.tags);
     let paths = if cli.paths.is_empty() {
         cfg.paths.as_slice()
@@ -1156,9 +1372,10 @@ async fn run(cli: RunArgs) -> Result<i32> {
     }
     if loaded.is_empty() {
         eprintln!("error: no scenario selected, run not started");
-        std::process::exit(2);
+        return Ok(2);
     }
 
+    probe.stage = Some(telemetry::payload::Stage::Validation);
     let for_check: Vec<&feature::LoadedFeature> = loaded.iter().map(Arc::as_ref).collect();
     let problems = validate::check(&for_check, &reg, &filter);
     if !problems.is_empty() {
@@ -1166,11 +1383,15 @@ async fn run(cli: RunArgs) -> Result<i32> {
         for p in &problems {
             eprintln!("{}", privacy::mask_text(&p.to_string()));
         }
-        std::process::exit(2);
+        return Ok(2);
     }
 
+    probe.stage = Some(telemetry::payload::Stage::Scheduling);
     let chains = runner::build_chains(loaded).map_err(anyhow::Error::msg)?;
+    // What `run_all` will start: at least one, never more than the chains.
+    probe.concurrency = cfg.concurrency.clamp(1, chains.len().max(1)) as u64;
 
+    probe.stage = Some(telemetry::payload::Stage::Resources);
     let mut by_name = std::collections::HashMap::new();
     for (name, api) in &cfg.resources.api {
         let headers = api
@@ -1215,6 +1436,12 @@ async fn run(cli: RunArgs) -> Result<i32> {
                 .map_err(anyhow::Error::msg)?,
         ))
     };
+    if let Some(db) = &db {
+        probe.resources.db = db.engines().fold(Default::default(), |mut engines, name| {
+            telemetry::payload::Engines::add(&mut engines, name);
+            engines
+        });
+    }
     let default_db = cfg.resolve_default_db()?.unwrap_or_default();
     let srp = match cfg.resolve_default_srp()? {
         Some(name) => Some(Arc::new(cfg.resources.srp[&name].to_params()?)),
@@ -1224,6 +1451,8 @@ async fn run(cli: RunArgs) -> Result<i32> {
     // Before anything is announced, and before the handler task is first
     // polled: see `Interrupts`.
     let interrupts = Interrupts::install();
+    probe.stage = None;
+    probe.started = true;
     println!("run {}", generator.run_id());
     let events = events_file.map(events::Events::start);
     if let Some(events) = &events {
@@ -1274,6 +1503,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
     ctx.evidence_buffer = evidence_buffer;
     ctx.redactor = privacy::Redactor::new(&privacy, privacy::recorded());
     let ctx = Arc::new(ctx);
+    probe.counters = Some(ctx.counters.clone());
 
     let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone(), interrupts));
     let results = runner::run_all(chains, ctx.clone(), cfg.concurrency).await;
@@ -1300,12 +1530,14 @@ async fn run(cli: RunArgs) -> Result<i32> {
         plugins.shutdown();
     }
 
+    probe.tally(&results);
     let mut code = report::print_summary(&results, generator.run_id());
     // The one deliberate exception to "2 = before the first request": a
     // report silently lost behind a green code is the worse outcome.
     if let Err(error) = cli.reports.write(&results) {
         eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
         code = 2;
+        probe.stage = Some(telemetry::payload::Stage::Reports);
     }
     // After the reports, so `exit` is the code the process really returns —
     // and the same exception covers a stream that could not be written.
@@ -1334,6 +1566,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
                 privacy::mask_text(&error.to_string())
             );
             code = 2;
+            probe.stage = Some(telemetry::payload::Stage::Events);
         }
     }
     Ok(code)

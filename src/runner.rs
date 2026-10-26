@@ -183,6 +183,19 @@ fn execute_step<'a>(
             .as_mut()
             .map(|r| std::mem::take(&mut r.vars))
             .unwrap_or_default();
+        // A macro call and an include are not counted: the steps they run are.
+        let leaf_group: Option<std::borrow::Cow<'static, str>> =
+            resolved.as_ref().ok().and_then(|r| match r.target {
+                StepTarget::Macro(_)
+                | StepTarget::Builtin {
+                    id: StepId::Include | StepId::IncludeScenario,
+                    ..
+                } => None,
+                StepTarget::Builtin { id, .. } => Some(crate::steps::group_of(id).into()),
+                StepTarget::Plugin { lib, step, .. } => {
+                    Some(world.plugins.usage_group(lib, step).to_string().into())
+                }
+            });
         world.trace.step_started(
             &step.keyword,
             &reg.display_text(&step.text, &world.redactor),
@@ -196,6 +209,9 @@ fn execute_step<'a>(
             // unknown step, a variable that is not set, a value of the wrong type.
             Err(error) => Err(StepError::input(error)),
         };
+        if let (Some(group), Some(counters)) = (&leaf_group, &world.counters) {
+            counters.leaf(group, started.elapsed());
+        }
         // Still the innermost step in flight: this is whose exchanges they are.
         world.flush_evidence();
         world.trace.step_finished(
@@ -757,6 +773,8 @@ pub struct RunContext {
     /// The run-wide privacy vocabulary and the secrets known before the first
     /// request; each file forks it. `main` sets it; masks nothing until then.
     pub redactor: crate::privacy::Redactor,
+    /// Leaf steps per group and outline rows, for the telemetry payload.
+    pub counters: Arc<crate::telemetry::counters::Counters>,
     fail_fast: bool,
     stop: std::sync::atomic::AtomicBool,
     ending: std::sync::atomic::AtomicBool,
@@ -779,7 +797,12 @@ impl RunContext {
         artifacts: Arc<crate::artifacts::Artifacts>,
         fail_fast: bool,
     ) -> Self {
+        let official = plugins.iter().flat_map(|p| p.official_groups());
+        let counters = Arc::new(crate::telemetry::counters::Counters::new(
+            crate::telemetry::builtin_groups().chain(official),
+        ));
         Self {
+            counters,
             reg,
             apis,
             generator,
@@ -857,6 +880,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     world.trace = Trace::new(ctx.events.clone(), &lf, redactor.clone());
     world.set_redactor(redactor);
     world.collect_evidence(ctx.evidence, ctx.evidence_buffer);
+    world.counters = Some(ctx.counters.clone());
     let mut scenarios = Vec::new();
 
     // The generator handle is cloned once: inside the loop `&world.generator`
@@ -869,6 +893,9 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         for ex in expand_outlines(sc) {
             if !ctx.filter.selects_row(sc, ex.examples_line) {
                 continue;
+            }
+            if ex.example.is_some() {
+                ctx.counters.example();
             }
             world.reset_scenario();
             // The FFI half of the scenario reset. It is here rather than in
