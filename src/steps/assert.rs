@@ -35,22 +35,106 @@ pub fn response_code(w: &World, expected: &str) -> AttemptResult {
     }
 }
 
+/// Every value of a response header, one per line the server sent, matched by
+/// name case-insensitively.
+fn header_values<'a>(ex: &'a crate::http::Exchange, name: &str) -> Vec<&'a str> {
+    ex.resp_headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+        .collect()
+}
+
 pub fn response_header(w: &World, name: &str, value: &str) -> AttemptResult {
     let ex = last(w).map_err(AttemptError::input)?;
-    let got = ex
-        .resp_headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str());
-    match got {
-        Some(v) if v == value => Ok(()),
-        Some(v) => Err(AttemptError::not_yet(format!(
-            "    expected: {value}\n    actual:   {v}"
-        ))),
-        None => Err(AttemptError::not_yet(format!(
-            "response header {name:?} is missing"
-        ))),
+    let got = header_values(ex, name);
+    if got.contains(&value) {
+        return Ok(());
     }
+    if got.is_empty() {
+        return Err(AttemptError::not_yet(format!(
+            "response header {name:?} is missing"
+        )));
+    }
+    Err(AttemptError::not_yet(format!(
+        "    expected: {value}\n    actual:   {}",
+        got.join("\n              ")
+    )))
+}
+
+/// A text check over every line of a response header. Positive: some line
+/// passes, and a missing header fails. Negative: no line fails, and a missing
+/// header passes. `check` is `check_contains`/`check_matches` for one line.
+fn header_text(
+    w: &World,
+    name: &str,
+    negate: bool,
+    check: impl Fn(&str, &str, bool) -> AttemptResult,
+) -> AttemptResult {
+    let ex = last(w).map_err(AttemptError::input)?;
+    let values = header_values(ex, name);
+    if values.is_empty() {
+        return if negate {
+            Ok(())
+        } else {
+            Err(AttemptError::not_yet(format!(
+                "response header {name:?} is missing"
+            )))
+        };
+    }
+    let subject = format!("response header {name:?}");
+    let mut first_failure = None;
+    for value in &values {
+        match check(&subject, value, negate) {
+            Ok(()) if !negate => return Ok(()),
+            Ok(()) => {}
+            Err(failure) => {
+                first_failure.get_or_insert(failure);
+                if negate {
+                    break;
+                }
+            }
+        }
+    }
+    match first_failure {
+        // The check failed: the first failing line is the message, with every
+        // line of the header added when the server sent more than one.
+        Some(AttemptError::NotYet(mut error)) if values.len() > 1 => {
+            error.message.push_str(&format!(
+                "\n    all {} lines of {name:?}:\n{}",
+                values.len(),
+                values.join("\n")
+            ));
+            Err(AttemptError::NotYet(error))
+        }
+        Some(failure) => Err(failure),
+        None => Ok(()),
+    }
+}
+
+pub fn response_header_contains(
+    w: &World,
+    name: &str,
+    needle: &str,
+    negate: bool,
+) -> AttemptResult {
+    header_text(w, name, negate, |subject, text, negate| {
+        check_contains(subject, text, needle, negate)
+    })
+}
+
+pub fn response_header_matches(
+    w: &World,
+    name: &str,
+    pattern: &str,
+    negate: bool,
+) -> AttemptResult {
+    // A bad pattern is fatal even when the header is missing.
+    Regex::new(pattern)
+        .map_err(|e| AttemptError::input(format!("invalid regex {pattern:?}: {e}")))?;
+    header_text(w, name, negate, |subject, text, negate| {
+        check_matches(subject, text, pattern, negate)
+    })
 }
 
 /// The doc string of a JSON step, parsed. Shared by the body and the variable steps.
@@ -715,5 +799,109 @@ mod tests {
             msg.message.contains("\\n"),
             "message should show escaped whitespace: {msg}"
         );
+    }
+
+    fn hdrs(pairs: &[(&str, &str)]) -> World {
+        let headers = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        world_with_response("", headers)
+    }
+
+    fn not_yet<T>(r: Result<T, AttemptError>) -> bool {
+        matches!(r, Err(AttemptError::NotYet(_)))
+    }
+
+    #[test]
+    fn header_is_finds_a_value_on_a_later_line() {
+        let w = hdrs(&[("Vary", "Accept"), ("vary", "Accept-Encoding")]);
+        assert_eq!(response_header(&w, "VARY", "Accept-Encoding"), Ok(()));
+        assert!(not_yet(response_header(&w, "Vary", "Origin")));
+    }
+
+    #[test]
+    fn header_contains_passes_fails_and_reports_missing() {
+        let w = hdrs(&[("Cache-Control", "public, max-age=3600")]);
+        assert_eq!(
+            response_header_contains(&w, "cache-control", "max-age", false),
+            Ok(())
+        );
+        assert!(not_yet(response_header_contains(
+            &w,
+            "Cache-Control",
+            "private",
+            false
+        )));
+        let Err(AttemptError::NotYet(e)) = response_header_contains(&w, "Link", "x", false) else {
+            panic!("expected NotYet")
+        };
+        assert!(e.message.contains("response header \"Link\" is missing"));
+    }
+
+    #[test]
+    fn header_contains_matches_on_the_second_line_only() {
+        let w = hdrs(&[("Link", "</a>; rel=\"x\""), ("Link", "</b>; rel=\"y\"")]);
+        assert_eq!(response_header_contains(&w, "Link", "</b>", false), Ok(()));
+        let Err(AttemptError::NotYet(e)) = response_header_contains(&w, "Link", "</c>", false)
+        else {
+            panic!("expected NotYet")
+        };
+        assert!(e.message.contains("</a>") && e.message.contains("</b>"));
+    }
+
+    #[test]
+    fn header_not_contains_needs_every_line_clean_and_passes_when_missing() {
+        let w = hdrs(&[("Vary", "Accept"), ("Vary", "Cookie")]);
+        assert_eq!(response_header_contains(&w, "Vary", "Origin", true), Ok(()));
+        assert!(not_yet(response_header_contains(
+            &w, "Vary", "Cookie", true
+        )));
+        assert_eq!(response_header_contains(&w, "Link", "x", true), Ok(()));
+    }
+
+    #[test]
+    fn header_matches_and_not_matches() {
+        let w = hdrs(&[
+            ("Set-Cookie", "a=1"),
+            ("Set-Cookie", "session=abc; HttpOnly"),
+        ]);
+        assert_eq!(
+            response_header_matches(&w, "set-cookie", r"^session=\w+; HttpOnly$", false),
+            Ok(())
+        );
+        assert!(not_yet(response_header_matches(
+            &w,
+            "Set-Cookie",
+            "^zzz",
+            false
+        )));
+        assert!(not_yet(response_header_matches(&w, "Location", ".", false)));
+        assert_eq!(
+            response_header_matches(&w, "Set-Cookie", "^zzz", true),
+            Ok(())
+        );
+        assert!(not_yet(response_header_matches(
+            &w,
+            "Set-Cookie",
+            "^a=",
+            true
+        )));
+        assert_eq!(response_header_matches(&w, "Location", ".", true), Ok(()));
+    }
+
+    #[test]
+    fn header_matches_with_an_invalid_regex_is_fatal() {
+        let w = hdrs(&[("Vary", "Accept")]);
+        for negate in [false, true] {
+            assert!(matches!(
+                response_header_matches(&w, "Vary", "[", negate),
+                Err(AttemptError::Fatal(_))
+            ));
+            assert!(matches!(
+                response_header_matches(&w, "Missing", "[", negate),
+                Err(AttemptError::Fatal(_))
+            ));
+        }
     }
 }

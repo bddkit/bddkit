@@ -40,6 +40,10 @@ pub enum StepId {
     ResponseBodyEqualsJson,
     ResponseArrayLength,
     ResponseHeader,
+    ResponseHeaderContains,
+    ResponseHeaderNotContains,
+    ResponseHeaderMatches,
+    ResponseHeaderNotMatches,
     JsonNodeExists,
     JsonNodeNotExists,
     JsonNodeIsNull,
@@ -290,7 +294,35 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         StepId::ResponseHeader,
         "api",
         r#"the "{name}" response header is "{value}""#,
-        "asserts a response header holds exactly this value",
+        "asserts a response header holds exactly this value — on any line, when the server sent the header more than once",
+        OptionsSource::Http,
+    ),
+    assertion(
+        StepId::ResponseHeaderContains,
+        "api",
+        r#"the "{name}" response header contains "{text:any}""#,
+        "asserts a response header's value contains this text — on any line, when the header repeats",
+        OptionsSource::Http,
+    ),
+    assertion(
+        StepId::ResponseHeaderNotContains,
+        "api",
+        r#"the "{name}" response header does not contain "{text:any}""#,
+        "asserts no line of a response header contains this text — passes when the header is absent",
+        OptionsSource::Http,
+    ),
+    assertion(
+        StepId::ResponseHeaderMatches,
+        "api",
+        r#"the "{name}" response header matches "{pattern:any}""#,
+        "asserts a response header's value matches this regular expression — on any line, when the header repeats",
+        OptionsSource::Http,
+    ),
+    assertion(
+        StepId::ResponseHeaderNotMatches,
+        "api",
+        r#"the "{name}" response header does not match "{pattern:any}""#,
+        "asserts no line of a response header matches this regular expression — passes when the header is absent",
         OptionsSource::Http,
     ),
     assertion(
@@ -1220,6 +1252,22 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         StepId::ResponseHeader => {
             assert::replay_response(w, attempt).await?;
             return assert::response_header(w, a.cap(0), a.cap(1));
+        }
+        StepId::ResponseHeaderContains => {
+            assert::replay_response(w, attempt).await?;
+            return assert::response_header_contains(w, a.cap(0), a.cap(1), false);
+        }
+        StepId::ResponseHeaderNotContains => {
+            assert::replay_response(w, attempt).await?;
+            return assert::response_header_contains(w, a.cap(0), a.cap(1), true);
+        }
+        StepId::ResponseHeaderMatches => {
+            assert::replay_response(w, attempt).await?;
+            return assert::response_header_matches(w, a.cap(0), a.cap(1), false);
+        }
+        StepId::ResponseHeaderNotMatches => {
+            assert::replay_response(w, attempt).await?;
+            return assert::response_header_matches(w, a.cap(0), a.cap(1), true);
         }
         StepId::ResponseBodyContainsJson => {
             assert::replay_response(w, attempt).await?;

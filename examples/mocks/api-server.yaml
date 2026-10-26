@@ -249,3 +249,17 @@
       Content-Type: application/json
     body: >
       {"id": 1, "status": "pending"}
+
+# A repeated Link header and a comma-list Vary, for features/response_headers.feature.
+- request:
+    method: GET
+    path: /agent-hints
+  response:
+    status: 200
+    headers:
+      Content-Type: text/plain
+      Link:
+        - '</llms.txt>; rel="describedby"'
+        - '</start.md>; rel="alternate"; type="text/markdown"'
+      Vary: Accept, Accept-Encoding
+    body: hint
