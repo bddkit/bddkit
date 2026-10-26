@@ -79,6 +79,22 @@ Nothing checks for a newer release on its own: `run` and `doctor` open no socket
 
 ## Quick start
 
+### Your own suite: `bddkit init`
+
+```bash
+bddkit init
+```
+
+`init` asks a few questions, in this order: the base URL of the API under test (an empty answer means none), a database (none, PostgreSQL, MySQL or MariaDB, with a DSN — prefer an environment reference such as `${BDDKIT_DB_DSN}` over a literal password), which plugins of the official index to install (nothing is ticked: arrows move, Space ticks, Enter accepts), whether they are for you on this machine or vendored into `.bddkit/` for everyone with the repository, whether scenarios of different files may run at the same time (`concurrency` 8, which is safe only when every scenario brings its own data, see `<<unique()>>`; otherwise 1), and last whether to allow anonymous usage counts. Every list is built without a preselected answer, so nothing is chosen that you did not choose; Ctrl-C at any question, and Esc at a list, leaves without writing anything (exit `130`); a text question has no Esc.
+
+Then it writes `bddkit.yaml` (a comment above each key), `features/example.feature` (one scenario that passes without a network, with a commented-out request to your API that the report shows as a disabled step), the missing lines of `.gitignore` (`.bddkit/*.local.yaml` and `.env.local`, only inside a git work tree), installs the plugins one at a time, prints for each plugin group that needs a resource the `bddkit resource add …` command that declares it, and ends with the `doctor` report. A plugin that fails to install does not stop the others or undo the config, and neither does an environment reference such as `${BDDKIT_DB_DSN}` that is not exported yet: the closing `doctor` report fails on it (exit `1`) until it is. `init` never overwrites a config: when `bddkit.yaml` (or `bddkit.yml`, or the file `--config` names) exists it refuses with exit `2` and points at `bddkit resource add` and `bddkit plugin install`, which extend a suite.
+
+`--layer` cannot be combined with `--bddkit-dir` / `$BDDKIT_DIR`, which replaces every layer with one directory. Without a terminal (stdin or stderr is not one, or `CI` is set) nothing is asked and every answer is a flag, the same flags that skip a question in an interactive run: `--api-url <url>` or `--no-api`, `--db none|postgres|mysql|mariadb` with `--dsn <dsn>`, `--plugin <name>` (repeatable) with `--layer user|project`, `--parallel true|false` and `--telemetry true|false`. Without flags that means no API, no database, no plugins and `--parallel true`; without `--telemetry` no `telemetry` key is written, so the decision stays with each person who runs the suite. `--dsn` without `--db`, `--db postgres|mysql|mariadb` without `--dsn` and `--layer` without `--plugin` are refused with exit `2` rather than ignored. Exit codes: `0` everything written and `doctor` clean, `1` written but a plugin failed to install or `doctor` found something, `2` refused or an answer missing.
+
+The `telemetry` key is written by `init` and nothing reads it yet: usage counts are not sent by any release so far.
+
+### The shipped example suite
+
 ```bash
 docker compose up -d smocker   # local mock API the example talks to
 cargo build --release

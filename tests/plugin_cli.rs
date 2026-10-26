@@ -1,4 +1,4 @@
-//! `bddkit plugin …` and `bddkit upgrade` end to end: the real binary against an axum stub that
+//! `bddkit plugin …`, `bddkit upgrade` and the plugin half of `bddkit init` end to end: the real binary against an axum stub that
 //! plays both the plugin index and GitHub Releases, installing the echo
 //! fixture packed as a release archive. Everything lands in a temporary
 //! `--bddkit-dir` unless a test is about the layer chain itself.
@@ -180,6 +180,73 @@ fn text(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+/// `bddkit init <args>` in `dir`, no terminal, the user layer inside `dir`, pointed at the stub.
+fn init(dir: &Path, github: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .arg("init")
+        .args(args)
+        .env("BDDKIT_PLUGIN_REGISTRY", format!("{github}/registry.yaml"))
+        .env("BDDKIT_GITHUB_URL", github)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env_remove("BDDKIT_CONFIG")
+        .env_remove("BDDKIT_DIR")
+        .env_remove("CI")
+        .stdin(std::process::Stdio::null())
+        .current_dir(dir)
+        .output()
+        .expect("run bddkit")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugins_go_to_the_chosen_layer() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+
+    let user = temp("init-user");
+    // The echo fixture is `shared` and refuses a run with concurrency 8.
+    let out = init(&user, &github, &["--plugin", "echo", "--parallel", "false"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(user.join("xdg-config/bddkit/plugins.yaml").is_file());
+    assert!(!user.join(".bddkit").exists());
+
+    let project = temp("init-project");
+    let out = init(
+        &project,
+        &github,
+        &[
+            "--plugin",
+            "echo",
+            "--layer",
+            "project",
+            "--parallel",
+            "false",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(project.join(".bddkit/plugins.yaml").is_file());
+    assert!(!project.join("xdg-config").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_plugin_install_keeps_the_config_and_exits_1() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("init-failed");
+
+    let out = init(&dir, &github, &["--plugin", "nosuch", "--plugin", "echo"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("nosuch"), "{}", text(&out));
+    assert!(dir.join("bddkit.yaml").is_file());
+    // The failure stopped nobody else.
+    assert!(dir.join("xdg-config/bddkit/plugins.yaml").is_file());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

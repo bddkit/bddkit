@@ -60,6 +60,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 png = "0.18.1"
 image-webp = "0.2.4"
 indicatif = "0.18"
+dialoguer = { version = "0.12", default-features = false }
 webp = { version = "0.3.1", default-features = false }
 
 # Windows cannot rename over its own running executable; `bddkit upgrade` asks

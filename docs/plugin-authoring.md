@@ -490,6 +490,8 @@ Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the 
 
 To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"2": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand.
 
+`bddkit init` offers every plugin in the index as a checklist item with its `description`, so the index description is your plugin's pitch.
+
 ## 8. Footguns
 
 **`<<null>>` arrives as a real NUL byte.** bddkit's SQL-NULL sentinel is `"\u{0}__bddkit_null__\u{0}"`. JSON escapes control characters, so the payload the host sends is clean ASCII — but after your `serde_json` parse, that argument is a Rust `String` **containing two literal NUL bytes**. `CString::new(arg)` on it returns `Err(NulError)`. Any string of yours that becomes a `CString` — a reply, a path, an argument to a C library — must handle it. The fixture's `out` shows the pattern: `CString::new(s).unwrap_or_else(|_| CString::new("{\"ok\":false,\"error\":\"NUL in reply\"}").expect("literal"))`. Deciding that `<<null>>` means something in *your* domain is your call; crashing on it is not.

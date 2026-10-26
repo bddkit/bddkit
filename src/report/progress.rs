@@ -5,9 +5,16 @@ use std::io::{IsTerminal, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A person at a terminal: stderr is one and `CI` is unset or empty. The only
-/// definition of it, so every command that draws or asks agrees.
+/// definition of it, so every command that draws agrees.
 pub fn interactive() -> bool {
     std::io::stderr().is_terminal() && std::env::var_os("CI").is_none_or(|v| v.is_empty())
+}
+
+/// A person who can answer a question: `interactive`, and stdin is a terminal
+/// too. What `init` and the telemetry question ask on; a command that only
+/// draws never reads stdin and keeps `interactive`.
+pub fn can_prompt() -> bool {
+    interactive() && std::io::stdin().is_terminal()
 }
 
 /// At most two stages, numbered over the ones that run. Drawn at most ten times
