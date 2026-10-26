@@ -18,6 +18,7 @@ mod feature;
 mod hawk;
 mod http;
 mod include;
+mod init;
 mod json;
 mod macros;
 mod options;
@@ -68,6 +69,8 @@ enum Command {
     Run(RunArgs),
     /// Show the steps this binary understands
     Steps(StepsArgs),
+    /// Set up a new suite: answer a few questions, or pass flags
+    Init(init::InitArgs),
     /// Check a suite's config, and with --live probe what it talks to
     Doctor(DoctorArgs),
     /// Render an event stream (`run --events`) as a report
@@ -787,6 +790,7 @@ async fn main() {
     let (result, nothing_happened) = match cli.command {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
+        Command::Init(args) => (init::command(args).await, "nothing written"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Report(args) => (report_command(args).await, "nothing written"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
