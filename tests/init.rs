@@ -359,7 +359,7 @@ fn an_init_that_ends_with_yes_sends_one_init_payload() {
 #[test]
 fn an_init_answered_no_or_not_asked_sends_nothing() {
     for (name, flags) in [("no", vec!["--telemetry", "false"]), ("unanswered", vec![])] {
-        let dir = temp(&format!("telemetry-{name}"));
+        let dir = temp(&format!("telemetry-answer-{name}"));
         let mut args = vec!["--api-url", "http://127.0.0.1:8080"];
         args.extend(flags);
         let out = telemetry_init(&dir, &args, &[]);
