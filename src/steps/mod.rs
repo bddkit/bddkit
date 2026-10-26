@@ -974,13 +974,9 @@ impl Registry {
         std::borrow::Cow::Owned(shown)
     }
 
-    /// Every text a macro body carries: its steps and their docstrings.
-    pub fn macro_texts(&self) -> impl Iterator<Item = &str> {
-        self.macros.iter().flat_map(|definition| {
-            definition.body.iter().flat_map(|step| {
-                std::iter::once(step.text.as_str()).chain(step.docstring.as_deref())
-            })
-        })
+    /// The macro definitions, with their bodies, in declaration order.
+    pub fn macros(&self) -> &[MacroDef] {
+        &self.macros
     }
 
     pub fn macro_def(&self, index: usize) -> &MacroDef {

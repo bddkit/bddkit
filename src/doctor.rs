@@ -385,6 +385,9 @@ fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins,
     }
 }
 
+/// Hint names and the `file:line` places they were found (spec §7.10).
+type Unmarked = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
 /// The two stages that read the feature files: every step matched against the
 /// registry, and the scheduling tags `run` parses after it. The files are
 /// discovered and loaded once for both.
@@ -404,15 +407,15 @@ fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins,
 /// instance off. `run` accepts that config and fails in the scenario, because
 /// a `--tag` may keep the scenario out; `doctor` applies no filter, so here
 /// the failure is certain and is reported as one.
-/// Returns the names of the `<<…>>` slots that look sensitive and carry no
-/// privacy word, for the `privacy` row.
+/// Returns the `<<…>>` slots that look sensitive and carry no privacy word,
+/// each with the places it was found, for the `privacy` row.
 fn check_features(
     report: &mut Report,
     cfg: &config::Config,
     registry: Result<&crate::steps::Registry, &'static str>,
     plugins: Option<&crate::plugin::Plugins>,
     words: &[String],
-) -> std::collections::BTreeSet<String> {
+) -> Unmarked {
     let paths = match feature::discover(&cfg.paths) {
         Ok(paths) => paths,
         Err(error) => {
@@ -545,9 +548,10 @@ fn unmarked_names(
     loaded: &[std::sync::Arc<feature::LoadedFeature>],
     registry: Option<&crate::steps::Registry>,
     words: &[String],
-) -> std::collections::BTreeSet<String> {
-    let mut texts: Vec<&str> = Vec::new();
+) -> Unmarked {
+    let mut texts: Vec<crate::privacy::Scanned> = Vec::new();
     for lf in loaded {
+        let file = feature::display_path(&lf.path);
         let steps = lf
             .feature
             .background
@@ -562,14 +566,53 @@ fn unmarked_names(
             )
             .chain(lf.scenarios().flat_map(|sc| sc.scenario.steps.iter()));
         for step in steps {
-            texts.push(&step.value);
-            texts.extend(step.docstring.as_deref());
+            // A docstring or table cell is reported at its step's line.
+            let place = format!("{file}:{}", step.position.line);
+            texts.push((place.clone(), &step.value, &[]));
+            texts.extend(
+                step.docstring
+                    .as_deref()
+                    .map(|d| (place.clone(), d, &[][..])),
+            );
             if let Some(table) = &step.table {
-                texts.extend(table.rows.iter().flatten().map(String::as_str));
+                texts.extend(
+                    table
+                        .rows
+                        .iter()
+                        .flatten()
+                        .map(|cell| (place.clone(), cell.as_str(), &[][..])),
+                );
             }
         }
     }
-    texts.extend(registry.into_iter().flat_map(|r| r.macro_texts()));
+    // A macro body has no line of its own: it is found at its definition.
+    let macros = registry.map_or(&[][..], |r| r.macros());
+    // Built first: `texts` borrows these, so they must outlive the loop below.
+    let marked: Vec<Vec<String>> = macros
+        .iter()
+        .map(|definition| {
+            let params = definition.compiled.params.iter();
+            params
+                .filter(|p| p.ty.secret)
+                .map(|p| p.name.clone())
+                .collect()
+        })
+        .collect();
+    for (definition, marked) in macros.iter().zip(&marked) {
+        let place = format!(
+            "{}:{}",
+            feature::display_path(&definition.source),
+            definition.line
+        );
+        for step in &definition.body {
+            texts.push((place.clone(), &step.text, marked));
+            texts.extend(
+                step.docstring
+                    .as_deref()
+                    .map(|d| (place.clone(), d, &marked[..])),
+            );
+        }
+    }
     crate::privacy::unmarked_names(texts, words)
 }
 
@@ -604,7 +647,7 @@ fn push_evidence(report: &mut Report, cfg: &config::Config, stream: bool) {
 fn push_privacy(
     report: &mut Report,
     privacy: &anyhow::Result<crate::privacy::Privacy>,
-    unmarked: &std::collections::BTreeSet<String>,
+    unmarked: &Unmarked,
 ) {
     match privacy {
         Ok(privacy) => {
@@ -617,11 +660,13 @@ fn push_privacy(
                 privacy.fields.join(", "),
             );
             if !unmarked.is_empty() {
-                let names: Vec<&str> = unmarked.iter().map(String::as_str).collect();
-                detail.push_str(&format!(
-                    "\nlook sensitive, and nothing marks them as secret (no privacy word in the name): {}",
-                    names.join(", ")
-                ));
+                detail.push_str(
+                    "\nlook sensitive, and nothing marks them as secret (no privacy word in the name, no `secret` parameter of that name):",
+                );
+                for (name, places) in unmarked {
+                    let places: Vec<&str> = places.iter().map(String::as_str).collect();
+                    detail.push_str(&format!("\n  {name} — {}", places.join(", ")));
+                }
             }
             report.push("privacy", None, Status::Ok, &detail);
         }
