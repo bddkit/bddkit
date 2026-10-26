@@ -3699,6 +3699,93 @@ fn scenario_started_carries_the_tags_the_filter_saw() {
     assert_eq!(tags("Plain one"), serde_json::json!([]), "always present");
 }
 
+#[test]
+fn a_row_carries_the_tags_of_its_examples_block() {
+    let cfg = write_events_project(
+        "examples-tags",
+        "",
+        &[(
+            "a.feature",
+            "@f\nFeature: Outline\n  @r\n  Rule: R\n    @s @slow\n    Scenario Outline: Row <n>\n      Given set variable \"a\" to \"<n>\"\n\n      @slow @fast\n      Examples:\n        | n |\n        | 1 |\n        | 2 |\n\n      Examples:\n        | n |\n        | 3 |\n",
+        )],
+        None,
+    );
+    let report = cfg.with_file_name("cucumber.json");
+    let (out, stream, _) = run_with_events(
+        &cfg,
+        &["--tag", "fast", "--cucumber-json", report.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let started = of_type(&stream, "scenario_started");
+    let names: Vec<_> = started
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Row <n> [1]", "Row <n> [2]"],
+        "only the tagged block"
+    );
+    // Scenario, rule, feature, then the block; `@slow` is written twice, kept once.
+    assert_eq!(
+        started[0]["tags"],
+        serde_json::json!(["@s", "@slow", "@r", "@f", "@fast"])
+    );
+
+    let json: Value = serde_json::from_slice(&std::fs::read(&report).expect("report")).unwrap();
+    let tags: Vec<_> = json[0]["elements"][0]["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tags, ["@s", "@slow", "@r", "@f", "@fast"]);
+
+    // A tag on the outline still selects every row; the untagged block's row
+    // does not carry the other block's tags.
+    let (_, stream, _) = run_with_events(&cfg, &["--tag", "s"]);
+    let started = of_type(&stream, "scenario_started");
+    assert_eq!(started.len(), 3, "{started:?}");
+    assert_eq!(
+        started[2]["tags"],
+        serde_json::json!(["@s", "@slow", "@r", "@f"])
+    );
+}
+
+#[test]
+fn an_examples_tag_alone_selects_its_rows_and_their_rules_background() {
+    let cfg = write_events_project(
+        "examples-tags-rule-background",
+        "",
+        &[(
+            "a.feature",
+            "Feature: Outline\n  Rule: R\n    Background:\n      Given no such step\n\n    Scenario Outline: Row\n      Given set variable \"a\" to \"<n>\"\n\n      @only\n      Examples:\n        | n |\n        | 1 |\n",
+        )],
+        None,
+    );
+    let (out, _, _) = run_with_events(&cfg, &["--tag", "only"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no such step"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn validation_skips_the_rows_an_examples_tag_left_out() {
+    let cfg = write_events_project(
+        "examples-tags-validation",
+        "",
+        &[(
+            "a.feature",
+            "Feature: Outline\n  Scenario Outline: Row\n    Given <step>\n\n    @fast\n    Examples:\n      | step |\n      | set variable \"a\" to \"1\" |\n\n    Examples:\n      | step |\n      | no such step |\n",
+        )],
+        None,
+    );
+    let (out, _, _) = run_with_events(&cfg, &["--tag", "fast"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_secret_in_a_description_is_masked_in_the_stream() {
     let base = common::spawn().await;

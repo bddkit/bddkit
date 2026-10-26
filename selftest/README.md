@@ -25,6 +25,8 @@ cargo build
 | `features/privacy.feature` | what must stay out of the console, the JUnit report and the stream |
 | `features/failure_classes.feature` | the class of each failure in the summary, the JUnit `type` and the stream |
 | `features/annotations.feature` | the order, numbering and comments of `section`, `step_disabled` and `comment`, and what a description keeps, in the stream |
+| `features/examples_tags.feature` | the tags an outline row carries from its `Examples:` block, in `--tag` and in the stream |
+| `fixtures/examples_tags/` | an outline with two `Examples:` blocks, one tagged, and the jq filter that prints each started scenario with its tags |
 | `fixtures/masking/` | a project whose six scenarios fail on purpose, with a config per variation (default, `words_only`, a committed `reveal`) |
 | `fixtures/annotations/` | a project with one scenario that fails halfway, and the jq filters (`order`, `numbers`, `comments`, `description`) that put its stream on one line |
 | `out/` | what the nested run wrote; git-ignored |
