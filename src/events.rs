@@ -514,12 +514,15 @@ impl Trace {
         self.modes.clear();
         self.marked = false;
         self.tagged = lf
-            .effective_tags(sc)
+            .effective_tags(sc, ex.examples_line)
             .iter()
             .any(|(name, _)| *name == "evidence");
         *self.held() = Held::default();
         (self.started, self.live, self.deferred) = (0, 0, 0);
-        let tags = lf.effective_tags(sc).into_iter().map(|(name, _)| name);
+        let tags = lf
+            .effective_tags(sc, ex.examples_line)
+            .into_iter()
+            .map(|(name, _)| name);
         let mut fields = json!({
             "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(&ex.name),
             "line": ex.line, "tags": self.tags(tags),

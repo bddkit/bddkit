@@ -152,7 +152,7 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
     // A rule's Background, like a filtered-out scenario, only counts when
     // something under that rule will run.
     for rule in &lf.feature.rules {
-        if !rule.scenarios.iter().any(|sc| filter.matches(&sc.tags)) {
+        if !rule.scenarios.iter().any(|sc| filter.selects_any(sc)) {
             continue;
         }
         for (text, line, doc, table) in rule.background.iter().flat_map(from_background) {
@@ -160,10 +160,10 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
         }
     }
     for sc in lf.scenarios().map(|r| r.scenario) {
-        if !filter.matches(&sc.tags) {
-            continue;
-        }
         for ex in expand_outlines(sc) {
+            if !filter.selects_row(sc, ex.examples_line) {
+                continue;
+            }
             for st in ex.steps {
                 push(st.text, st.line, st.docstring.is_some(), st.table);
             }

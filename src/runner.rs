@@ -865,11 +865,11 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
 
     for scenario_ref in lf.scenarios() {
         let ScenarioRef { scenario: sc, rule } = scenario_ref;
-        if !ctx.filter.matches(&sc.tags) {
-            continue;
-        }
         let background = lf.background_steps(rule);
         for ex in expand_outlines(sc) {
+            if !ctx.filter.selects_row(sc, ex.examples_line) {
+                continue;
+            }
             world.reset_scenario();
             // The FFI half of the scenario reset. It is here rather than in
             // World::reset_scenario because the call is blocking and this is
@@ -981,7 +981,10 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                 name: world.redactor.mask(&ex.name),
                 line: ex.line,
                 description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
-                tags: report_tags(&world.redactor, lf.effective_tags(scenario_ref)),
+                tags: report_tags(
+                    &world.redactor,
+                    lf.effective_tags(scenario_ref, ex.examples_line),
+                ),
                 failure,
                 failure_kind,
                 steps,

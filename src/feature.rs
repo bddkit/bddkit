@@ -68,6 +68,23 @@ impl TagFilter {
                 .iter()
                 .any(|t| self.wanted.iter().any(|w| w == strip_at(t)))
     }
+
+    /// Whether any of the scenario's rows can be selected: the scenario's own
+    /// tags (feature and rule merged in) or those of any of its `Examples` blocks.
+    pub fn selects_any(&self, sc: &gherkin::Scenario) -> bool {
+        self.matches(&sc.tags) || sc.examples.iter().any(|ex| self.matches(&ex.tags))
+    }
+
+    /// Whether the row from the `Examples` block on `examples_line` (`None` for
+    /// a plain scenario) is selected: the scenario's tags or its block's.
+    pub fn selects_row(&self, sc: &gherkin::Scenario, examples_line: Option<usize>) -> bool {
+        self.matches(&sc.tags)
+            || sc
+                .examples
+                .iter()
+                .filter(|ex| Some(ex.position.line) == examples_line)
+                .any(|ex| self.matches(&ex.tags))
+    }
 }
 
 /// A leading `@` is optional on both sides: `--tag smoke` and `--tag @smoke`
@@ -410,13 +427,19 @@ impl LoadedFeature {
     }
 
     /// What a scenario is tagged with as the filter sees it: its own tags, then
-    /// its rule's, then the feature's — the order `from_text` merges them in. A name
-    /// written at two levels is listed once, with the line of the first.
-    pub fn effective_tags(&self, sc: ScenarioRef<'_>) -> Vec<(&str, usize)> {
+    /// its rule's, then the feature's — the order `from_text` merges them in — then
+    /// those of the `Examples` block at `examples_line`, for a row. A name written
+    /// at two levels is listed once, with the line of the first.
+    pub fn effective_tags(
+        &self,
+        sc: ScenarioRef<'_>,
+        examples_line: Option<usize>,
+    ) -> Vec<(&str, usize)> {
         let lines = [
             Some(sc.scenario.position.line),
             sc.rule.map(|r| r.position.line),
             Some(self.feature.position.line),
+            examples_line,
         ];
         let mut seen = BTreeSet::new();
         lines
@@ -428,10 +451,9 @@ impl LoadedFeature {
             .collect()
     }
 
-    /// Whether the file has at least one scenario passing the filter. Expanding
-    /// a Scenario Outline does not change tags, so this can be checked before that.
+    /// Whether the file has at least one scenario, or outline row, passing the filter.
     pub fn has_selected_scenario(&self, filter: &TagFilter) -> bool {
-        self.scenarios().any(|sc| filter.matches(&sc.scenario.tags))
+        self.scenarios().any(|sc| filter.selects_any(sc.scenario))
     }
 }
 
@@ -1211,7 +1233,7 @@ Feature: F
         let lf = LoadedFeature::from_text(PathBuf::from("t.feature"), src).unwrap();
         let sc = lf.scenarios().next().unwrap();
         let tags: Vec<_> = lf
-            .effective_tags(sc)
+            .effective_tags(sc, None)
             .into_iter()
             .map(|(n, l)| (n.to_string(), l))
             .collect();
