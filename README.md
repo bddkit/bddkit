@@ -89,9 +89,9 @@ bddkit init
 
 Then it writes `bddkit.yaml` (a comment above each key), `features/example.feature` (one scenario that passes without a network, with a commented-out request to your API that the report shows as a disabled step), the missing lines of `.gitignore` (`.bddkit/*.local.yaml` and `.env.local`, only inside a git work tree), installs the plugins one at a time, prints for each plugin group that needs a resource the `bddkit resource add …` command that declares it, and ends with the `doctor` report. A plugin that fails to install does not stop the others or undo the config, and neither does an environment reference such as `${BDDKIT_DB_DSN}` that is not exported yet: the closing `doctor` report fails on it (exit `1`) until it is. `init` never overwrites a config: when `bddkit.yaml` (or `bddkit.yml`, or the file `--config` names) exists it refuses with exit `2` and points at `bddkit resource add` and `bddkit plugin install`, which extend a suite.
 
-`--layer` cannot be combined with `--bddkit-dir` / `$BDDKIT_DIR`, which replaces every layer with one directory. Without a terminal (stdin or stderr is not one, or `CI` is set) nothing is asked and every answer is a flag, the same flags that skip a question in an interactive run: `--api-url <url>` or `--no-api`, `--db none|postgres|mysql|mariadb` with `--dsn <dsn>`, `--plugin <name>` (repeatable) with `--layer user|project`, `--parallel true|false` and `--telemetry true|false`. Without flags that means no API, no database, no plugins and `--parallel true`; without `--telemetry` no `telemetry` key is written, so the decision stays with each person who runs the suite. `--dsn` without `--db`, `--db postgres|mysql|mariadb` without `--dsn` and `--layer` without `--plugin` are refused with exit `2` rather than ignored. Exit codes: `0` everything written and `doctor` clean, `1` written but a plugin failed to install or `doctor` found something, `2` refused or an answer missing.
+`--layer` cannot be combined with `--bddkit-dir` / `$BDDKIT_DIR`, which replaces every layer with one directory. Without a terminal (stdin or stderr is not one, or a CI system's variable is set, see [Telemetry](#telemetry)) nothing is asked and every answer is a flag, the same flags that skip a question in an interactive run: `--api-url <url>` or `--no-api`, `--db none|postgres|mysql|mariadb` with `--dsn <dsn>`, `--plugin <name>` (repeatable) with `--layer user|project`, `--parallel true|false` and `--telemetry true|false`. Without flags that means no API, no database, no plugins and `--parallel true`; without `--telemetry` no `telemetry` key is written, so the decision stays with each person who runs the suite. `--dsn` without `--db`, `--db postgres|mysql|mariadb` without `--dsn` and `--layer` without `--plugin` are refused with exit `2` rather than ignored. Exit codes: `0` everything written and `doctor` clean, `1` written but a plugin failed to install or `doctor` found something, `2` refused or an answer missing.
 
-The `telemetry` key is written by `init` and nothing reads it yet: usage counts are not sent by any release so far.
+The `telemetry` key `init` writes is the suite's decision about anonymous usage counts, see [Telemetry](#telemetry).
 
 ### The shipped example suite
 
@@ -497,6 +497,43 @@ What masking does not do:
 
 **Upgrading.** Failure dumps change for every existing suite: the values of `Authorization`, `Cookie` and `Set-Cookie`, and of any JSON key, form field or query parameter with `password`, `secret` or `token` as a word, are now `***`. Whoever relied on reading them there needs `--reveal`, or a `fields_only` list of their own.
 
+## Telemetry
+
+bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which kinds of resources suites use (APIs, which database engines, SRP, which official plugins) and where the steps spend their time.
+
+**Nothing is sent yet.** This release decides, asks and records: while telemetry is on, each command writes the payload it would send to `telemetry-last.json` in your user layer (`bddkit telemetry show` prints it), and to the file `BDDKIT_TELEMETRY_LOG` names if you set one. Sending starts in a later release, and the question below says what it will send.
+
+**What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had, how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many APIs, SRP configurations and databases of which engine, how many instances of which official plugin, and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
+
+**What is never in it.** Addresses, host names, URLs, DSNs, file paths; the names of feature files, features, scenarios, tags, resources, connections, environments, macros and private plugins; step text, variable values, request or response bodies, headers, SQL; any config value; your user name, host name, repository or git remote; error and panic messages. There is no identifier of any kind: nothing links two runs.
+
+**Who decides.** One boolean, off until someone answers yes, set by the first of these that has an opinion:
+
+| Source | Turns it off | Turns it on |
+|---|---|---|
+| flag, on `run` and `doctor` | `--telemetry false` | `--telemetry true` |
+| environment | `BDDKIT_TELEMETRY=0` (or `false`) | `BDDKIT_TELEMETRY=1` (or `true`) |
+| environment, the cross-tool convention | `DO_NOT_TRACK=1` | |
+| the suite's config | `telemetry: false` in `bddkit.yaml` | `telemetry: true` |
+| the `.bddkit/` chain | `enabled: false` in `telemetry.yaml` | `enabled: true` |
+
+`BDDKIT_TELEMETRY` beats `DO_NOT_TRACK` when both are set. An empty variable is unset, and a value of `BDDKIT_TELEMETRY` that is neither of the four spellings counts as off. The suite's own key is the team's decision and its CI follows it, and it beats every `telemetry.yaml`. Among those files a later layer beats an earlier one, so `/etc/bddkit` (the shared layer) is a machine's or a CI image's default, which a person's own answer in the user layer overrides. A config that cannot be found, read or parsed means off, unless the flag or `BDDKIT_TELEMETRY` says on: a team that turned it off in `bddkit.yaml` must not report a run whose config it just broke. `plugin`, `report` and `upgrade` need no config, so for them a missing one is not a reason to stay silent, but one that exists and cannot be read is.
+
+**The question.** When nothing has decided, an interactive `run` or `doctor` asks once, at the very end, after the summary: a `Yes`/`No` list with nothing highlighted, so a yes takes a deliberate move. Esc, `q`, Ctrl-C or end of input answer nothing and the question comes back next time; the exit code is the run's whatever happens. On a terminal that cannot draw the list (`TERM=dumb` or unset) it is a `[y/n]` line with no default. It is never asked in CI (any of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `JENKINS_URL`, `BUILDKITE`, `CIRCLECI`, `TF_BUILD`, `TEAMCITY_VERSION`, `BITBUCKET_BUILD_NUMBER` set), without a terminal, or after a run that was refused before it started. The answer is stored in the user layer's `telemetry.yaml`, so it is yours alone and never edits a committed file. Apart from this question `run` and `doctor` print nothing about telemetry.
+
+**Commands.**
+
+```bash
+bddkit telemetry status             on or off, which source decided, and where a payload would go
+bddkit telemetry show               the last payload recorded on this machine
+bddkit telemetry off                for this user (telemetry.yaml in the user layer)
+bddkit telemetry on --layer shared  for every user of this machine (/etc/bddkit)
+```
+
+`on` and `off` say so when a source above the file still decides otherwise. `bddkit doctor` has a `telemetry` row with the same wording (`off (decided by DO_NOT_TRACK)`); it is always `ok`. These commands send nothing and never ask.
+
+**Where the files live.** `telemetry.yaml` and `telemetry-last.json` are in the user layer (`$XDG_CONFIG_HOME/bddkit`, else `~/.config/bddkit`; `%LOCALAPPDATA%\bddkit` on Windows), or in the one directory `--bddkit-dir` / `$BDDKIT_DIR` names. Neither belongs in a repository. The endpoint is one constant in the binary, which a distribution can replace at build time with `BDDKIT_TELEMETRY_ENDPOINT` (empty builds a binary that never sends) and a private collector can replace at run time with `BDDKIT_TELEMETRY_URL`; a debug build sends only to the latter.
+
 ## Databases
 
 PostgreSQL, MySQL 8 and MariaDB, from **MariaDB 10.5** — the release that adds `RETURNING`, which bddkit uses to read a generated key back. Nothing refuses an older MariaDB at startup; it connects, and the first insert into a table with a primary key fails with a syntax error from the server. The engine comes from the DSN scheme (`postgres://`, `mysql://`), and because MySQL and MariaDB share one scheme they are told apart by a single `SELECT VERSION()` when the pool is built. Every DB step is spelled the same on all three — `examples/db-features-mysql/db.feature` is one file that passes unchanged against both MySQL and MariaDB.
@@ -605,6 +642,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | The same on MySQL and MariaDB | `examples/db-features-mysql/db.feature` |
 | SRP handshake, Hawk signing | `tests/features/` |
 | Hiding secrets, and the design behind it | the Privacy section above, `docs/events-design.md` section 7 |
+| What the usage counts hold, field by field | the Telemetry section above, `docs/telemetry.md` |
 | bddkit tested by bddkit (masking, end to end) | `selftest/README.md` |
 | Config schema | `src/config.rs` |
 | Writing a plugin | `docs/plugin-authoring.md`, `tests/fixtures/echo-plugin/` |
