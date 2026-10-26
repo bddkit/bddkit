@@ -345,7 +345,7 @@ privacy:
 
 ### 7.10 `doctor`
 
-**Decided.** `doctor` points at names that look sensitive and carry no privacy word: `password`, `token` or `key` as a word of the name. This list only hints; it never changes what is masked.
+**Decided.** `doctor` points at names that look sensitive and carry no privacy word: `password`, `token` or `key` as a word of the name. A slot in a macro body whose name is a `secret`-typed parameter of that macro is not listed, since the type already marks it. Each name is listed with the `file:line` of every step that holds it (a macro body at the macro's definition line). This list only hints; it never changes what is masked.
 
 **Detail.** The check reads the `<<…>>` slots in feature files and macro bodies. It is one `privacy` row with status `ok` and the names in its detail — `doctor` has no warning status, and a heuristic must not fail a suite over `primary_key`.
 

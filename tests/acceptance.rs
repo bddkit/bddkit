@@ -5869,9 +5869,9 @@ fn doctor_lists_sensitive_looking_names_without_failing() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "never a failure: {stdout}");
     let hint = stdout
-        .lines()
-        .find(|line| line.contains("look sensitive"))
-        .unwrap_or_else(|| panic!("no hint in: {stdout}"));
+        .split_once("look sensitive")
+        .unwrap_or_else(|| panic!("no hint in: {stdout}"))
+        .1;
     assert!(
         hint.contains("session_token") && hint.contains("primary_key"),
         "{hint}"
@@ -5881,6 +5881,40 @@ fn doctor_lists_sensitive_looking_names_without_failing() {
         !hint.contains("token_secret") && !hint.contains("monkey"),
         "{hint}"
     );
+}
+
+#[test]
+fn doctor_hint_skips_a_secret_macro_parameter_and_says_where_it_found_the_rest() {
+    let feature = "Feature: f\n  Scenario: s\n    Given I log in as \"ann\" with password \"x\"\n    And I log in plain as \"ann\" with password \"x\"\n";
+    let cfg = masking_project("mask-doctor-macro", "http://127.0.0.1:1/", feature, "", "");
+    let dir = cfg.parent().expect("project dir").to_path_buf();
+    let macros = dir.join("macros.yaml");
+    std::fs::write(
+        &macros,
+        r#"- step: 'I log in as "{user}" with password "{password:secret}"'
+  do:
+    - set variable "body" to "<<user>>:<<password>>"
+- step: 'I log in plain as "{user}" with password "{password}"'
+  do:
+    - set variable "body" to "<<user>>:<<password>>"
+"#,
+    )
+    .expect("write macros");
+    let mut config = std::fs::read_to_string(&cfg).expect("config");
+    config.push_str(&format!("macro_paths: [{}]\n", macros.display()));
+    std::fs::write(&cfg, config).expect("write config");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&cfg)
+        .output()
+        .expect("run doctor");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.contains("password —"))
+        .unwrap_or_else(|| panic!("no located hint in: {stdout}"));
+    assert!(line.contains("macros.yaml:4"), "{line}");
+    assert!(!line.contains("macros.yaml:1"), "{line}");
 }
 
 /// `Show all variables` prints a name and a value, so the name decides: a value

@@ -7,7 +7,7 @@ use crate::vars::NULL_SENTINEL;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 /// What a masked value is replaced with. Not configurable (spec §7.8).
@@ -475,22 +475,33 @@ pub fn mask_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
 /// Words that make a name look sensitive although no privacy word is in it.
 const HINT_WORDS: &[&str] = &["password", "token", "key"];
 
+/// A text to scan for `<<name>>` slots: where it is written (`file:line`) and
+/// the names a `secret`-typed parameter already marks inside it.
+pub type Scanned<'a> = (String, &'a str, &'a [String]);
+
 /// The `<<name>>` slots in `texts` whose name has a hint word in it (one of its
-/// `_`-separated words) and no privacy word: they probably hold a secret
-/// nothing masks. A hint only; it changes nothing that is masked.
+/// `_`-separated words), no privacy word and no `secret` parameter of that
+/// name: they probably hold a secret nothing masks. Each name maps to the
+/// places it was found. A hint only; it changes nothing that is masked.
 pub fn unmarked_names<'a>(
-    texts: impl IntoIterator<Item = &'a str>,
+    texts: impl IntoIterator<Item = Scanned<'a>>,
     words: &[String],
-) -> BTreeSet<String> {
+) -> BTreeMap<String, BTreeSet<String>> {
     static SLOT_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"<<([^\W\d]\w*)>>").expect("constant regex")
     });
-    let mut names = BTreeSet::new();
-    for text in texts {
+    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (place, text, marked) in texts {
         for captures in SLOT_NAME.captures_iter(text) {
             let name = &captures[1];
-            if variable_is_sensitive(name, HINT_WORDS) && !variable_is_sensitive(name, words) {
-                names.insert(name.to_string());
+            if variable_is_sensitive(name, HINT_WORDS)
+                && !variable_is_sensitive(name, words)
+                && !marked.iter().any(|m| m == name)
+            {
+                names
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(place.clone());
             }
         }
     }
@@ -1321,10 +1332,31 @@ mod tests {
             "I use <<session_token>> and <<API_KEY>> and <<primary_key>>",
             "but not <<token_secret>>, <<monkey>>, <<unique()>> or <<name>>",
         ];
-        let names = unmarked_names(texts, &words);
+        let names = unmarked_names(
+            texts.map(|t| ("a.feature:3".to_string(), t, &[][..])),
+            &words,
+        );
         assert_eq!(
-            names.into_iter().collect::<Vec<_>>(),
+            names.keys().collect::<Vec<_>>(),
             ["API_KEY", "primary_key", "session_token"]
+        );
+    }
+
+    #[test]
+    fn a_secret_typed_parameter_is_not_listed_and_a_text_one_is_found_where_it_is() {
+        let words = ["secret".to_string()];
+        let marked = ["password".to_string()];
+        let body = r#"{"password": "<<password>>", "token": "<<token>>"}"#;
+        let texts = [
+            ("m.yaml:2".to_string(), body, &marked[..]),
+            ("m.yaml:9".to_string(), "<<password>>", &[][..]),
+            ("b.feature:5".to_string(), "<<token>> <<token>>", &[][..]),
+        ];
+        let names = unmarked_names(texts, &words);
+        assert_eq!(names["password"].iter().collect::<Vec<_>>(), ["m.yaml:9"]);
+        assert_eq!(
+            names["token"].iter().collect::<Vec<_>>(),
+            ["b.feature:5", "m.yaml:2"]
         );
     }
 
