@@ -2,7 +2,7 @@
 
 What `bddkit` counts when telemetry is on, field by field. The tester's view — who decides, the question, the commands — is the README's Telemetry section; the code is `src/telemetry.rs` and `src/telemetry/`. A field is added only with a new schema number, and every change to this file is a changelog entry.
 
-The payload is a closed struct of numbers, booleans and names from bddkit's own vocabulary. No field can hold text from a suite, so no masking is involved. The next release sends it to `POST <endpoint>/v1/run`; this one only records it (`bddkit telemetry show`, `BDDKIT_TELEMETRY_LOG`).
+The payload is a closed struct of numbers, booleans and names from bddkit's own vocabulary. No field can hold text from a suite, so no masking is involved. It is recorded (`bddkit telemetry show`, `BDDKIT_TELEMETRY_LOG`) and sent once to `POST <endpoint>/v1/run`; the timeouts and failure rules are in the README's Telemetry section.
 
 ## Every payload
 

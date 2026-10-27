@@ -689,7 +689,7 @@ pub async fn command(args: InitArgs) -> Result<i32> {
             get: crate::privacy::process_env,
         };
         let payload = init_payload(&answers, interactive, code, started.elapsed(), &acted);
-        telemetry::command::record_if_on(Some(&setting), &payload);
+        telemetry::command::record_if_on(Some(&setting), &payload).await;
     }
     Ok(code)
 }
