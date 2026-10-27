@@ -5,7 +5,7 @@
 
 use super::counters::Counters;
 use super::payload::{
-    Command, Features, Payload, PrivacyFlags, Resources, RunFields, ScenarioMs, Stage,
+    Command, Failures, Features, Payload, PrivacyFlags, Resources, RunFields, ScenarioMs, Stage,
 };
 use super::{Decision, Ending};
 use crate::dirs::Layer;
@@ -33,6 +33,7 @@ pub struct RunProbe {
     pub counters: Option<Arc<Counters>>,
     files: u64,
     failed: u64,
+    failures: Failures,
     durations: Vec<Duration>,
 }
 
@@ -41,6 +42,7 @@ impl RunProbe {
     pub fn tally(&mut self, results: &[FileResult]) {
         self.files = results.len() as u64;
         self.failed = results.iter().map(|file| file.failed() as u64).sum();
+        self.failures = Failures::of(results);
         self.durations = results
             .iter()
             .flat_map(|file| file.scenarios.iter().map(|s| s.duration))
@@ -55,6 +57,7 @@ impl RunProbe {
             scenarios: self.durations.len() as u64,
             examples: self.counters.as_ref().map_or(0, |c| c.examples()),
             failed: self.failed,
+            failures: self.failures.clone(),
             concurrency: self.concurrency,
             fail_fast: self.fail_fast,
             scenario_ms: ScenarioMs::of(&self.durations),

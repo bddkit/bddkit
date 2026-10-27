@@ -1,4 +1,4 @@
-# Telemetry payload, schema 1
+# Telemetry payload, schema 2
 
 What `bddkit` counts when telemetry is on, field by field. The tester's view — who decides, the question, the commands — is the README's Telemetry section; the code is `src/telemetry.rs` and `src/telemetry/`. A field is added only with a new schema number, and every change to this file is a changelog entry.
 
@@ -8,7 +8,7 @@ The payload is a closed struct of numbers, booleans and names from bddkit's own 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | int | `1` |
+| `schema` | int | `2` (`1` before `failures` was added to `run`) |
 | `bddkit` | string | the version |
 | `os` | string | `linux`, `macos` or `windows` |
 | `arch` | string | `x86_64`, `aarch64`, other values as Rust names them |
@@ -28,6 +28,7 @@ The commands that send a payload are `run`, `doctor`, `report`, `plugin install`
 | `scenarios` | int | scenarios that ran, outline rows counted one each |
 | `examples` | int | of those, outline rows |
 | `failed` | int | scenarios failed |
+| `failures` | object | of those, how many each class of failure ended: `assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`. A scenario ended by a host fault (the clock, the system entropy) has no class and is in `failed` only, so the sum can be below `failed` |
 | `concurrency` | int | the effective worker count |
 | `fail_fast` | bool | |
 | `scenario_ms` | object or `null` | `p50`, `p90`, `max` (nearest rank, in ms) and `buckets`: counts of scenarios under 100 ms, under 1 s, under 10 s, under 60 s, and 60 s and over. `null` when no scenario finished. The durations themselves are not sent |
@@ -86,7 +87,3 @@ Sent only when the answer to the telemetry question is yes (`--telemetry true` o
 | `plugins_failed` | installs that failed |
 | `resources` | what was configured, in the shape of `run`'s `resources` (`plugins` counts the installs that succeeded) |
 | `settings` | `parallel` and `project_layer`: whether the answer differs from the default |
-
-## Not in schema 1
-
-The failure class of a scenario (`assertion`, `transport`, …) is planned for schema 2, after the classes are a product feature in the reports.
