@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/bddkit/bddkit/compare/v0.3.3...v0.3.4) - 2026-10-27
+
+### Added
+
+- *(telemetry)* failures by class on run payloads, schema 2 (bddkit/bddkit#119)
+- *(telemetry)* send the payload, once per command, within 1.5 s (bddkit/bddkit#118)
+- *(telemetry)* decide, ask and record anonymous usage counts (bddkit/bddkit#116)
+- *(init)* bddkit init sets up a suite from questions or flags (bddkit/bddkit#115)
+- *(api)* response header contains/does not contain/matches/does not match steps (bddkit/bddkit#146)
+
+### Fixed
+
+- *(feature)* rows inherit the tags of their Examples block (bddkit/bddkit#139)
+- *(doctor)* privacy hint skips secret macro parameters and says where it found a name (bddkit/bddkit#148)
+
+### Other
+
+- *(telemetry)* README section, docs/telemetry.md, CLAUDE.md gotchas (bddkit/bddkit#116)
+- *(init)* README quick start, plugin index pitch, CLAUDE.md gotcha and module map (bddkit/bddkit#115)
+- Merge pull request #155 from sergeym/fix/issue-148-doctor-secret-param
+- README example no longer calls unique(email) an address (bddkit/bddkit#150)
+
 ## [0.3.3](https://github.com/bddkit/bddkit/compare/v0.3.2...v0.3.3) - 2026-10-25
 
 ### Added
