@@ -1,6 +1,6 @@
 //! Telemetry end to end: the binary runs a small suite and the payload it
-//! would send is read back from `BDDKIT_TELEMETRY_LOG`. Nothing is sent in
-//! this release, so no test needs a collector.
+//! would send is read back from `BDDKIT_TELEMETRY_LOG`. The request itself is
+//! caught by a one-connection collector on a loopback port.
 //!
 //! Every run here is cut off from this machine's own answer, environment and
 //! CI variables: `BDDKIT_DIR` replaces the layer chain with a directory of the
@@ -439,11 +439,12 @@ fn an_interrupted_run_records_nothing() {
             "Feature: held\n  Scenario: s\n    Given I sleep \"10\" seconds\n",
         )],
     );
+    let (url, rx) = collector();
     let events = suite.dir.join("events.ndjson");
     let mut child = suite
         .command(
             &["run", "--telemetry", "true", "--events", "events.ndjson"],
-            &[],
+            &[("BDDKIT_TELEMETRY_URL", &url)],
         )
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -464,6 +465,10 @@ fn an_interrupted_run_records_nothing() {
     assert!(sent.success());
     assert_eq!(child.wait().expect("wait").code(), Some(130));
     assert!(suite.payloads().is_empty());
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err()
+    );
 }
 
 fn stdout(out: &Output) -> String {
@@ -813,4 +818,116 @@ fn concurrency_is_the_effective_worker_count() {
     let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert_eq!(suite.only_payload()["concurrency"], 2);
+}
+
+/// A collector that answers 204 to the first request it gets and hands back
+/// the request line and the body. It lives as long as its thread.
+fn collector() -> (String, std::sync::mpsc::Receiver<(String, Value)>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 4096];
+        let body_at = loop {
+            let n = stream.read(&mut buf).expect("read");
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&raw[..body_at]).to_string();
+        let length: usize = head
+            .lines()
+            .find_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().parse().expect("length"))
+            })
+            .expect("a content-length");
+        while raw.len() < body_at + length {
+            let n = stream.read(&mut buf).expect("read");
+            raw.extend_from_slice(&buf[..n]);
+        }
+        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+        let body = serde_json::from_slice(&raw[body_at..body_at + length]).expect("json body");
+        let _ = tx.send((head.lines().next().unwrap_or("").to_string(), body));
+    });
+    (url, rx)
+}
+
+#[test]
+fn a_run_sends_the_payload_it_recorded_to_the_collector() {
+    let suite = suite("send", "", &[("a.feature", PLAIN)]);
+    let (url, rx) = collector();
+    let out = suite.bddkit(
+        &["run", "--telemetry", "true"],
+        &[("BDDKIT_TELEMETRY_URL", &url)],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let (line, body) = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("one request");
+    assert_eq!(line, "POST /v1/run HTTP/1.1");
+    assert_eq!(body, suite.only_payload());
+}
+
+#[test]
+fn a_blackholed_endpoint_costs_at_most_the_timeout() {
+    let suite = suite("blackhole", "", &[("a.feature", PLAIN)]);
+    // Accepts the connection (the kernel does) and never reads or answers.
+    let hole = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}", hole.local_addr().expect("addr"));
+    let started = std::time::Instant::now();
+    let out = suite.bddkit(
+        &["run", "--telemetry", "true"],
+        &[("BDDKIT_TELEMETRY_URL", &url)],
+    );
+    let took = started.elapsed();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(took < std::time::Duration::from_millis(3500), "{took:?}");
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_while_the_request_is_out_does_not_wait_for_it() {
+    let suite = suite("signal-send", "", &[("a.feature", PLAIN)]);
+    let hole = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}", hole.local_addr().expect("addr"));
+    let mut child = suite
+        .command(
+            &["run", "--telemetry", "true"],
+            &[("BDDKIT_TELEMETRY_URL", &url)],
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    // The request is out once the connection arrives; nobody answers it.
+    hole.set_nonblocking(true).expect("nonblocking");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let _held = loop {
+        match hole.accept() {
+            Ok((held, _)) => break held,
+            Err(_) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the request never connected"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    };
+    let signalled = std::time::Instant::now();
+    let _ = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status();
+    // The run had passed, so its own code is returned, and at once.
+    assert_eq!(child.wait().expect("wait").code(), Some(0));
+    assert!(signalled.elapsed() < std::time::Duration::from_millis(1000));
 }

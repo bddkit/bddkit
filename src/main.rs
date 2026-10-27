@@ -303,7 +303,7 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
     if let Some(command) = telemetry_command {
         let mut payload = telemetry::payload::Payload::new(command, code, started.elapsed());
         payload.plugin = Some(acted.into_inner().expect("acted is never poisoned"));
-        telemetry::command::record_if_on(setting.as_ref(), &payload);
+        telemetry::command::record_if_on(setting.as_ref(), &payload).await;
     }
     Ok(code)
 }
@@ -411,7 +411,7 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
         started.elapsed(),
     );
     payload.upgrade = Some(note);
-    telemetry::command::record_if_on(setting.as_ref(), &payload);
+    telemetry::command::record_if_on(setting.as_ref(), &payload).await;
     Ok(code)
 }
 
@@ -940,13 +940,20 @@ async fn main() {
     match result {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!(
-                "error: {}\n\n{nothing_happened}",
-                privacy::mask_text(&format!("{error:#}"))
-            );
+            print_refusal(&error, nothing_happened);
             std::process::exit(2);
         }
     }
+}
+
+/// The refusal a command ends in. `run` and `report` print it themselves,
+/// before telemetry's request, so the person is not left waiting on the
+/// network for an error that is already known.
+fn print_refusal(error: &anyhow::Error, nothing_happened: &str) {
+    eprintln!(
+        "error: {}\n\n{nothing_happened}",
+        privacy::mask_text(&format!("{error:#}"))
+    );
 }
 
 /// Reads the lock file, loads what it names, and resolves each group's
@@ -1213,7 +1220,13 @@ async fn report_command(args: RenderArgs) -> Result<i32> {
             );
             info.result = if result.is_ok() { "ok" } else { "error" };
             payload.report = Some(info);
-            telemetry::command::record_if_on(setting.as_ref(), &payload);
+            if let Err(error) = &result {
+                print_refusal(error, "nothing written");
+            }
+            telemetry::command::record_if_on(setting.as_ref(), &payload).await;
+            if result.is_err() {
+                std::process::exit(2);
+            }
             result
         },
         (_, code) = interrupts.wait() => {
@@ -1268,7 +1281,13 @@ async fn run(cli: RunArgs) -> Result<i32> {
     let mut probe = telemetry::RunProbe::default();
     let outcome = run_suite(cli, &mut probe).await;
     let code = outcome.as_ref().map_or(2, |code| *code);
+    if let Err(error) = &outcome {
+        print_refusal(error, "run not started");
+    }
     probe.finish(code, started.elapsed(), outcome.is_ok()).await;
+    if outcome.is_err() {
+        std::process::exit(2);
+    }
     outcome
 }
 

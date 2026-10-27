@@ -7,15 +7,15 @@ use crate::dirs::Layer;
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
 
-/// The end of a command that never asks: the payload is recorded when the
-/// decision is on, and nothing else happens. A setting that could not be
+/// The end of a command that never asks: the payload is recorded and sent when
+/// the decision is on, and nothing else happens. A setting that could not be
 /// worked out (a layer chain that does not resolve) records nothing; none of
 /// it may change the command's exit code.
-pub fn record_if_on(setting: Option<&Setting>, payload: &Payload) {
+pub async fn record_if_on(setting: Option<&Setting>, payload: &Payload) {
     if let Some(setting) = setting
         && setting.decision().on
     {
-        super::record(payload, &setting.layers);
+        super::record(payload, &setting.layers).await;
     }
 }
 
@@ -67,7 +67,7 @@ pub fn status(setting: &Setting) -> String {
         None => "none (this build sends nowhere)".to_string(),
     };
     format!(
-        "telemetry: {}\nendpoint: {endpoint}\nnothing is sent yet: while telemetry is on, each payload is only recorded on this machine (bddkit telemetry show)\n",
+        "telemetry: {}\nendpoint: {endpoint}\nwhile telemetry is on, each payload is recorded on this machine (bddkit telemetry show) and sent there\n",
         decision.describe()
     )
 }

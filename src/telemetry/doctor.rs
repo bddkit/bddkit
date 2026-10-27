@@ -19,16 +19,15 @@ pub struct Note {
 }
 
 /// `on (decided by the user layer); <endpoint>/v1/run`, `off (decided by
-/// DO_NOT_TRACK)`, the shape of the `privacy` row. Nothing is sent in this
-/// release, and the row says so rather than naming an address as if it were
-/// being used.
+/// DO_NOT_TRACK)`, the shape of the `privacy` row. A build with no endpoint
+/// says so rather than naming an address.
 pub fn row(decision: &Decision) -> String {
     let state = decision.describe();
     if !decision.on {
         return state;
     }
     match super::endpoint(&crate::privacy::process_env) {
-        Some(endpoint) => format!("{state}; {endpoint}/v1/run (nothing is sent yet)"),
+        Some(endpoint) => format!("{state}; {endpoint}/v1/run"),
         None => format!("{state}; no endpoint in this build"),
     }
 }
