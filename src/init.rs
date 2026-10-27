@@ -1,7 +1,8 @@
 //! `bddkit init`: answers in, a suite out. `ask` is the only code that touches
 //! `dialoguer`; `from_flags` and `apply` are what the tests drive.
 
-use crate::{DirArgs, config, dirs, doctor, plugin, report, resource};
+use crate::telemetry::payload::{InitInfo, Payload, PluginInfo, PluginResult};
+use crate::{DirArgs, config, dirs, doctor, plugin, report, resource, telemetry};
 use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
 use dialoguer::console::Term;
@@ -11,21 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const FEATURES_DIR: &str = "features";
 const GITIGNORE_LINES: [&str; 2] = [".bddkit/*.local.yaml", ".env.local"];
-
-/// The question of `telemetry.md`, section 6, word for word.
-const TELEMETRY_TEXT: &str =
-    "bddkit can send anonymous usage counts to its maintainers after each run:
-the bddkit version and OS, how long the run took, how many files, scenarios
-and failures it had, and which kinds of resources the suite uses (APIs,
-database engines, official plugins).
-Never sent: names, step text, URLs, addresses, values, your config.
-Your IP address reaches our server with the request and is dropped there;
-it is never stored and never passed on.
-bddkit is an open-source project; these counts are how we learn which
-databases, plugins and suite sizes to work on, and whether a release broke
-runs out there. The full list: https://bddkit.dev/telemetry
-Change your answer any time: bddkit telemetry on|off
-";
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Db {
@@ -312,14 +298,12 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
             eprintln!(
                 "Files run at the same time (concurrency 8) only when their data cannot collide: use <<unique()>> for it."
             );
-            let items = ["yes (concurrency 8)", "no (concurrency 1)"];
-            match select(
+            match telemetry::ask_yes_no(
                 &term,
                 "Can scenarios of different files run at the same time?",
-                &items,
+                ["yes (concurrency 8)", "no (concurrency 1)"],
             )? {
-                Some(0) => true,
-                Some(_) => false,
+                Some(parallel) => parallel,
                 None => return Ok(None),
             }
         }
@@ -328,9 +312,9 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
     let telemetry = match args.telemetry {
         Some(answer) => Some(answer),
         None => {
-            eprintln!("{TELEMETRY_TEXT}");
-            match select(&term, "Send anonymous usage counts?", &["Yes", "No"])? {
-                Some(choice) => Some(choice == 0),
+            eprintln!("{}", telemetry::QUESTION_TEXT);
+            match telemetry::ask_yes_no(&term, telemetry::PROMPT, ["Yes", "No"])? {
+                Some(answer) => Some(answer),
                 None => return Ok(None),
             }
         }
@@ -578,6 +562,7 @@ pub async fn apply(
     config_path: &Path,
     explicit: Option<&Path>,
     env: dirs::Env,
+    acted: &mut Vec<PluginInfo>,
 ) -> Result<i32> {
     // A questionnaire can take minutes: look again just before writing.
     refuse_existing(config_path)?;
@@ -611,7 +596,9 @@ pub async fn apply(
                 };
                 let mut installed = false;
                 for name in &answers.plugins {
-                    match ctx.install(name, layer).await {
+                    let outcome = ctx.install(name, layer).await;
+                    acted.extend(ctx.take_acted());
+                    match outcome {
                         Ok(_) => installed = true,
                         Err(error) => report(error.context(name.clone())),
                     }
@@ -630,7 +617,17 @@ pub async fn apply(
         }
     }
 
-    let checked = doctor::check(explicit, None, false, &env, &[], None, &Default::default()).await;
+    let checked = doctor::check(
+        explicit,
+        None,
+        false,
+        &env,
+        &[],
+        None,
+        &Default::default(),
+        None,
+    )
+    .await;
     println!();
     print!("{}", checked.render());
     Ok(code.max(checked.exit_code()))
@@ -669,13 +666,80 @@ pub async fn command(args: InitArgs) -> Result<i32> {
         from_flags(&args)?
     };
     WRITING.store(true, Ordering::SeqCst);
-    apply(
+    let started = std::time::Instant::now();
+    let interactive = report::progress::can_prompt();
+    let env = dirs::Env::from_process(args.dir.bddkit_dir);
+    let mut acted = Vec::new();
+    let code = apply(
         &answers,
         &config_path,
         args.config.as_deref(),
-        dirs::Env::from_process(args.dir.bddkit_dir),
+        env.clone(),
+        &mut acted,
     )
-    .await
+    .await?;
+    // Only a yes sends anything, and even then the layers above the config
+    // key still decide: the key just written is `true`, `DO_NOT_TRACK` beats it.
+    if answers.telemetry == Some(true)
+        && let Ok(layers) = dirs::layers(dirs::Os::current(), &env, crate::config_dir(&config_path))
+    {
+        let setting = telemetry::command::Setting {
+            layers,
+            key: telemetry::ConfigKey::Set(true),
+            get: crate::privacy::process_env,
+        };
+        let payload = init_payload(&answers, interactive, code, started.elapsed(), &acted);
+        telemetry::command::record_if_on(Some(&setting), &payload);
+    }
+    Ok(code)
+}
+
+/// What an `init` that ended with a yes may say: counts and the names of
+/// official plugins, never a URL, a DSN or a path.
+fn init_payload(
+    answers: &Answers,
+    interactive: bool,
+    code: i32,
+    elapsed: std::time::Duration,
+    acted: &[PluginInfo],
+) -> Payload {
+    let mut payload = Payload::new(telemetry::payload::Command::Init, code, elapsed);
+    let mut info = InitInfo {
+        interactive,
+        ..Default::default()
+    };
+    for plugin in acted {
+        let ok = plugin.result == PluginResult::Ok;
+        let counts =
+            |plugins: &mut std::collections::BTreeMap<String, u64>, other: &mut u64| match &plugin
+                .name
+            {
+                Some(name) => *plugins.entry(name.clone()).or_insert(0) += 1,
+                None => *other += 1,
+            };
+        counts(&mut info.plugins, &mut info.plugins_other);
+        if ok {
+            counts(
+                &mut info.resources.plugins,
+                &mut info.resources.plugins_other,
+            );
+        } else {
+            info.plugins_failed += 1;
+        }
+    }
+    info.resources.api = u64::from(answers.api_url.is_some());
+    match answers.db {
+        Db::None => {}
+        Db::Postgres => info.resources.db.add("postgres"),
+        Db::Mysql => info.resources.db.add("mysql"),
+        Db::Mariadb => info.resources.db.add("mariadb"),
+    }
+    // Changed from the default, and only whether.
+    info.settings.insert("parallel", !answers.parallel);
+    info.settings
+        .insert("project_layer", answers.layer == Layer::Project);
+    payload.init = Some(info);
+    payload
 }
 
 static WRITING: AtomicBool = AtomicBool::new(false);

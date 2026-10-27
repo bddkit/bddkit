@@ -6,6 +6,7 @@ use crate::plugin::abi::ABI_VERSION;
 use crate::plugin::install::{self, Sources};
 use crate::plugin::library::Library;
 use crate::plugin::lock;
+use crate::telemetry::payload::{Acted, PluginFrom, PluginInfo, PluginResult};
 use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,8 @@ pub(crate) struct Fetched {
 }
 
 pub struct Context {
+    /// What telemetry may say about the plugins the last command acted on.
+    acted: std::sync::Mutex<Vec<PluginInfo>>,
     pub(crate) os: Os,
     pub(crate) env: Env,
     layers: Vec<Layer>,
@@ -44,6 +47,7 @@ impl Context {
         let os = Os::current();
         let layers = dirs::layers(os, &env, config_dir)?;
         Ok(Self {
+            acted: Default::default(),
             os,
             env,
             layers,
@@ -184,6 +188,7 @@ impl Context {
                 name
             }
             Err(error) => {
+                let error = install::classed(error, PluginResult::Refused);
                 // ponytail: Windows cannot delete a DLL it has mapped, so a
                 // rejected plugin may leave its directory there; nothing
                 // points at it. Sweep it on the next install if it matters.
@@ -223,11 +228,34 @@ impl Context {
             .filter(|layer| layer != label))
     }
 
+    /// What the last `install`, `update` or `remove` acted on, for telemetry.
+    pub fn take_acted(&self) -> Vec<PluginInfo> {
+        std::mem::take(&mut *self.acted.lock().expect("acted is never poisoned"))
+    }
+
+    fn note<T>(&self, acted: &Acted, outcome: &Result<T>) {
+        let info = PluginInfo::of(acted, install::result_of(outcome));
+        self.acted
+            .lock()
+            .expect("acted is never poisoned")
+            .push(info);
+    }
+
     pub async fn install(&self, arg: &str, layer: Option<&str>) -> Result<i32> {
+        let mut acted = Acted::default();
+        let outcome = self.install_one(arg, layer, &mut acted).await;
+        self.note(&acted, &outcome);
+        outcome
+    }
+
+    async fn install_one(&self, arg: &str, layer: Option<&str>, acted: &mut Acted) -> Result<i32> {
         let spec = install::Spec::parse(arg)?;
         let indexed = if spec.is_repo() {
+            acted.from = Some(PluginFrom::Repository);
+            acted.repo = Some(spec.target.clone());
             None
         } else {
+            acted.from = Some(PluginFrom::Registry);
             let entry = install::fetch_index(&self.client, &self.sources)
                 .await?
                 .into_iter()
@@ -237,19 +265,27 @@ impl Context {
                         "no plugin {:?} in the index: `bddkit plugin list` shows what is there, and owner/repo installs one that is not",
                         spec.target
                     )
-                })?;
+                })
+                .map_err(|error| install::classed(error, PluginResult::NotFound))?;
             Some(entry)
         };
         let repo = indexed
             .as_ref()
             .map_or_else(|| spec.target.clone(), |entry| entry.repo.clone());
+        acted.repo = Some(repo.clone());
+        let pinned = spec.version.is_some();
         let version = match spec.version {
             Some(version) => {
                 let github = &self.sources.github;
                 match install::release_abi(&self.client, github, &repo, &version).await? {
-                    Some(abi) if abi != ABI_VERSION => bail!(
-                        "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
-                    ),
+                    Some(abi) if abi != ABI_VERSION => {
+                        return Err(install::classed(
+                            anyhow::anyhow!(
+                                "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+                            ),
+                            PluginResult::NoBuild,
+                        ));
+                    }
                     _ => version,
                 }
             }
@@ -261,10 +297,17 @@ impl Context {
                 ABI_VERSION,
             )
             .await?
-            .map_err(anyhow::Error::msg)?,
+            .map_err(|why| install::classed(anyhow::Error::msg(why), PluginResult::NoBuild))?,
         };
+        // A version the person typed is only text until it has been installed.
+        if !pinned {
+            acted.version = Some(version.clone());
+        }
         let target = self.install_target(layer)?;
+        acted.layer = Some(target.label.clone());
         let name = self.install_into(&target, &repo, &version).await?;
+        acted.name = Some(name.clone());
+        acted.version = Some(version.clone());
         println!(
             "installed {name} {version} into {} ({})",
             target.label,
@@ -327,8 +370,20 @@ impl Context {
                     println!("{row}: skipped: not installed by bddkit");
                     continue;
                 };
+                let mut acted = Acted {
+                    repo: Some(source.clone()),
+                    name: Some(entry.name.clone()),
+                    version: Some(current.clone()),
+                    from: None,
+                    layer: Some(target.label.clone()),
+                };
                 let outcome = async {
                     let indexed = index.iter().find(|e| &e.repo == source);
+                    acted.from = Some(if indexed.is_some() {
+                        PluginFrom::Registry
+                    } else {
+                        PluginFrom::Repository
+                    });
                     let latest = match install::host_release(
                         &self.client,
                         &self.sources.github,
@@ -351,10 +406,14 @@ impl Context {
                     if dry_run {
                         return Ok(format!("{current} → {latest}"));
                     }
+                    acted.version = Some(latest.clone());
                     self.install_into(&target, source, &latest).await?;
                     Ok::<_, anyhow::Error>(format!("updated {current} → {latest}"))
                 }
                 .await;
+                if !dry_run {
+                    self.note(&acted, &outcome);
+                }
                 match outcome {
                     Ok(message) => println!("{row}: {message}"),
                     Err(error) => {
@@ -368,16 +427,36 @@ impl Context {
             if !matched.contains(name) {
                 println!("{name}: failed: not installed in any lock file");
                 failed = true;
+                // Not a plugin of ours at all, as far as anyone can tell.
+                self.note(
+                    &Acted::default(),
+                    &Err::<(), _>(install::classed(
+                        anyhow::anyhow!("not installed"),
+                        PluginResult::NotFound,
+                    )),
+                );
             }
         }
         Ok(i32::from(failed))
     }
 
     pub async fn remove(&self, name: &str, layer: Option<&str>) -> Result<i32> {
+        let mut acted = Acted::default();
+        let outcome = self.remove_one(name, layer, &mut acted);
+        self.note(&acted, &outcome);
+        outcome
+    }
+
+    fn remove_one(&self, name: &str, layer: Option<&str>, acted: &mut Acted) -> Result<i32> {
         self.check_layer_flag(layer)?;
         let mut holders = self.holders(name, layer)?;
         let (target, entry) = match holders.len() {
-            0 => bail!("{name:?} is not installed in any lock file of the chain"),
+            0 => {
+                return Err(install::classed(
+                    anyhow::anyhow!("{name:?} is not installed in any lock file of the chain"),
+                    PluginResult::NotFound,
+                ));
+            }
             1 => holders.remove(0),
             _ => bail!(
                 "{name:?} is declared in {}: pass --layer to pick one",
@@ -388,6 +467,10 @@ impl Context {
                     .join(", ")
             ),
         };
+        acted.repo.clone_from(&entry.source);
+        acted.name = Some(entry.name.clone());
+        acted.version.clone_from(&entry.version);
+        acted.layer = Some(target.label.clone());
         lock::remove(&target.lock, name)?;
         if owned(&target, &entry) {
             remove_version_dir(&entry.path).with_context(|| {

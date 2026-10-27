@@ -30,6 +30,9 @@ pub struct Run {
     pub planned_files: u64,
     /// No `run_finished`: the process was killed, or a second signal cut it.
     pub incomplete: bool,
+    /// Events read, for telemetry's count; not part of the page.
+    #[serde(skip)]
+    pub events: u64,
     pub finished: Option<Finished>,
     pub files: Vec<File>,
 }
@@ -172,7 +175,10 @@ pub fn build(input: impl BufRead) -> Result<Run> {
                 }
                 builder = Some(Builder::new(&event));
             }
-            Some(builder) => builder.event(&event),
+            Some(builder) => {
+                builder.run.events += 1;
+                builder.event(&event);
+            }
         }
     }
     let Some(builder) = builder else {
@@ -203,6 +209,7 @@ impl Builder {
             artifacts_dir: text(event, "artifacts_dir"),
             planned_files: event["files"].as_u64().unwrap_or(0),
             incomplete: true,
+            events: 1,
             finished: None,
             files: Vec::new(),
         };

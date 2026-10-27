@@ -110,6 +110,12 @@ fn family_for_scheme(dsn: &str) -> Result<&'static dyn Platform, String> {
     }
 }
 
+/// The platform family a DSN's scheme names, for telemetry's engine counts:
+/// `None` for a scheme bddkit does not serve.
+pub fn family_name(dsn: &str) -> Option<&'static str> {
+    family_for_scheme(dsn).ok().map(|family| family.name())
+}
+
 /// The half of `Db::connect` that opens no socket: the DSN's scheme names a
 /// known platform, and the session setup that platform would run is legal for
 /// it. Returns the platform family's name — on the `mysql://` family that is
@@ -199,6 +205,11 @@ impl Db {
             connections,
             cache: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The platform each connection resolved to, for telemetry's engine counts.
+    pub fn engines(&self) -> impl Iterator<Item = &'static str> {
+        self.connections.values().map(|c| c.platform.name())
     }
 
     /// The single place that knows "not declared" for a connection name.

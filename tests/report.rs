@@ -1,5 +1,7 @@
 //! `bddkit report` as a user runs it: exit codes and what lands on disk.
 
+mod common;
+
 use std::process::Command;
 
 const STREAM: &str = concat!(
@@ -422,4 +424,66 @@ fn embedding_without_an_html_output_is_refused_with_nothing_written() {
         .expect("runs");
     assert_eq!(out.status.code(), Some(2));
     assert!(!dir.join("x.md").exists());
+}
+
+/// `bddkit report` with telemetry on, recording into `<dir>/t.log`, cut off
+/// from this machine's own layers by `BDDKIT_DIR`.
+fn telemetry_report(dir: &std::path::Path, args: &[&std::path::Path]) -> std::process::Output {
+    std::fs::create_dir_all(dir.join("state")).expect("state dir");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+    common::isolate_telemetry(&mut command)
+        .arg("report")
+        .args(args)
+        .current_dir(dir)
+        .env("BDDKIT_DIR", dir.join("state"))
+        .env("BDDKIT_TELEMETRY", "1")
+        .env("BDDKIT_TELEMETRY_LOG", dir.join("t.log"))
+        .output()
+        .expect("runs")
+}
+
+fn recorded(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    common::read_payloads(&dir.join("t.log"))
+}
+
+#[test]
+fn bddkit_report_records_one_report_payload() {
+    let dir = scratch("telemetry-ok");
+    std::fs::write(dir.join("run.ndjson"), STREAM).expect("stream");
+    let out = telemetry_report(
+        &dir,
+        &[
+            &dir.join("run.ndjson"),
+            std::path::Path::new("-o"),
+            &dir.join("out.html"),
+            std::path::Path::new("-o"),
+            &dir.join("out.md"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let all = recorded(&dir);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["command"], "report");
+    assert_eq!(
+        all[0]["report"],
+        serde_json::json!({
+            "formats": ["html", "md"], "detail": "failed", "embed": "none",
+            "events": 2, "evidence": false, "complete": true,
+            "artifacts": false, "result": "ok"
+        })
+    );
+    assert!(all[0].get("files").is_none() && all[0].get("scenarios").is_none());
+}
+
+#[test]
+fn a_report_that_fails_says_so_and_counts_no_events() {
+    let dir = scratch("telemetry-bad");
+    std::fs::write(dir.join("run.ndjson"), "not a stream\n").expect("file");
+    let out = telemetry_report(&dir, &[&dir.join("run.ndjson")]);
+    assert_eq!(out.status.code(), Some(2));
+    let all = recorded(&dir);
+    assert_eq!(all[0]["exit"], 2);
+    assert_eq!(all[0]["report"]["result"], "error");
+    assert_eq!(all[0]["report"]["events"], 0);
+    assert_eq!(all[0]["report"]["formats"], serde_json::json!(["html"]));
 }

@@ -24,7 +24,7 @@ pub enum Detail {
 }
 
 impl Detail {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Failed => "failed",
             Self::All => "all",

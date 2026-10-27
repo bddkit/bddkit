@@ -2,6 +2,8 @@
 //! over `dialoguer` that nobody unit-tests; what they produce goes through the same
 //! `from_flags` and `apply`.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -294,4 +296,87 @@ fn a_failure_after_the_config_is_written_is_exit_1_not_a_refusal() {
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(dir.join("bddkit.yaml").is_file());
     assert!(!text(&out).contains("nothing written"), "{}", text(&out));
+}
+
+/// `bddkit init <args>` with payloads logged to `<dir>/t.log`.
+fn telemetry_init(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bddkit"));
+    common::isolate_telemetry(&mut command)
+        .arg("init")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("BDDKIT_TELEMETRY_LOG", dir.join("t.log"))
+        .envs(env.iter().copied())
+        .output()
+        .expect("run bddkit")
+}
+
+fn payloads(dir: &Path) -> Vec<serde_json::Value> {
+    common::read_payloads(&dir.join("t.log"))
+}
+
+#[test]
+fn an_init_that_ends_with_yes_sends_one_init_payload() {
+    let dir = temp("telemetry-yes");
+    let out = telemetry_init(
+        &dir,
+        &[
+            "--api-url",
+            "http://marker.invalid:8080",
+            "--db",
+            "postgres",
+            "--dsn",
+            "postgres://marker:marker@marker.invalid/marker",
+            "--parallel",
+            "false",
+            "--telemetry",
+            "true",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let all = payloads(&dir);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["command"], "init");
+    assert_eq!(all[0]["exit"], 0);
+    let init = &all[0]["init"];
+    assert_eq!(init["interactive"], false);
+    assert_eq!(init["resources"]["api"], 1);
+    assert_eq!(init["resources"]["db"]["postgres"], 1);
+    assert_eq!(init["settings"]["parallel"], true);
+    assert_eq!(init["settings"]["project_layer"], false);
+    let raw = std::fs::read_to_string(dir.join("t.log")).unwrap();
+    assert!(!raw.contains("marker"), "{raw}");
+    for run_only in ["files", "scenarios", "usage", "scenario_ms"] {
+        assert!(all[0].get(run_only).is_none(), "{run_only}");
+    }
+}
+
+#[test]
+fn an_init_answered_no_or_not_asked_sends_nothing() {
+    for (name, flags) in [("no", vec!["--telemetry", "false"]), ("unanswered", vec![])] {
+        let dir = temp(&format!("telemetry-answer-{name}"));
+        let mut args = vec!["--api-url", "http://127.0.0.1:8080"];
+        args.extend(flags);
+        let out = telemetry_init(&dir, &args, &[]);
+        assert_eq!(out.status.code(), Some(0), "{name}: {}", text(&out));
+        assert!(payloads(&dir).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_yes_in_the_config_still_loses_to_do_not_track() {
+    let dir = temp("telemetry-dnt");
+    let out = telemetry_init(
+        &dir,
+        &["--api-url", "http://127.0.0.1:8080", "--telemetry", "true"],
+        &[("DO_NOT_TRACK", "1")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(config(&dir).contains("telemetry: true"));
+    assert!(payloads(&dir).is_empty());
 }

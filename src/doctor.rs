@@ -41,6 +41,10 @@ pub struct Report {
     pub app_env: String,
     pub live: bool,
     pub checks: Vec<Check>,
+    /// What the telemetry payload of this command needs. Not part of the
+    /// report a person or a script reads.
+    #[serde(skip)]
+    pub telemetry: Option<crate::telemetry::doctor::Note>,
 }
 
 impl Report {
@@ -53,6 +57,32 @@ impl Report {
     /// `--live` was not passed and so it never ran.
     fn push_live(&mut self, stage: &'static str, target: &str, status: Status, detail: &str) {
         self.row(stage, Some(target), status, true, detail);
+    }
+
+    /// The `telemetry` row, and the note the payload is built from. The key is
+    /// `Broken` wherever the config could not be read: a team's own `false`
+    /// may be the line that did not load.
+    fn note_telemetry(
+        &mut self,
+        flag: Option<bool>,
+        key: crate::telemetry::ConfigKey,
+        dir_env: &dirs::Env,
+        config_dir: &Path,
+    ) {
+        let layers = dirs::layers(dirs::Os::current(), dir_env, config_dir).unwrap_or_default();
+        let decision = crate::telemetry::decide_here(flag, key, &layers);
+        self.push(
+            "telemetry",
+            None,
+            Status::Ok,
+            &crate::telemetry::doctor::row(&decision),
+        );
+        self.telemetry = Some(crate::telemetry::doctor::Note {
+            decision,
+            layers,
+            privacy: None,
+            resources: None,
+        });
     }
 
     fn row(
@@ -139,6 +169,9 @@ impl Report {
 /// is a function `run` already calls, in the order `run` calls it in. If
 /// `doctor` and `run` ever disagree about whether a config is valid, that is a
 /// bug in `doctor`.
+// Every input is a flag of the command, and `doctor` is the one place they meet:
+// a struct of them would be a second spelling of `DoctorArgs`.
+#[allow(clippy::too_many_arguments)]
 pub async fn check(
     explicit_config: Option<&Path>,
     env: Option<&str>,
@@ -147,6 +180,7 @@ pub async fn check(
     report_paths: &[&Path],
     events_path: Option<&Path>,
     privacy_flags: &crate::privacy::PrivacyLayer,
+    telemetry_flag: Option<bool>,
 ) -> Report {
     let resolved = config::resolve_config_path(explicit_config);
     let mut report = Report {
@@ -155,6 +189,7 @@ pub async fn check(
         app_env: "unknown".to_string(),
         live,
         checks: Vec::new(),
+        telemetry: None,
     };
     if let Ok(Some(resolved)) = &resolved {
         report.config = format!("{} ({})", resolved.path.display(), resolved.source.label());
@@ -200,12 +235,19 @@ pub async fn check(
 
     let config_path = match resolved {
         Ok(Some(resolved)) => resolved.path,
-        Ok(None) => {
-            report.push("config", None, Status::Failed, config::NO_CONFIG_FOUND);
-            return report;
-        }
-        Err(error) => {
-            report.push("config", None, Status::Failed, &format!("{error:#}"));
+        // No config found, or two of them: nothing to read the key from.
+        other => {
+            let detail = match other {
+                Ok(_) => config::NO_CONFIG_FOUND.to_string(),
+                Err(error) => format!("{error:#}"),
+            };
+            report.push("config", None, Status::Failed, &detail);
+            report.note_telemetry(
+                telemetry_flag,
+                crate::telemetry::ConfigKey::Broken,
+                dir_env,
+                Path::new("."),
+            );
             return report;
         }
     };
@@ -223,6 +265,12 @@ pub async fn check(
         }
         Err(error) => {
             report.push("config", None, Status::Failed, &format!("{error:#}"));
+            report.note_telemetry(
+                telemetry_flag,
+                crate::telemetry::ConfigKey::Broken,
+                dir_env,
+                crate::config_dir(config_path),
+            );
             return report;
         }
     };
@@ -342,6 +390,12 @@ pub async fn check(
     );
     let unmarked = check_features(&mut report, &cfg, vocabulary, plugins.as_deref(), &words);
     push_privacy(&mut report, &privacy, &unmarked);
+    report.note_telemetry(
+        telemetry_flag,
+        (&cfg.telemetry).into(),
+        dir_env,
+        crate::config_dir(config_path),
+    );
     let stream = events_path.is_some() || crate::privacy::process_env("BDDKIT_EVENTS").is_some();
     push_evidence(&mut report, &cfg, stream);
     check_apis(&mut report, &cfg, live).await;
@@ -349,6 +403,17 @@ pub async fn check(
     check_srp(&mut report, &cfg);
     if let Some(plugins) = plugins.as_ref() {
         check_plugin_instances(&mut report, plugins, live);
+    }
+    if let Some(note) = &mut report.telemetry {
+        note.privacy = privacy
+            .as_ref()
+            .ok()
+            .map(crate::telemetry::payload::PrivacyFlags::of);
+        let mut resources = crate::telemetry::run::resources_of(&cfg);
+        if let Some(plugins) = &plugins {
+            (resources.plugins, resources.plugins_other) = plugins.instance_counts();
+        }
+        note.resources = Some(resources);
     }
     report
 }
@@ -840,6 +905,7 @@ mod tests {
             app_env: "dev".into(),
             live: false,
             checks,
+            telemetry: None,
         }
     }
 

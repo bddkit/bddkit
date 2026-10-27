@@ -38,6 +38,10 @@ pub struct Config {
     /// when the run has a stream and neither the flag nor the variable is set.
     #[serde(default)]
     pub evidence: Option<crate::events::Sources>,
+    /// `telemetry: false`: the suite's decision about anonymous usage counts,
+    /// which `bddkit init` writes. See `telemetry::decide` for what outranks it.
+    #[serde(default)]
+    pub telemetry: Option<bool>,
     /// Everything the host does not name itself: `default_<group>` keys for
     /// plugin groups. Captured rather than rejected — a group's default is
     /// spelled the same way as `default_api`, and the host cannot know the

@@ -20,6 +20,8 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::telemetry::payload::UpgradeInfo;
+
 const REPO: &str = "bddkit/bddkit";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const BINARY: &str = if cfg!(windows) {
@@ -168,12 +170,27 @@ fn place(src: &Path, target: &Path) -> Result<()> {
     })
 }
 
-pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
+/// `run_inner`, and what telemetry may say about how it went. The result is
+/// `failed` unless the command named it: a refusal is not a failure, and a
+/// rollback is not a plain success.
+pub async fn run(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Result<i32> {
+    note.from = CURRENT;
+    note.check = opts.check;
+    note.result = "failed";
+    let outcome = run_inner(ctx, opts, note).await;
+    if outcome.is_ok() && note.result == "failed" {
+        note.result = "ok";
+    }
+    outcome
+}
+
+async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Result<i32> {
     let data = dirs::user_data(ctx.os, &ctx.env)
         .context("no user data directory (HOME / LOCALAPPDATA unset)")?;
     let receipt_path = data.join("install.json");
     let exe = canonical(&std::env::current_exe().context("cannot tell which binary is running")?);
     let Some(receipt) = read_receipt(&receipt_path)? else {
+        note.result = "refused";
         return Err(refusal(&exe));
     };
     let managed = canonical(&receipt.path);
@@ -182,10 +199,15 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
     // it may run as the previous binary this tool kept.
     let is_previous = exe == canonical(&previous.join(BINARY));
     if exe != managed && !(opts.rollback && is_previous) {
+        note.result = "refused";
         return Err(refusal(&exe));
     }
     if opts.rollback {
-        return rollback(&receipt_path, receipt, &managed, &previous);
+        let outcome = rollback(&receipt_path, receipt, &managed, &previous);
+        if outcome.is_ok() {
+            note.result = "rolled_back";
+        }
+        return outcome;
     }
     if !opts.check && !opts.yes && !std::io::stdin().is_terminal() {
         bail!("there is no terminal to confirm on: pass --yes, or --check to see the plan only");
@@ -260,14 +282,21 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
         );
     }
 
+    // A version is named only once the release holding it has been downloaded
+    // and has said so itself: what was typed after `--version` is text.
+    note.to = Some(info.version.clone());
     let abi_changes = info.plugin_abi != crate::plugin::abi::ABI_VERSION;
+    note.abi_changed = abi_changes;
     let plan = if abi_changes {
         plan_plugins(ctx, info.plugin_abi).await?
     } else {
         Plan::default()
     };
+    note.plugins_left = plan.left.len() as u64;
+    note.plugins_refused = plan.blocked.len() as u64;
     print_plan(&version, &info, abi_changes, &plan);
     if !plan.blocked.is_empty() && !opts.force {
+        note.result = "refused";
         bail!(
             "nothing was changed: {} plugin(s) have no release for plugin ABI {}; --force upgrades anyway and leaves them",
             plan.blocked.len(),
@@ -285,6 +314,7 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
     }
     if !opts.yes && !confirm("Upgrade?")? {
         println!("nothing was changed");
+        note.result = "refused";
         return Ok(0);
     }
 
@@ -338,6 +368,7 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
             locks.push(planned.target.lock.clone());
         }
     }
+    note.plugins_refused += refused.len() as u64;
     backup(&exe, &previous, &locks, &version)?;
     cleanup.keep_created = true;
     let switched = switch(
@@ -355,6 +386,7 @@ pub async fn run(ctx: &Context, opts: &Options) -> Result<i32> {
         );
     }
 
+    note.plugins_switched = fetched.len() as u64;
     println!("bddkit {CURRENT} → {version}");
     for row in &refused {
         println!("left as it is: {row}");
