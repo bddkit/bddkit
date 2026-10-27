@@ -113,6 +113,7 @@ fn a_run_records_one_payload_with_only_schema_fields() {
             "exit",
             "fail_fast",
             "failed",
+            "failures",
             "features",
             "files",
             "os",
@@ -125,7 +126,7 @@ fn a_run_records_one_payload_with_only_schema_fields() {
             "usage",
         ]
     );
-    assert_eq!(payload["schema"], 1);
+    assert_eq!(payload["schema"], 2);
     assert_eq!(payload["command"], "run");
     assert_eq!(payload["exit"], 0);
     assert_eq!(payload["files"], 1);
@@ -930,4 +931,24 @@ fn a_signal_while_the_request_is_out_does_not_wait_for_it() {
     // The run had passed, so its own code is returned, and at once.
     assert_eq!(child.wait().expect("wait").code(), Some(0));
     assert!(signalled.elapsed() < std::time::Duration::from_millis(1000));
+}
+
+#[test]
+fn failures_are_counted_by_class_and_never_named() {
+    let suite = suite(
+        "failures",
+        "",
+        &[(
+            "a.feature",
+            "Feature: f\n  Scenario: wrong\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n  Scenario: undefined\n    Then variable \"nope\" should be equal to \"2\"\n  Scenario: fine\n    Given set variable \"y\" to \"1\"\n",
+        )],
+    );
+    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    let payload = suite.only_payload();
+    assert_eq!(payload["failed"], 2);
+    let failures = &payload["failures"];
+    assert_eq!(failures["assertion"], 1, "{failures}");
+    assert_eq!(failures["input"], 1, "{failures}");
+    assert_eq!(failures.as_object().unwrap().len(), 8);
 }

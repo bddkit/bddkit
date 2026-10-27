@@ -11,7 +11,7 @@ use super::Ci;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-pub const SCHEMA: u8 = 1;
+pub const SCHEMA: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,11 +106,53 @@ pub struct RunFields {
     pub scenarios: u64,
     pub examples: u64,
     pub failed: u64,
+    pub failures: Failures,
     pub concurrency: u64,
     pub fail_fast: bool,
     pub scenario_ms: Option<ScenarioMs>,
     pub features: Features,
     pub usage: BTreeMap<String, Usage>,
+}
+
+/// Failed scenarios by the class of the failure that ended them
+/// (`failure::FailureKind`). Eight fixed keys; a scenario a host fault
+/// (`unclassified`) ended is in `failed` and in none of these, so the sum can
+/// be below `failed`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct Failures {
+    pub assertion: u64,
+    pub transport: u64,
+    pub db_connection: u64,
+    pub db_statement: u64,
+    pub input: u64,
+    pub plugin: u64,
+    pub reset: u64,
+    pub panic: u64,
+}
+
+impl Failures {
+    pub fn of(results: &[crate::report::FileResult]) -> Self {
+        use crate::failure::FailureKind;
+        let mut out = Self::default();
+        for kind in results
+            .iter()
+            .flat_map(|file| &file.scenarios)
+            .filter_map(|scenario| scenario.failure_kind)
+        {
+            match kind {
+                FailureKind::Assertion => out.assertion += 1,
+                FailureKind::Transport => out.transport += 1,
+                FailureKind::DbConnection => out.db_connection += 1,
+                FailureKind::DbStatement => out.db_statement += 1,
+                FailureKind::Input => out.input += 1,
+                FailureKind::Plugin => out.plugin += 1,
+                FailureKind::Reset => out.reset += 1,
+                FailureKind::Panic => out.panic += 1,
+                FailureKind::Unclassified => {}
+            }
+        }
+        out
+    }
 }
 
 /// `None` for a run that finished no scenario: there is nothing to take a
@@ -362,6 +404,46 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn failures_count_each_class_and_leave_a_host_fault_out() {
+        use crate::failure::FailureKind;
+        use crate::report::{FileResult, ScenarioResult};
+        let scenario = |kind: Option<FailureKind>| ScenarioResult {
+            name: String::new(),
+            line: 1,
+            description: String::new(),
+            tags: Vec::new(),
+            failure: kind.map(|_| "boom".to_string()),
+            failure_kind: kind,
+            steps: Vec::new(),
+            duration: Duration::ZERO,
+        };
+        let file = FileResult {
+            path: "a.feature".into(),
+            name: String::new(),
+            line: 1,
+            description: String::new(),
+            tags: Vec::new(),
+            scenarios: [
+                None,
+                Some(FailureKind::Transport),
+                Some(FailureKind::Transport),
+                Some(FailureKind::Panic),
+                Some(FailureKind::Unclassified),
+            ]
+            .map(scenario)
+            .into(),
+        };
+        assert_eq!(
+            Failures::of(&[file]),
+            Failures {
+                transport: 2,
+                panic: 1,
+                ..Default::default()
+            }
+        );
+    }
+
     fn ms(values: &[u64]) -> Vec<Duration> {
         values.iter().map(|v| Duration::from_millis(*v)).collect()
     }
@@ -388,6 +470,10 @@ mod tests {
             scenarios: 2,
             examples: 1,
             failed: 1,
+            failures: Failures {
+                transport: 1,
+                ..Default::default()
+            },
             concurrency: 8,
             fail_fast: false,
             scenario_ms: None,
