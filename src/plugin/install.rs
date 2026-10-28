@@ -279,6 +279,17 @@ fn library_name(entry: &str) -> Option<String> {
         .then(|| file.to_string())
 }
 
+/// `lib<stem>.so` / `lib<stem>.dylib` / `<stem>.dll`: what `library_name`
+/// accepts, spelled for tests that need a file of that name.
+#[cfg(test)]
+pub(crate) fn dll_name(stem: &str) -> String {
+    format!(
+        "{}{stem}{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    )
+}
+
 /// The file-name part of an archive entry, if it is this host's `bddkit`.
 fn binary_name(entry: &str) -> Option<String> {
     let file = Path::new(entry).file_name()?.to_str()?;
@@ -536,11 +547,7 @@ mod tests {
     use std::io::Write;
 
     fn lib(stem: &str) -> String {
-        format!(
-            "{}{stem}{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        )
+        dll_name(stem)
     }
 
     fn tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {

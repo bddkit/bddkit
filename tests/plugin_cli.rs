@@ -126,11 +126,7 @@ fn host_target() -> &'static str {
 }
 
 fn lib_file() -> String {
-    format!(
-        "{}echo_plugin{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    )
+    common::dll_name("echo_plugin")
 }
 
 fn pack(top: &str) -> Vec<u8> {

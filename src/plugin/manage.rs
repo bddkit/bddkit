@@ -900,11 +900,7 @@ mod tests {
         let data = PathBuf::from("/data");
         let t = target(&data);
 
-        let lib_name = format!(
-            "{}echo_plugin{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        );
+        let lib_name = install::dll_name("echo_plugin");
 
         // The shape `plugin install` itself writes: source set, three
         // Normal components under `<data>/plugins`.

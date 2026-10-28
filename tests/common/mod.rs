@@ -404,6 +404,15 @@ async fn srp_step2(body: String) -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"m2": format!("{m2:064x}")})))
 }
 
+/// `lib<stem>.so` / `lib<stem>.dylib` / `<stem>.dll`.
+pub fn dll_name(stem: &str) -> String {
+    format!(
+        "{}{stem}{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    )
+}
+
 /// Builds the fixture plugin and returns the path to its shared library.
 /// Cargo caches it, so only the first test in a run pays for the build.
 pub fn build_fixture_plugin() -> std::path::PathBuf {
@@ -421,11 +430,7 @@ pub fn build_fixture_plugin() -> std::path::PathBuf {
         "fixture plugin build failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let path = target.join("debug").join(format!(
-        "{}echo_plugin{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
+    let path = target.join("debug").join(dll_name("echo_plugin"));
     assert!(
         path.exists(),
         "fixture plugin artifact missing at {}",
@@ -452,11 +457,7 @@ pub fn build_worker_plugin() -> std::path::PathBuf {
         "worker plugin build failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let path = target.join("debug").join(format!(
-        "{}worker_plugin{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
+    let path = target.join("debug").join(dll_name("worker_plugin"));
     assert!(
         path.exists(),
         "worker plugin artifact missing at {}",
