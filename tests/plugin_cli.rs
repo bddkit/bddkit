@@ -152,7 +152,40 @@ fn pack_files(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
 
 const INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    description: Echo values back\n  - name: mail\n    repo: bddkit/bddkit-mail\n    description: Read a mailbox\n";
 
-fn temp(name: &str) -> PathBuf {
+/// A scratch directory, removed when the test ends.
+struct Temp(PathBuf);
+
+impl std::ops::Deref for Temp {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for Temp {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Temp {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp(name: &str) -> Temp {
+    Temp(scratch(name))
+}
+
+/// The same directory with no one to remove it, for what cleans up itself.
+fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-plugin-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -1101,7 +1134,7 @@ impl Drop for Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Self {
-        let root = temp(name);
+        let root = scratch(name);
         let bin_dir = root.join("bin");
         std::fs::create_dir_all(&bin_dir).expect("mkdir");
         let bin = bin_dir.join("bddkit");
