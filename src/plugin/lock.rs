@@ -217,6 +217,34 @@ mod tests {
         assert_eq!(names, ["plugins.yaml"]);
     }
 
+    #[test]
+    fn a_lock_that_is_not_a_mapping_or_has_no_plugin_list_is_refused_and_left_alone() {
+        let dir = temp("shape");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let record = Record {
+            name: "widget".into(),
+            path: "/opt/libwidget.so".into(),
+            version: "1".into(),
+            source: "o/widget".into(),
+            sha256: "00".into(),
+            target: "t".into(),
+        };
+        for (body, complaint) in [
+            ("- a\n- b\n", "not a mapping"),
+            ("plugin: 5\n", "not a list"),
+        ] {
+            let file = dir.join("plugins.yaml");
+            std::fs::write(&file, body).expect("write");
+            let upsert_error = upsert(&file, &record).expect_err(body);
+            let remove_error = remove(&file, "widget").expect_err(body);
+            let check_error = check_writable(&file).expect_err(body);
+            for error in [upsert_error, remove_error, check_error] {
+                assert!(format!("{error:#}").contains(complaint), "{error:#}");
+            }
+            assert_eq!(std::fs::read_to_string(&file).expect("read"), body);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlinked_lock_file_is_written_through_not_replaced() {
