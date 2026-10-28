@@ -129,7 +129,7 @@ docker compose up -d db
 `examples/README.md` covers both suites, what each feature file demonstrates,
 and how to narrow a run to one file or one tag.
 
-`bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports, `--artifacts-dir <dir>` (also `$BDDKIT_ARTIFACTS_DIR`, the flag wins) to root the evidence files plugins write — one `<dir>/<six-digit counter>/` per plugin step, `<temp dir>/bddkit-<run id>` when unset, never cleaned up by bddkit, so give each run its own directory when you archive (a second run into the same one starts counting at `000000` again and overwrites); the per-file workspace stays under the temporary directory either way — `--events <path>` (or `$BDDKIT_EVENTS`) for a live stream of the run, and `--evidence[=<sources>]` to put what the steps did into it (see "Following a run live" below). Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, including when no config is given and none of the above is found, and `128` plus the signal number when the run was interrupted — `130` for SIGINT/Ctrl-C, `143` for SIGTERM, `129` for SIGHUP (see "Interrupting a run" below).
+`bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast[=<bool>]`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports, `--artifacts-dir <dir>` (also `$BDDKIT_ARTIFACTS_DIR`, the flag wins) to root the evidence files plugins write — one `<dir>/<six-digit counter>/` per plugin step, `<temp dir>/bddkit-<run id>` when unset, never cleaned up by bddkit, so give each run its own directory when you archive (a second run into the same one starts counting at `000000` again and overwrites); the per-file workspace stays under the temporary directory either way — `--events <path>` (or `$BDDKIT_EVENTS`) for a live stream of the run, and `--evidence[=<sources>]` to put what the steps did into it (see "Following a run live" below). Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, including when no config is given and none of the above is found, and `128` plus the signal number when the run was interrupted — `130` for SIGINT/Ctrl-C, `143` for SIGTERM, `129` for SIGHUP (see "Interrupting a run" below).
 
 ### Interrupting a run
 
@@ -420,6 +420,8 @@ Writes one new resource into the config's YAML and reports whether it happened. 
 
 ```yaml
 concurrency: 8              # files in flight; a file is one tokio task
+fail_fast: false            # stop starting files after the first failure
+tags: []                   # run only these tags; --tag replaces them
 macro_paths: [macros/]
 paths: [features/]
 
@@ -480,6 +482,20 @@ Every option can be set three ways, and the highest wins: **flag, then environme
 | `privacy.reveal` | `--privacy-reveal` (or `--reveal`) | `BDDKIT_PRIVACY_REVEAL` |
 
 A list flag or variable takes comma-separated words; an empty variable is unset, so only a flag or the config can say "replace with nothing". A boolean accepts `true`, `false`, `1` and `0`; anything else is exit 2 in `run` and a failed row in `doctor`. `sensitive_headers` and `sensitive_headers_only` belong to one API resource, so they exist as config keys only.
+
+The same rule covers the run's own options. `run` and `doctor` read them the same way (`--tag` and `--fail-fast` are `run`'s alone); a malformed value is exit 2 in `run` and a failed `config` row in `doctor`:
+
+| Config key | Flag | Environment variable |
+|---|---|---|
+| `concurrency` | `--concurrency` | `BDDKIT_CONCURRENCY` |
+| `fail_fast` | `--fail-fast` (`--fail-fast=false` overrides a config that says true) | `BDDKIT_FAIL_FAST` |
+| `tags` | `--tag` (repeatable) | `BDDKIT_TAG` (comma-separated) |
+| `paths` | positional paths | `BDDKIT_PATHS` (comma-separated) |
+| `macro_paths` | `--macro-paths` (comma-separated) | `BDDKIT_MACRO_PATHS` |
+| `default_api` / `default_db` / `default_srp` | `--default-api` / `--default-db` / `--default-srp` | `BDDKIT_DEFAULT_API` / `BDDKIT_DEFAULT_DB` / `BDDKIT_DEFAULT_SRP` |
+| `options.polling.timeout_secs` / `interval_ms` | `--options-polling-timeout-secs` / `--options-polling-interval-ms` | `BDDKIT_OPTIONS_POLLING_TIMEOUT_SECS` / `BDDKIT_OPTIONS_POLLING_INTERVAL_MS` |
+
+`concurrency: 0` runs as 1. A flag or variable for a list (`tags`, `paths`, `macro_paths`) replaces the config's list rather than adding to it; there is no `_only` form, because adding to a tag filter or a path list is rarely what anyone means. A committed `fail_fast: true` changes CI behaviour, so CI can set `BDDKIT_FAIL_FAST=false`. The polling pair sets the global default only; a resource's own `options` still override it. The default of a plugin group (`default_<group>`) stays a config key. Debug mode stays a step (`I am in debug mode`), and `--lang` / `BDDKIT_LANG` belong to `steps list`.
 
 **Seeing everything.** `--reveal`, `privacy.reveal: true` or `BDDKIT_PRIVACY_REVEAL=1` turns masking off for a run, and says so on stderr (`doctor` too). A `reveal: true` committed for one debugging session turns masking off in CI as well, so CI should set `BDDKIT_PRIVACY_REVEAL=false`: the environment beats the config. `run_started.privacy` in the event stream records what was in force (`masking`, `words`, `fields`, `min_length`), so a consumer can refuse or flag a run that arrived unmasked, and the `privacy` row of `bddkit doctor` states whether masking is on and which layer decided. The same row lists the `<<slot>>` names in feature files and macros that have `password`, `token` or `key` as a word and no privacy word — a hint that never fails the report and never changes what is masked.
 

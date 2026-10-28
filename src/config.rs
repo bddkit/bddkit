@@ -16,6 +16,12 @@ fn default_timeout() -> u64 {
 pub struct Config {
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// `fail_fast: true`: the suite's default for `--fail-fast`.
+    #[serde(default)]
+    pub fail_fast: bool,
+    /// `tags: [smoke]`: the suite's default for `--tag`; a flag replaces it.
+    #[serde(default)]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub macro_paths: Vec<PathBuf>,
     pub paths: Vec<PathBuf>,
@@ -324,7 +330,7 @@ impl SrpConfig {
 }
 
 impl Config {
-    fn resolve_options(&mut self) -> Result<()> {
+    pub(crate) fn resolve_options(&mut self) -> Result<()> {
         let global = Options::default()
             .apply(&self.options)
             .map_err(anyhow::Error::msg)?;

@@ -28,6 +28,7 @@ mod privacy;
 mod report;
 mod resource;
 mod runner;
+mod settings;
 mod srp;
 mod steps;
 mod telemetry;
@@ -581,6 +582,8 @@ struct DoctorArgs {
     #[command(flatten)]
     privacy: PrivacyArgs,
     #[command(flatten)]
+    settings: settings::SettingsArgs,
+    #[command(flatten)]
     telemetry: TelemetryArgs,
 }
 
@@ -599,6 +602,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         &args.reports.paths(),
         args.events.as_deref(),
         &args.privacy.layer(),
+        &args.settings,
         args.telemetry.enabled,
     )
     .await;
@@ -676,15 +680,17 @@ struct RunArgs {
     config: Option<PathBuf>,
     /// Run only these directories or .feature files instead of the config's `paths`
     paths: Vec<PathBuf>,
-    /// Run only scenarios with one of these tags (repeatable)
+    /// Run only scenarios with one of these tags (repeatable); replaces the
+    /// config's `tags` [default: $BDDKIT_TAG, comma-separated]
     #[arg(long = "tag")]
     tags: Vec<String>,
     /// Override APP_ENV: selects .env.<name> / .env.<name>.local
     #[arg(long = "env")]
     env: Option<String>,
-    /// Stop dispatching new files after the first failure
-    #[arg(long = "fail-fast")]
-    fail_fast: bool,
+    /// Stop dispatching new files after the first failure; `--fail-fast=false`
+    /// overrides a config that says true [default: $BDDKIT_FAIL_FAST, else the config's `fail_fast`]
+    #[arg(long = "fail-fast", num_args = 0..=1, require_equals = true, default_missing_value = "true", action = clap::ArgAction::Set)]
+    fail_fast: Option<bool>,
     /// Write one JSON object per line here while the run happens: a file, a
     /// FIFO or /dev/fd/N [default: $BDDKIT_EVENTS]
     #[arg(long)]
@@ -710,6 +716,8 @@ struct RunArgs {
     reports: ReportArgs,
     #[command(flatten)]
     privacy: PrivacyArgs,
+    #[command(flatten)]
+    settings: settings::SettingsArgs,
     #[command(flatten)]
     telemetry: TelemetryArgs,
 }
@@ -1248,15 +1256,15 @@ fn note_config(
         &probe.layers,
     ));
     probe.concurrency = cfg.concurrency as u64;
-    probe.fail_fast = cli.fail_fast;
+    probe.fail_fast = cfg.fail_fast;
     probe.features = telemetry::payload::Features {
         junit: cli.reports.junit.is_some(),
         cucumber_json: cli.reports.cucumber_json.is_some(),
         events,
         evidence: evidence.names(),
         artifacts_dir: cli.artifacts_dir.is_some() || env_var("BDDKIT_ARTIFACTS_DIR").is_some(),
-        tags: !cli.tags.is_empty(),
-        paths: !cli.paths.is_empty(),
+        tags: !cfg.tags.is_empty(),
+        paths: !cli.paths.is_empty() || env_var("BDDKIT_PATHS").is_some(),
         env: cli.env.is_some(),
     };
     probe.resources = telemetry::run::resources_of(cfg);
@@ -1307,7 +1315,14 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     let resolved = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
     let config_path = resolved.path;
-    let cfg = config::load(&config_path, cli.env.as_deref())?;
+    let mut cfg = config::load(&config_path, cli.env.as_deref())?;
+    let mut overrides = settings::resolve(&cli.settings, &privacy::process_env)?;
+    // `run`'s own two flags sit on top of the environment.
+    overrides.fail_fast = cli.fail_fast.or(overrides.fail_fast);
+    if !cli.tags.is_empty() {
+        overrides.tags = Some(cli.tags.clone());
+    }
+    cfg.apply(&overrides)?;
     // The config key is the suite's default: a run without a stream ignores it.
     let evidence = match evidence {
         Some((_, sources)) => sources,
@@ -1364,7 +1379,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     };
 
     probe.stage = Some(telemetry::payload::Stage::Selection);
-    let filter = feature::TagFilter::new(&cli.tags);
+    let filter = feature::TagFilter::new(&cfg.tags);
     let paths = if cli.paths.is_empty() {
         cfg.paths.as_slice()
     } else {
@@ -1504,7 +1519,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         plugins.clone(),
         cfg.effective_options.clone(),
         artifacts,
-        cli.fail_fast,
+        cfg.fail_fast,
     );
     ctx.events = events;
     ctx.evidence = evidence;

@@ -118,6 +118,15 @@ pub fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// A boolean variable: `true`, `false`, `1` or `0`, and nothing else.
+pub fn env_bool(name: &str, value: &str) -> Result<bool> {
+    match value.trim() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => bail!("{name} is {value:?}, expected true, false, 1 or 0"),
+    }
+}
+
 /// The environment layer. `get` returns a variable's value, and `None` for one
 /// that is absent (an empty one is treated as absent): an empty variable is unset, as for `BDDKIT_EVENTS`,
 /// so the environment cannot say "replace with nothing" — a flag or the config can.
@@ -134,11 +143,7 @@ pub fn env_layer(get: &dyn Fn(&str) -> Option<String>) -> Result<PrivacyLayer> {
         })
         .transpose()?;
     let reveal = get("BDDKIT_PRIVACY_REVEAL")
-        .map(|v| match v.trim() {
-            "true" | "1" => Ok(true),
-            "false" | "0" => Ok(false),
-            _ => bail!("BDDKIT_PRIVACY_REVEAL is {v:?}, expected true, false, 1 or 0"),
-        })
+        .map(|v| env_bool("BDDKIT_PRIVACY_REVEAL", &v))
         .transpose()?;
     Ok(PrivacyLayer {
         words: list("WORDS"),
