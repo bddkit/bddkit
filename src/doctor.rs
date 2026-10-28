@@ -590,6 +590,13 @@ fn check_features(
                     detail.push_str(&format!("\n{}:{line}", feature::display_path(path)));
                 }
             }
+            let hints = include_hints(&loaded, registry);
+            if !hints.is_empty() {
+                detail.push_str("\ninclude hints:");
+                for hint in hints {
+                    detail.push_str(&format!("\n{hint}"));
+                }
+            }
         }
         report.push("steps", None, Status::Ok, &detail);
     }
@@ -605,6 +612,209 @@ fn check_features(
         Err(error) => report.push("scheduling", None, Status::Failed, &error),
     }
     unmarked
+}
+
+/// Hints on `I include`, shown under the `steps` row and never failing it (the
+/// privacy row's footing): `doctor` only reads, and a plugin step can publish
+/// variables the host cannot see, so neither finding is certain enough for
+/// `validate::check`.
+///
+/// 1. An `extract … from JSON|cookies|response body` straight after an include
+///    reads the response the helper left behind; it breaks the day the helper
+///    sends one more request. Quiet when the helper exports that name.
+/// 2. An `@exports` name no step of the helper (or the nested include it
+///    exports) writes: `run` finds it out only at the include.
+///
+/// Anything `validate::check` already refuses is skipped, not repeated.
+// ponytail: callers are the loaded feature files only; a macro body that
+// includes, or a helper outside `paths`, is not scanned. Walk those too if a
+// suite needs it.
+fn include_hints(
+    loaded: &[std::sync::Arc<feature::LoadedFeature>],
+    registry: &crate::steps::Registry,
+) -> Vec<String> {
+    use crate::steps::{StepId, StepTarget};
+    let mut extracts = std::collections::BTreeSet::new();
+    let mut unset = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for lf in loaded {
+        let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
+        for sc in lf.scenarios() {
+            for expanded in feature::expand_outlines(sc.scenario) {
+                let steps: Vec<_> = lf
+                    .background_steps(sc.rule)
+                    .into_iter()
+                    .chain(expanded.steps)
+                    .collect();
+                for (i, step) in steps.iter().enumerate() {
+                    let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
+                        registry.find(&step.text)
+                    else {
+                        continue;
+                    };
+                    let (name, prefix) = match id {
+                        StepId::Include => (None, caps.get(1)),
+                        StepId::IncludeScenario => (Some(caps[1].as_str()), caps.get(2)),
+                        _ => continue,
+                    };
+                    let prefix = prefix.map_or("", String::as_str);
+                    let Ok(resolved) = crate::include::resolve(&caps[0], base) else {
+                        continue;
+                    };
+                    let Ok(included) = feature::load(&resolved) else {
+                        continue;
+                    };
+                    let Ok(chosen) = crate::include::select_scenario(&included, name) else {
+                        continue;
+                    };
+                    let Ok(exports) = feature::exports_of(&included, chosen.scenario) else {
+                        continue;
+                    };
+                    if let Some(next) = steps.get(i + 1)
+                        && let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
+                            registry.find(&next.text)
+                        && matches!(
+                            id,
+                            StepId::ExtractFromJson
+                                | StepId::ExtractFromJsonGlobal
+                                | StepId::ExtractFromCookies
+                                | StepId::ExtractFromCookiesGlobal
+                                | StepId::ExtractFromMarkup
+                        )
+                        && !exported(&exports, prefix, &caps[1])
+                    {
+                        extracts.insert(format!(
+                            "{}:{}: extract {:?} reads the response the include left behind; \
+                             export the value from the helper instead",
+                            feature::display_path(&lf.path),
+                            next.line,
+                            caps[1]
+                        ));
+                    }
+                    if !seen.insert((resolved, chosen.scenario.name.clone())) {
+                        continue;
+                    }
+                    let Some(written) = written_names(&included, chosen, registry) else {
+                        continue;
+                    };
+                    for export in &exports {
+                        if !export.ends_with('*')
+                            && !["last_insert_", "updated_", "deleted_"]
+                                .iter()
+                                .any(|p| export.starts_with(p))
+                            && !written.contains(export)
+                        {
+                            unset.insert(format!(
+                                "{}:{}: @exports names {export:?}, but no step of the scenario sets it",
+                                feature::display_path(&included.path),
+                                chosen.scenario.position.line
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    extracts.into_iter().chain(unset).collect()
+}
+
+/// Whether `name`, as the caller sees it after `with prefix`, is one of the
+/// helper's `exports` (a trailing `*` matches the rest).
+fn exported(exports: &[String], prefix: &str, name: &str) -> bool {
+    let join = |e: &str| {
+        if prefix.is_empty() {
+            e.to_string()
+        } else {
+            format!("{prefix}_{e}")
+        }
+    };
+    exports.iter().any(|e| match e.strip_suffix('*') {
+        Some(stem) => name.starts_with(&join(stem)),
+        None => name == join(e),
+    })
+}
+
+/// The variable names a scenario's own steps write, or `None` when it has a
+/// step whose writes cannot be listed (SRP and AES derive a prefix, a name
+/// holding a `<<slot>>`, a macro or include exporting a glob).
+fn written_names(
+    lf: &feature::LoadedFeature,
+    chosen: feature::ScenarioRef<'_>,
+    registry: &crate::steps::Registry,
+) -> Option<std::collections::BTreeSet<String>> {
+    use crate::steps::{StepId, StepTarget};
+    // An Outline's columns are seeded by the include's `with:`.
+    let mut out: std::collections::BTreeSet<String> = chosen
+        .scenario
+        .examples
+        .iter()
+        .filter_map(|e| e.table.as_ref()?.rows.first())
+        .flatten()
+        .cloned()
+        .collect();
+    let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
+    let steps = lf
+        .background_steps(chosen.rule)
+        .into_iter()
+        .chain(chosen.scenario.steps.iter().map(feature::to_step));
+    for step in steps {
+        let Ok(Some((target, caps))) = registry.find(&step.text) else {
+            continue;
+        };
+        let names: Vec<String> = match target {
+            StepTarget::Macro(index) => registry.macro_def(index).exports.clone(),
+            StepTarget::Builtin { id, .. } => match id {
+                StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
+                StepId::ExtractFromJson
+                | StepId::ExtractFromJsonGlobal
+                | StepId::ExtractFromCookies
+                | StepId::ExtractFromCookiesGlobal
+                | StepId::ExtractFromMarkup
+                | StepId::GetSequence => vec![caps[1].clone()],
+                StepId::ExtractJsonFromVariable
+                | StepId::ExtractJsonFromVariableGlobal
+                | StepId::ExtractRegexFromVariable
+                | StepId::ExtractRegexFromVariableGlobal
+                | StepId::CallFunction => vec![caps[2].clone()],
+                StepId::ExtractFromDb => vec![caps[3].clone()],
+                StepId::SrpVerifier
+                | StepId::SrpVerifierWithSalt
+                | StepId::SrpStartLogin
+                | StepId::SrpCompleteLogin
+                | StepId::EncryptWithAes => return None,
+                StepId::Include | StepId::IncludeScenario => {
+                    let (name, prefix) = if id == StepId::Include {
+                        (None, caps.get(1))
+                    } else {
+                        (Some(caps[1].as_str()), caps.get(2))
+                    };
+                    let inner = crate::include::resolve(&caps[0], base)
+                        .ok()
+                        .and_then(|path| feature::load(&path).ok())?;
+                    let chosen = crate::include::select_scenario(&inner, name).ok()?;
+                    let prefix = prefix.map_or("", String::as_str);
+                    feature::exports_of(&inner, chosen.scenario)
+                        .ok()?
+                        .into_iter()
+                        .map(|e| {
+                            if prefix.is_empty() {
+                                e
+                            } else {
+                                format!("{prefix}_{e}")
+                            }
+                        })
+                        .collect()
+                }
+                _ => continue,
+            },
+            StepTarget::Plugin { .. } => continue,
+        };
+        if names.iter().any(|n| n.contains("<<") || n.ends_with('*')) {
+            return None;
+        }
+        out.extend(names);
+    }
+    Some(out)
 }
 
 /// Slots in the suite's feature files and macro bodies that look like a secret

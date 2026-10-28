@@ -1449,6 +1449,70 @@ fn doctor_names_the_file_and_line_of_an_undefined_step() {
     assert!(stdout.contains("I frobnicate"), "{stdout}");
 }
 
+/// A caller and a helper side by side; returns `doctor`'s exit code and stdout.
+fn doctor_include_pair(name: &str, caller: &str, helper: &str) -> (Option<i32>, String) {
+    let cfg = write_doctor_project(name, "http://127.0.0.1:1/", caller, "");
+    let features = cfg.parent().expect("config has a parent").join("features");
+    std::fs::write(features.join("helper.feature"), helper).expect("write helper");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", cfg.to_str().expect("path is UTF-8")])
+        .output()
+        .expect("failed to run bddkit");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+const TEAM_CALLER: &str = "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n    And extract \"id\" from JSON as \"team_id\"\n";
+
+#[test]
+fn doctor_hints_at_an_extract_that_reads_the_response_an_include_left_behind() {
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-extract",
+        TEAM_CALLER,
+        "Feature: helper\n  Scenario: make\n    Given set variable \"x\" to \"1\"\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(stdout.contains("only.feature:4"), "{stdout}");
+    assert!(stdout.contains("left behind"), "{stdout}");
+}
+
+#[test]
+fn doctor_hints_at_an_export_the_helper_never_sets() {
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-export",
+        "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n",
+        "Feature: helper\n  @exports(team_idd)\n  Scenario: make\n    Given set variable \"team_id\" to \"1\"\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(stdout.contains("helper.feature:3"), "{stdout}");
+    assert!(stdout.contains("team_idd"), "{stdout}");
+}
+
+#[test]
+fn doctor_stays_quiet_about_a_helper_that_exports_what_it_sets() {
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-quiet",
+        "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n    Then variable \"team_id\" should be equal to \"1\"\n",
+        "Feature: helper\n  @exports(team_id)\n  Scenario: make\n    Given extract \"id\" from JSON as \"team_id\"\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(!stdout.contains("left behind"), "{stdout}");
+    assert!(!stdout.contains("sets it"), "{stdout}");
+
+    // The extract of an exported name is no hint either, and neither is
+    // exporting a `with:` parameter, which the include seeds itself.
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-quiet-with",
+        "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\" with:\n      | tier  |\n      | basic |\n    And extract \"id\" from JSON as \"tier\"\n",
+        "Feature: helper\n  @exports(tier)\n  Scenario Outline: make\n    Given set variable \"x\" to \"<tier>\"\n    Examples:\n      | tier |\n      | a    |\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(!stdout.contains("left behind"), "{stdout}");
+    assert!(!stdout.contains("sets it"), "{stdout}");
+}
+
 /// A step whose resource kind has nothing declared is a guaranteed failure in
 /// the scenario, and `run` does not refuse the config — a `--tag` may keep the
 /// scenario out. `doctor` applies no filter, so it is the one place to say so.
