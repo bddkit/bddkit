@@ -16,7 +16,7 @@ impl std::fmt::Display for Problem {
             "  {}:{}\n    {}",
             display_path(&self.file),
             self.line,
-            self.message
+            self.message.replace('\n', "\n    ")
         )
     }
 }
@@ -107,7 +107,11 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                 Ok(None) => problems.push(Problem {
                     file: lf.path.clone(),
                     line: step.line,
-                    message: format!("unknown step: {:?}", step.text),
+                    message: format!(
+                        "unknown step: {:?}{}",
+                        step.text,
+                        reg.unknown_step_detail(&step.text)
+                    ),
                 }),
                 Err(e) => problems.push(Problem {
                     file: lf.path.clone(),
@@ -353,7 +357,11 @@ fn check_include_body_step(
             caps,
         ))) => check_attached_file(&caps[0], base_dir),
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(format!("unknown step: {:?}", step.text)),
+        Ok(None) => Err(format!(
+            "unknown step: {:?}{}",
+            step.text,
+            reg.unknown_step_detail(&step.text)
+        )),
         Err(e) => Err(e),
     }
 }

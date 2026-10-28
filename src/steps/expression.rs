@@ -144,7 +144,23 @@ impl ParamType {
     /// does (`__{id}_0`, `__{id}_1`), so the quotes of a bare parameter sit
     /// outside what it captures.
     fn pattern(&self, quoting: Quoting) -> String {
-        let value = self.value();
+        self.wrap(quoting, self.value())
+    }
+
+    /// `pattern` with a typed parameter's value widened to anything: the same
+    /// quotes and groups, so it matches a literal the strict regex refused.
+    fn loose_pattern(&self, quoting: Quoting) -> String {
+        self.wrap(
+            quoting,
+            if self.typed {
+                ".*?".into()
+            } else {
+                self.value()
+            },
+        )
+    }
+
+    fn wrap(&self, quoting: Quoting, value: String) -> String {
         match quoting {
             Quoting::AsWritten => value,
             Quoting::Required => format!(r#""({value})""#),
@@ -294,6 +310,10 @@ pub struct Compiled {
     pub variants: Vec<Vec<PatternToken>>,
     /// `{name:type}` → `<name>`, everything else verbatim.
     pub template: String,
+    /// The same expression with every typed parameter widened to `.*?`: it
+    /// matches a literal the strict regex refused, so the refusal can be
+    /// explained. `None` when no parameter is typed.
+    pub loose: Option<Regex>,
 }
 
 pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
@@ -301,6 +321,7 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
         .map_err(|error| format!("invalid step expression {expr:?}: {error}"))?;
     let mut params: Vec<Param> = Vec::new();
     let mut types: HashMap<String, String> = HashMap::new();
+    let mut loose_types: HashMap<String, String> = HashMap::new();
     let mut variants: Vec<Vec<PatternToken>> = vec![Vec::new()];
     let mut template = String::with_capacity(expr.len());
     let mut last = 0;
@@ -352,6 +373,7 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
                 });
                 last = end;
                 types.insert(raw.to_string(), param.ty.pattern(quoting));
+                loose_types.insert(raw.to_string(), param.ty.loose_pattern(quoting));
                 let first = params.iter().map(|p| p.groups.len()).sum::<usize>() + 1;
                 let count = if quoting == Quoting::Optional { 2 } else { 1 };
                 param.groups = (first..first + count).collect();
@@ -365,11 +387,20 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
     template.push_str(&expr[last..]);
     let regex = Expression::regex_with_parameters(expr, &types)
         .map_err(|error| format!("invalid step expression {expr:?}: {error}"))?;
+    let loose = if params.iter().any(|param| param.ty.typed) {
+        Some(
+            Expression::regex_with_parameters(expr, &loose_types)
+                .map_err(|error| format!("invalid step expression {expr:?}: {error}"))?,
+        )
+    } else {
+        None
+    };
     Ok(Compiled {
         regex,
         params,
         variants,
         template,
+        loose,
     })
 }
 

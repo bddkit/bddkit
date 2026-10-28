@@ -195,7 +195,7 @@ In CI the report is wanted exactly when `run` exited 1, so it has to run after a
 
 ## Checking a suite before running it
 
-`bddkit doctor` runs every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and a DSN the driver cannot parse — and reports all of them at once instead of stopping at the first:
+`bddkit doctor` checks a suite without running it. It does every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and a DSN the driver cannot parse — and lists every problem it finds, one per row, instead of stopping at the first. An unknown step is explained: a typed parameter that refused its literal says which (`parameter <code> expects uint, got "abc"`), otherwise the closest step templates are offered as `did you mean`; `run` prints the same lines:
 
 ```console
 $ bddkit doctor --config suite.yaml
@@ -205,16 +205,17 @@ APP_ENV: dev
   ✓ config                parsed, ${VAR} expanded, defaults resolved
   ✓ plugins               none installed
   ✓ macros                loaded, no conflict or cycle
-  ✗ steps
-      features/auth.feature:12
-        unknown step: "I frobnicate"
+  ✗ steps features/auth.feature:12  unknown step: "I frobnicate"
+  ✗ steps features/auth.feature:14
+      unknown step: "the response status is 200"
+        did you mean: the response code is <code>
   ✓ scheduling            4 chain(s)
   ✓ api main              https://api.example.test (20s timeout)
   - api main              live probe skipped
   ✓ db primary            postgres
   - db primary            live probe skipped
 
-1 problem(s)
+2 problem(s)
 static checks only — pass --live to also probe the resources
 ```
 
