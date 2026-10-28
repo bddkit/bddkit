@@ -124,6 +124,12 @@ pub fn remove(file: &Path, name: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Whether `upsert` could write `file`: it parses, is a mapping (or empty) and
+/// its `plugin` key is a list. Nothing is written, not even a missing file.
+pub fn check_writable(file: &Path) -> Result<()> {
+    plugin_list(&mut read_value(file)?, file).map(drop)
+}
+
 fn entry_name(entry: &Value) -> Option<&str> {
     entry.get("name").and_then(Value::as_str)
 }
