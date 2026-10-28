@@ -371,6 +371,8 @@ State that carries across the include boundary unchanged — no reset happens be
 
 An include can nest up to 16 levels deep, checked at validation time; a cycle (file A includes file B which includes file A) is a static error, reported before the first request, naming every file in the cycle. The path `"<file>"` is a compile-time literal — a string, never a variable — and is resolved relative to the directory of the feature file that wrote the step. A missing file, a file that isn't `.feature`, or — when `scenario "<name>"` is used — a name that matches zero or more than one scenario in the resolved file, is caught at validation time, before the first request.
 
+`bddkit doctor` adds two hints under its `steps` row, with `file:line`, and never fails on them: an `extract … from JSON`, `cookies` or `response body` on the line right after an `I include` reads the response the helper happened to leave last, which changes the day the helper sends one more request — export the value with `@exports` instead; and an `@exports` name that no `set variable`, `extract … as`, macro or nested include in the helper writes. A helper with a plugin step gets no second hint at all, because a plugin can publish variables `doctor` cannot see.
+
 **Known limitations, deliberately out of scope:**
 - Calling every scenario in a file, or every Examples row of a Scenario Outline, in one include step — would require a new step form that has not yet been designed.
 
