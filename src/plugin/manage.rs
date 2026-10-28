@@ -218,12 +218,11 @@ impl Context {
             &Self::record(target, &name, repo, version, &fetched)?,
         )?;
         if let Some(previous) = previous
-            && previous.path.parent() != Some(dir.as_path())
             && owned(target, &previous)
-            && let Err(error) = remove_version_dir(&previous.path)
+            && let Err(error) = self.remove_unreferenced_version(&previous.path)
         {
             eprintln!(
-                "warning: could not remove {}: {error}",
+                "warning: could not remove {}: {error:#}",
                 previous.path.display()
             );
         }
@@ -504,12 +503,13 @@ impl Context {
         acted.layer = Some(target.label.clone());
         lock::remove(&target.lock, name)?;
         if owned(&target, &entry) {
-            remove_version_dir(&entry.path).with_context(|| {
-                format!(
-                    "unregistered, but could not delete {}",
-                    entry.path.display()
-                )
-            })?;
+            self.remove_unreferenced_version(&entry.path)
+                .with_context(|| {
+                    format!(
+                        "unregistered, but could not finish removing {}",
+                        entry.path.display()
+                    )
+                })?;
         }
         println!(
             "removed {name} from {} ({})",
@@ -517,6 +517,35 @@ impl Context {
             target.lock.display()
         );
         Ok(0)
+    }
+
+    /// Every library any lock file of the chain points at, and any of their
+    /// `.before-upgrade` backups, which is what `upgrade --rollback` restores.
+    /// One definition of «still in use» for `prune`, `remove` and `update`.
+    fn referenced_paths(&self) -> Result<Vec<PathBuf>> {
+        let mut used = Vec::new();
+        for target in self.targets(None) {
+            let backup = crate::upgrade::sibling_of_backup(&target.lock);
+            for file in [&target.lock, &backup] {
+                used.extend(lock::read_file(file)?.iter().map(|e| real(&e.path)));
+            }
+        }
+        Ok(used)
+    }
+
+    /// `remove_version_dir`, unless some lock file still points into it. Called
+    /// AFTER the entry that named it is gone from its own file: `user` and
+    /// `user.local` share one data directory, so another file may well be
+    /// running the same release. That order is load-bearing: before the write,
+    /// the file being changed would still name the directory it is about to
+    /// lose, and a same-version reinstall would delete its own new copy.
+    fn remove_unreferenced_version(&self, lib: &Path) -> Result<()> {
+        if let Some(dir) = lib.parent()
+            && is_referenced(&self.referenced_paths()?, dir)
+        {
+            return Ok(());
+        }
+        Ok(remove_version_dir(lib)?)
     }
 
     /// Version directories under the data directory of every layer `plugin
@@ -527,14 +556,7 @@ impl Context {
     /// exactly one regular file, a dynamic library. A symlink, a dev build
     /// with more files, anything else is not bddkit's to delete.
     pub(crate) fn unreferenced(&self) -> Result<Vec<PathBuf>> {
-        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let mut used = Vec::new();
-        for target in self.targets(None) {
-            let backup = crate::upgrade::sibling_of_backup(&target.lock);
-            for file in [&target.lock, &backup] {
-                used.extend(lock::read_file(file)?.iter().map(|e| real(&e.path)));
-            }
-        }
+        let used = self.referenced_paths()?;
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for target in self.targets(None) {
@@ -543,8 +565,7 @@ impl Context {
             }
             for repo in subdirs(&target.data.join("plugins")) {
                 for dir in subdirs(&repo) {
-                    let dir_real = real(&dir);
-                    if is_install_shape(&dir) && !used.iter().any(|p| p.starts_with(&dir_real)) {
+                    if is_install_shape(&dir) && !is_referenced(&used, &dir) {
                         out.push(dir);
                     }
                 }
@@ -728,6 +749,16 @@ fn human(bytes: u64) -> String {
         b if b >= 1 << 10 => format!("{:.1} KiB", b as f64 / 1024.0),
         b => format!("{b} B"),
     }
+}
+
+fn real(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether any of `used` (from `referenced_paths`) lies inside `dir`.
+fn is_referenced(used: &[PathBuf], dir: &Path) -> bool {
+    let dir = real(dir);
+    used.iter().any(|path| path.starts_with(&dir))
 }
 
 /// `<data>/plugins/<repo>/<version>/`: where one release of one plugin lives.

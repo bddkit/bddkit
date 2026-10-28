@@ -655,6 +655,66 @@ async fn the_first_project_install_is_not_reported_as_shadowed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_and_user_local_share_a_release_until_the_last_one_lets_go() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    let root = temp("shared-data-dir");
+    std::fs::create_dir_all(root.join("suite")).expect("suite");
+    let release = root.join("data/bddkit/plugins/echo-plugin/0.1.0");
+    for layer in ["user", "user.local"] {
+        let out = layered(&root, &github, &["install", "echo@0.1.0", "--layer", layer]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    }
+
+    // Replacing one entry must not delete what the other still runs.
+    let out = layered(
+        &root,
+        &github,
+        &["install", "echo@0.2.0", "--layer", "user"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(release.is_dir(), "user.local still points into 0.1.0");
+
+    // Removing it again: the other layer's entry is still there.
+    let out = layered(&root, &github, &["remove", "echo", "--layer", "user"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(release.is_dir(), "{}", text(&out));
+
+    let out = layered(&root, &github, &["remove", "echo", "--layer", "user.local"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!release.exists(), "the last reference is gone");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remove_that_cannot_check_the_other_lock_files_keeps_the_release() {
+    let (stub, github) = spawn().await;
+    let root = temp("remove-unchecked");
+    std::fs::create_dir_all(root.join("suite")).expect("suite");
+    installed_in(&root, &github, &stub);
+    // A sibling lock file nothing can parse.
+    std::fs::write(root.join("config/bddkit/plugins.local.yaml"), "plugin: 5\n").expect("lock");
+
+    let out = layered(&root, &github, &["remove", "echo", "--layer", "user"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("could not finish removing"),
+        "{}",
+        text(&out)
+    );
+    assert!(root.join("data/bddkit/plugins/echo-plugin/0.1.0").is_dir());
+}
+
+/// `echo` 0.1.0 installed into the `user` layer of `root`.
+fn installed_in(root: &Path, github: &str, stub: &Stub) {
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    let out = layered(root, github, &["install", "echo@0.1.0", "--layer", "user"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_names_a_typo_that_matched_nothing() {
     let (_stub, github) = spawn().await;
     let dir = temp("update-typo");
