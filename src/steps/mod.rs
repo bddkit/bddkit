@@ -7,6 +7,7 @@ pub mod help;
 mod markup;
 pub mod plugin;
 pub mod srp;
+mod suggest;
 pub mod vars;
 
 use crate::failure::StepError;
@@ -840,6 +841,10 @@ struct Entry {
     /// secret group (`expression::plugin_params`). Captures of either are
     /// never type-checked.
     params: Vec<expression::Param>,
+    /// What `steps list` prints for this entry.
+    template: String,
+    /// `expression::Compiled::loose`; `None` for a plugin or group-switch regex.
+    loose: Option<Regex>,
 }
 
 #[derive(Debug)]
@@ -879,6 +884,8 @@ impl Registry {
                 },
                 regex: compiled.regex.clone(),
                 params: compiled.params.clone(),
+                template: compiled.template.clone(),
+                loose: compiled.loose.clone(),
             });
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
@@ -886,6 +893,8 @@ impl Registry {
                 target: StepTarget::Macro(index),
                 regex: definition.compiled.regex.clone(),
                 params: definition.compiled.params.clone(),
+                template: definition.compiled.template.clone(),
+                loose: definition.compiled.loose.clone(),
             });
         }
         let mut registry = Self {
@@ -935,6 +944,28 @@ impl Registry {
                 hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
             )),
         }
+    }
+
+    /// What follows `unknown step: "…"` wherever that is reported (`validate`,
+    /// an include body, a macro body): `\n  <line>` or nothing. A typed
+    /// parameter that refused a literal is named first, in the run-time
+    /// wording; otherwise the closest templates, as `steps list` prints them.
+    pub fn unknown_step_detail(&self, text: &str) -> String {
+        let refused = self.entries.iter().find_map(|entry| {
+            let caps = entry.loose.as_ref()?.captures(text)?;
+            let values = expression::arguments(&entry.params, &caps);
+            entry
+                .params
+                .iter()
+                .zip(values)
+                .filter(|(_, value)| !crate::vars::is_whole_slot(value))
+                .find_map(|(param, value)| param.check(&value).err())
+        });
+        let line = refused.or_else(|| {
+            let found = suggest::closest(text, self.entries.iter().map(|e| e.template.as_str()));
+            (!found.is_empty()).then(|| format!("did you mean: {}", found.join(" or ")))
+        });
+        line.map(|line| format!("\n  {line}")).unwrap_or_default()
     }
 
     /// The step text as a report, the console and the stream show it: a literal
@@ -1021,8 +1052,10 @@ impl Registry {
                 step,
                 assertion,
             },
+            template: help::template(pattern),
             regex: re,
             params: expression::plugin_params(secret_groups),
+            loose: None,
         });
         Ok(())
     }
@@ -1040,7 +1073,7 @@ impl Registry {
             .map(|g| regex::escape(g))
             .collect::<Vec<_>>()
             .join("|");
-        let pattern = format!(r#"^I use "([^"]*)" ({alternation})$"#);
+        let pattern = format!(r#"^I use "(?P<name>[^"]*)" (?P<group>{alternation})$"#);
         let re = Regex::new(&pattern)
             .map_err(|e| format!("invalid group-switch pattern {pattern:?}: {e}"))?;
         self.entries.push(Entry {
@@ -1048,8 +1081,10 @@ impl Registry {
                 id: StepId::UsePluginInstance,
                 kind: StepKind::Action,
             },
+            template: help::template(&pattern),
             regex: re,
             params: Vec::new(),
+            loose: None,
         });
         Ok(())
     }
@@ -1121,11 +1156,12 @@ impl Registry {
                     Some((StepTarget::Macro(target), _)) => graph[index].push(target),
                     None => {
                         return Err(format!(
-                            "unknown step {:?} in macro {:?} from {}:{}",
+                            "unknown step {:?} in macro {:?} from {}:{}{}",
                             step.text,
                             definition.step,
                             definition.source.display(),
                             definition.line,
+                            self.unknown_step_detail(&step.text),
                         ));
                     }
                 }
@@ -1899,6 +1935,102 @@ mod tests {
             .expect("no ambiguity")
             .expect("matched");
         assert_eq!(target, StepTarget::Macro(0));
+    }
+
+    #[test]
+    fn an_unknown_step_names_the_typed_parameter_that_refused_its_literal() {
+        let reg = Registry::new().unwrap();
+        assert_eq!(
+            reg.unknown_step_detail("the response code is abc"),
+            "\n  parameter <code> expects uint, got \"abc\""
+        );
+        assert_eq!(
+            reg.unknown_step_detail(r#"the response code is "abc""#),
+            "\n  parameter <code> expects uint, got \"abc\""
+        );
+        assert_eq!(
+            reg.unknown_step_detail(r#"I request "/ping" using HTTP POSTT"#),
+            "\n  parameter <method> expects method, got \"POSTT\""
+        );
+    }
+
+    #[test]
+    fn an_unknown_step_suggests_the_closest_templates() {
+        let reg = Registry::new().unwrap();
+        let cases = [
+            ("the response status is 200", "the response code is <code>"),
+            (
+                r#"the JSON node "a" should be nul"#,
+                r#"the JSON node "<path>" should be null"#,
+            ),
+            (
+                r#"I request "/x" using HTTP"#,
+                r#"I request "<path>" using HTTP <method>"#,
+            ),
+            (
+                r#"the response body contain "x""#,
+                r#"the response body contains "<text>" or the response body matches "<pattern>""#,
+            ),
+        ];
+        for (text, suggestion) in cases {
+            assert_eq!(
+                reg.unknown_step_detail(text),
+                format!("\n  did you mean: {suggestion}"),
+                "{text}"
+            );
+        }
+        assert_eq!(reg.unknown_step_detail("please make me a sandwich"), "");
+        // Too far from every template at a third of the phrase: no guess.
+        assert_eq!(
+            reg.unknown_step_detail(r#"I send a GET request to "/x""#),
+            ""
+        );
+        // An unterminated quote swallows the rest as one token, not drops it.
+        assert_eq!(
+            reg.unknown_step_detail(r#"I request "/x using HTTP GET"#),
+            "\n  did you mean: I request \"<path>\""
+        );
+        let mut grouped = Registry::new().unwrap();
+        grouped.add_use_group_step(&["echo".to_string()]).unwrap();
+        assert_eq!(
+            grouped.unknown_step_detail(r#"I use "x" ech"#),
+            "\n  did you mean: I use \"<name>\" <group>"
+        );
+    }
+
+    #[test]
+    fn tied_plugin_templates_are_all_suggested() {
+        let mut reg = Registry::new().unwrap();
+        reg.add_plugin_step(0, 0, r"^the echo counter is (\d+)$", true, &[])
+            .unwrap();
+        reg.add_plugin_step(0, 1, r"^the echo counter was (\d+)$", true, &[])
+            .unwrap();
+        assert_eq!(
+            reg.unknown_step_detail("the echo counter be 3"),
+            "\n  did you mean: the echo counter is <value1> or the echo counter was <value1>"
+        );
+    }
+
+    #[test]
+    fn a_macro_body_with_a_near_miss_step_gets_a_suggestion() {
+        let path = std::env::temp_dir().join(format!(
+            "bddkit-steps-macro-near-miss-{}.yaml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "- step: I do the mystery thing\n  do: [the response status is 200]\n",
+        )
+        .expect("write macro file");
+        let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
+        std::fs::remove_file(&path).ok();
+
+        let error = Registry::with_macros_and_plugins(catalog, &[], &[])
+            .expect_err("no step matches the body");
+        assert!(
+            error.contains("did you mean: the response code is <code>"),
+            "{error}"
+        );
     }
 
     #[test]

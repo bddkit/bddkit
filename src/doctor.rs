@@ -502,7 +502,7 @@ fn check_features(
     for path in paths {
         match feature::load(&path) {
             Ok(lf) => loaded.push(std::sync::Arc::new(lf)),
-            Err(error) => problems.push(format!("{}\n  {error:#}", feature::display_path(&path))),
+            Err(error) => problems.push((feature::display_path(&path), format!("{error:#}"))),
         }
     }
     // No tag filter: `doctor` answers "is this suite whole", not "is this tag
@@ -524,12 +524,10 @@ fn check_features(
                 &filter,
                 |target| unserved_group(cfg, plugins, target),
             ));
-            problems.extend(found.iter().map(|p| {
-                format!(
-                    "{}:{}\n  {}",
-                    feature::display_path(&p.file),
-                    p.line,
-                    p.message
+            problems.extend(found.into_iter().map(|p| {
+                (
+                    format!("{}:{}", feature::display_path(&p.file), p.line),
+                    p.message,
                 )
             }));
             None
@@ -541,7 +539,12 @@ fn check_features(
     // vocabulary was usable — neither has anything to do with it, and a
     // finding this stage already computed must not be thrown away.
     if !problems.is_empty() {
-        report.push("steps", None, Status::Failed, &problems.join("\n"));
+        // An Outline row repeats the same line once per Examples row.
+        let mut seen = std::collections::HashSet::new();
+        problems.retain(|problem| seen.insert(problem.clone()));
+        for (target, detail) in &problems {
+            report.push("steps", Some(target), Status::Failed, detail);
+        }
     } else if loaded.is_empty() {
         // `run` exits 2 here. A green "0 file(s), every step matched" would be
         // the most misleading line the command can print: a tick on a suite

@@ -49,7 +49,7 @@ const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "\nGherkin acceptance testing for backend services.\n",
     "\n  bddkit steps list                    every step this binary understands",
-    "\n  bddkit doctor --config suite.yaml    check a suite before it runs",
+    "\n  bddkit doctor --config suite.yaml    check a suite without running it",
 );
 
 #[derive(Parser)]
@@ -72,7 +72,7 @@ enum Command {
     Steps(StepsArgs),
     /// Set up a new suite: answer a few questions, or pass flags
     Init(init::InitArgs),
-    /// Check a suite's config, and with --live probe what it talks to
+    /// Check a suite without running it and list every problem found; --live also probes what it talks to
     Doctor(DoctorArgs),
     /// Render an event stream (`run --events`) as a report
     Report(RenderArgs),
@@ -552,7 +552,7 @@ fn list_fields(args: FieldsArgs) -> Result<i32> {
 
 #[derive(Args)]
 #[command(after_help = "Examples:
-  bddkit doctor --config suite.yaml          every static check, no socket opened
+  bddkit doctor --config suite.yaml          every check that needs no network, no socket opened
   bddkit doctor --config suite.yaml --live   also probe every API and database
   bddkit doctor --config suite.yaml --json   the same report, machine-readable
   bddkit doctor --config suite.yaml --junit reports/junit.xml

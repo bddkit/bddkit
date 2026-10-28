@@ -309,6 +309,22 @@ fn an_unknown_plugin_step_is_reported_before_the_run_starts() {
     assert!(stderr.contains("I yodel"), "{stderr}");
 }
 
+#[test]
+fn a_near_miss_of_a_plugin_step_suggests_its_template() {
+    let dir = project(
+        "near-miss",
+        "Feature: f\n  Scenario: s\n    When I echo \"x\" to \"greeting\"\n",
+        ECHO_GROUP,
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(r#"did you mean: I echo "<value>" as "<variable>""#),
+        "{stderr}"
+    );
+}
+
 /// Task 11 made a plugin reporting a failed reset into that scenario's
 /// failure; nothing exercised it before this test. The fixture fails its
 /// reset when its instance config carries `fail_reset: true` — driven by
