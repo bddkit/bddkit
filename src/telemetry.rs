@@ -329,9 +329,10 @@ pub fn store_answer(path: &Path, enabled: bool) -> Result<()> {
     write_atomically(path, &serde_yaml_ng::to_string(&map)?)
 }
 
-/// A temporary name in the same directory, then a rename: two commands ending
+/// A temporary name in the same directory, then a rename: two writers ending
 /// at once (parallel CI jobs sharing a home) replace the file whole, one after
-/// the other, and never leave half of either.
+/// the other, and never leave half of either. Shared with the plugin lock
+/// writer (`plugin::lock`), so keep it free of telemetry-only behavior.
 pub fn write_atomically(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;

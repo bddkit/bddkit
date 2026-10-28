@@ -29,6 +29,41 @@ pub(crate) struct Fetched {
     pub(crate) lib_path: PathBuf,
     sha256: String,
     host: &'static str,
+    /// The copy of this very version that was there before, moved out of the
+    /// way so a failed install can put it back (`settle`).
+    aside: Option<PathBuf>,
+}
+
+impl Fetched {
+    /// The new release is registered (or wanted): the old copy goes.
+    pub(crate) fn commit(&self) {
+        if let Some(aside) = &self.aside {
+            let _ = std::fs::remove_dir_all(aside);
+        }
+    }
+
+    /// The new release is refused: it goes, and the old copy comes back.
+    fn rollback(&self) {
+        if let Some(dir) = self.lib_path.parent() {
+            restore(dir, self.aside.as_deref());
+        }
+    }
+}
+
+/// Drops whatever is in `dir` and, if there was a copy moved aside, puts it back.
+/// Windows may refuse both while the new DLL is mapped; the person is told
+/// where the old copy is, because nothing else will.
+fn restore(dir: &Path, aside: Option<&Path>) {
+    let _ = std::fs::remove_dir_all(dir);
+    if let Some(aside) = aside
+        && let Err(error) = std::fs::rename(aside, dir)
+    {
+        eprintln!(
+            "warning: could not restore {}: {error}; the previous copy is at {}",
+            dir.display(),
+            aside.display()
+        );
+    }
 }
 
 pub struct Context {
@@ -146,14 +181,31 @@ impl Context {
         let download =
             install::download(&self.client, &self.sources.github, repo, version, host).await?;
         let dir = version_dir(target, repo, version);
-        // A reinstall of the same version starts clean, not beside a stale file.
-        let _ = std::fs::remove_dir_all(&dir);
-        let lib_path = install::extract_library(&download.bytes, &download.asset, &dir)?;
-        Ok(Fetched {
-            lib_path,
-            sha256: download.sha256,
-            host,
-        })
+        // A reinstall of the same version starts clean, not beside a stale
+        // file — but the working copy is moved aside, not deleted, until the
+        // new one has loaded. It cannot be extracted elsewhere and renamed in:
+        // Windows will not rename a directory holding a mapped DLL.
+        let aside = dir.exists().then(|| {
+            let aside = dir.with_file_name(format!("{version}.replaced-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&aside);
+            aside
+        });
+        if let Some(aside) = &aside {
+            std::fs::rename(&dir, aside)
+                .with_context(|| format!("failed to move {} aside", dir.display()))?;
+        }
+        match install::extract_library(&download.bytes, &download.asset, &dir) {
+            Ok(lib_path) => Ok(Fetched {
+                lib_path,
+                sha256: download.sha256,
+                host,
+                aside,
+            }),
+            Err(error) => {
+                restore(&dir, aside.as_deref());
+                Err(error)
+            }
+        }
     }
 
     /// The lock entry for a fetched release of the plugin the manifest calls
@@ -190,44 +242,56 @@ impl Context {
     /// comes from its manifest and is never guessed.
     async fn install_into(&self, target: &Target, repo: &str, version: &str) -> Result<String> {
         let fetched = self.fetch_into(target, repo, version).await?;
-        let lib_path = fetched.lib_path.clone();
-        let dir = version_dir(target, repo, version);
-        let name = match Library::load(repo, &lib_path) {
-            Ok(lib) => {
-                let name = lib.manifest.name.clone();
-                // Never unloaded, for the reason `load_plugins` gives: a
-                // plugin's atexit handler must not run against an unmapped page.
-                std::mem::forget(lib);
-                name
+        match self.register(target, repo, version, &fetched) {
+            Ok((name, previous)) => {
+                fetched.commit();
+                if let Some(previous) = previous
+                    && owned(target, &previous)
+                    && let Err(error) = self.remove_unreferenced_version(&previous.path)
+                {
+                    eprintln!(
+                        "warning: could not remove {}: {error:#}",
+                        previous.path.display()
+                    );
+                }
+                Ok(name)
             }
+            // Nothing points at the new copy, and the one it replaced is back.
             Err(error) => {
-                let error = install::classed(error, PluginResult::Refused);
-                // ponytail: Windows cannot delete a DLL it has mapped, so a
-                // rejected plugin may leave its directory there; nothing
-                // points at it. Sweep it on the next install if it matters.
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(error);
+                fetched.rollback();
+                Err(error)
             }
-        };
+        }
+    }
 
+    /// Load the fetched library and only then write the lock entry — nothing
+    /// is registered that `run` would refuse. The plugin's name comes from its
+    /// manifest and is never guessed; the entry it replaced is returned.
+    fn register(
+        &self,
+        target: &Target,
+        repo: &str,
+        version: &str,
+        fetched: &Fetched,
+    ) -> Result<(String, Option<lock::LockEntry>)> {
+        // A path already loaded in this process (`update` over two layers that
+        // share a release) may resolve to the old mapping, not the new file:
+        // dlopen matches by name first. No regression — the old code loaded
+        // from the same path — and a separate `install` is unaffected.
+        let lib = Library::load(repo, &fetched.lib_path)
+            .map_err(|error| install::classed(error, PluginResult::Refused))?;
+        let name = lib.manifest.name.clone();
+        // Never unloaded, for the reason `load_plugins` gives: a plugin's
+        // atexit handler must not run against an unmapped page.
+        std::mem::forget(lib);
         let previous = lock::read_file(&target.lock)?
             .into_iter()
             .find(|entry| entry.name == name);
         lock::upsert(
             &target.lock,
-            &Self::record(target, &name, repo, version, &fetched)?,
+            &Self::record(target, &name, repo, version, fetched)?,
         )?;
-        if let Some(previous) = previous
-            && previous.path.parent() != Some(dir.as_path())
-            && owned(target, &previous)
-            && let Err(error) = remove_version_dir(&previous.path)
-        {
-            eprintln!(
-                "warning: could not remove {}: {error}",
-                previous.path.display()
-            );
-        }
-        Ok(name)
+        Ok((name, previous))
     }
 
     /// The label of a higher-precedence file that declares `name` too, which
@@ -504,12 +568,13 @@ impl Context {
         acted.layer = Some(target.label.clone());
         lock::remove(&target.lock, name)?;
         if owned(&target, &entry) {
-            remove_version_dir(&entry.path).with_context(|| {
-                format!(
-                    "unregistered, but could not delete {}",
-                    entry.path.display()
-                )
-            })?;
+            self.remove_unreferenced_version(&entry.path)
+                .with_context(|| {
+                    format!(
+                        "unregistered, but could not finish removing {}",
+                        entry.path.display()
+                    )
+                })?;
         }
         println!(
             "removed {name} from {} ({})",
@@ -517,6 +582,35 @@ impl Context {
             target.lock.display()
         );
         Ok(0)
+    }
+
+    /// Every library any lock file of the chain points at, and any of their
+    /// `.before-upgrade` backups, which is what `upgrade --rollback` restores.
+    /// One definition of «still in use» for `prune`, `remove` and `update`.
+    fn referenced_paths(&self) -> Result<Vec<PathBuf>> {
+        let mut used = Vec::new();
+        for target in self.targets(None) {
+            let backup = crate::upgrade::sibling_of_backup(&target.lock);
+            for file in [&target.lock, &backup] {
+                used.extend(lock::read_file(file)?.iter().map(|e| real(&e.path)));
+            }
+        }
+        Ok(used)
+    }
+
+    /// `remove_version_dir`, unless some lock file still points into it. Called
+    /// AFTER the entry that named it is gone from its own file: `user` and
+    /// `user.local` share one data directory, so another file may well be
+    /// running the same release. That order is load-bearing: before the write,
+    /// the file being changed would still name the directory it is about to
+    /// lose, and a same-version reinstall would delete its own new copy.
+    fn remove_unreferenced_version(&self, lib: &Path) -> Result<()> {
+        if let Some(dir) = lib.parent()
+            && is_referenced(&self.referenced_paths()?, dir)
+        {
+            return Ok(());
+        }
+        Ok(remove_version_dir(lib)?)
     }
 
     /// Version directories under the data directory of every layer `plugin
@@ -527,14 +621,7 @@ impl Context {
     /// exactly one regular file, a dynamic library. A symlink, a dev build
     /// with more files, anything else is not bddkit's to delete.
     pub(crate) fn unreferenced(&self) -> Result<Vec<PathBuf>> {
-        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let mut used = Vec::new();
-        for target in self.targets(None) {
-            let backup = crate::upgrade::sibling_of_backup(&target.lock);
-            for file in [&target.lock, &backup] {
-                used.extend(lock::read_file(file)?.iter().map(|e| real(&e.path)));
-            }
-        }
+        let used = self.referenced_paths()?;
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for target in self.targets(None) {
@@ -543,8 +630,7 @@ impl Context {
             }
             for repo in subdirs(&target.data.join("plugins")) {
                 for dir in subdirs(&repo) {
-                    let dir_real = real(&dir);
-                    if is_install_shape(&dir) && !used.iter().any(|p| p.starts_with(&dir_real)) {
+                    if is_install_shape(&dir) && !is_referenced(&used, &dir) {
                         out.push(dir);
                     }
                 }
@@ -728,6 +814,16 @@ fn human(bytes: u64) -> String {
         b if b >= 1 << 10 => format!("{:.1} KiB", b as f64 / 1024.0),
         b => format!("{b} B"),
     }
+}
+
+fn real(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether any of `used` (from `referenced_paths`) lies inside `dir`.
+fn is_referenced(used: &[PathBuf], dir: &Path) -> bool {
+    let dir = real(dir);
+    used.iter().any(|path| path.starts_with(&dir))
 }
 
 /// `<data>/plugins/<repo>/<version>/`: where one release of one plugin lives.
