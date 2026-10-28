@@ -364,7 +364,7 @@ Guard the trivial exports too. "Every export is guarded" is an invariant a reade
 - **`fatal`** — the step failed and retrying cannot help. The scenario fails with `error` plus the rendered diagnostics.
 - **`not_yet`** — *one fresh observation says the condition is not met yet.* Only an assertion may answer this. An action that answers `not_yet` fails the scenario with "a plugin action answered not_yet, which only an assertion may do".
 
-**Never sleep inside a plugin.** `not_yet` means "I looked, just now, and it was not there". The host owns the retry loop, the interval and the timeout — it is what the tester armed with `I expect the next assertion to pass within "30" seconds, checking every "500" milliseconds`, and what the `options.polling` cascade configures. A plugin that sleeps burns the host's budget from inside and makes the timeout mean nothing.
+**Never sleep inside a plugin.** `not_yet` means "I looked, just now, and it was not there". The host owns the retry loop, the interval and the timeout — it is what the tester armed with `I expect the next assertion to pass within 30 seconds, checking every 500 milliseconds`, and what the `options.polling` cascade configures. A plugin that sleeps burns the host's budget from inside and makes the timeout mean nothing.
 
 Every attempt is a full `bddkit_dispatch` with a fresh `artifacts_dir`. Re-observe: query again, fetch again, list the bucket again. Do not cache the first answer.
 

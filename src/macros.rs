@@ -382,6 +382,35 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_after_an_optional_parameter_is_still_masked() {
+        // The optional `{n:uint}` takes two capture groups, so the secret is no
+        // longer group `index + 1`; `display_text` must go by the parameter's own.
+        let path = fixture(
+            "secret-after-optional",
+            "- step: 'I wait {n:uint} then log in with \"{pw:secret}\"'\n  do: [the response code is 200]\n",
+        );
+        let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap();
+        let redactor = crate::privacy::Redactor::new(
+            &crate::privacy::Privacy::default(),
+            crate::privacy::Secrets::new(7),
+        );
+        for (text, shown) in [
+            (
+                r#"I wait 5 then log in with "hunter22""#,
+                r#"I wait 5 then log in with "***""#,
+            ),
+            (
+                r#"I wait "5" then log in with "hunter22""#,
+                r#"I wait "5" then log in with "***""#,
+            ),
+        ] {
+            assert_eq!(registry.display_text(text, &redactor), shown);
+            let (_, captures) = registry.find(text).unwrap().unwrap();
+            assert_eq!(captures, ["5", "hunter22"]);
+        }
+    }
+
+    #[test]
     fn registry_rejects_duplicate_macro_steps() {
         let path = fixture(
             "duplicate-step",

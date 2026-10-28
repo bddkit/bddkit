@@ -322,6 +322,56 @@ async fn a_variable_of_the_wrong_type_fails_the_step() {
     );
 }
 
+/// A typed parameter takes its quotes or leaves them, and a malformed slot in
+/// a typed position is refused before the first request (exit 2), not mid-run.
+#[test]
+fn a_number_may_be_written_with_or_without_quotes_and_a_bad_slot_is_refused_up_front() {
+    let dir = std::env::temp_dir().join(format!("bddkit-bare-typed-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "paths: [{}]\nresources:\n  api: {{}}\n",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+    let run = |steps: &str| {
+        std::fs::write(
+            dir.join("features/f.feature"),
+            format!("Feature: f\n  Scenario: s\n{steps}"),
+        )
+        .expect("write feature");
+        Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args([
+                "run",
+                "--config",
+                dir.join("cfg.yaml").to_str().expect("UTF-8"),
+            ])
+            .env_remove("CI")
+            .output()
+            .expect("failed to run bddkit")
+    };
+    let ok = run("    Given I sleep 0 seconds\n    And I sleep \"0\" seconds\n");
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&ok.stdout)
+    );
+    let bad = run("    Given I sleep <<user-id>> seconds\n");
+    assert_eq!(
+        bad.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The same check guards a macro's typed parameter: the value is refused
 /// before the macro body runs, and it fails the calling step (exit 1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -336,7 +386,7 @@ async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
     .expect("write feature");
     std::fs::write(
         dir.join("macros.yaml"),
-        "- step: 'the \"{path}\" page answers {code:uint}'\n  do:\n    - I request \"<<path>>\"\n    - the response code is <<code>>\n",
+        "- step: 'the \"{path:text}\" page answers {code:uint}'\n  do:\n    - I request \"<<path>>\"\n    - the response code is <<code>>\n",
     )
     .expect("write macros");
     std::fs::write(

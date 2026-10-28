@@ -138,8 +138,9 @@ pub struct StepDef {
     /// the few steps that belong to no resource at all.
     pub group: &'static str,
     /// A Cucumber Expression with bddkit's parameter extension: `{name}` is a
-    /// `text` parameter (`[^"]*`, written inside literal quotes), `{name:type}`
-    /// picks a type from `expression::TYPES`. The name is what `bddkit steps
+    /// `text` parameter (`[^"]*`; a bare one is matched inside quotes the host
+    /// adds), `{name:type}` picks a type from `expression::TYPES`, which also
+    /// decides whether a bare parameter takes quotes. The name is what `bddkit steps
     /// list` prints as `<name>`; captures still reach `dispatch` by position.
     pub expression: &'static str,
     /// One line, in English, stating the step's effect. English is the source
@@ -253,13 +254,13 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::ExpectWithinEvery,
         "general",
-        r#"I expect the next assertion to pass within "{seconds:uint}" seconds, checking every "{milliseconds:uint}" milliseconds"#,
+        r#"I expect the next assertion to pass within {seconds:uint} seconds, checking every {milliseconds:uint} milliseconds"#,
         "lets the next assertion retry for this long, at this interval",
     ),
     action(
         StepId::ExpectWithin,
         "general",
-        r#"I expect the next assertion to pass within "{seconds:uint}" seconds"#,
+        r#"I expect the next assertion to pass within {seconds:uint} seconds"#,
         "lets the next assertion retry for this long, at the configured interval",
     ),
     assertion(
@@ -692,7 +693,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::Sleep,
         "general",
-        r#"I sleep "{seconds:uint}" seconds"#,
+        r#"I sleep {seconds:uint} seconds"#,
         "pauses the scenario — a last resort, an eventual assertion is usually what you want",
     ),
     action(
@@ -825,14 +826,16 @@ pub static COMPILED_BUILTINS: std::sync::LazyLock<Vec<expression::Compiled>> =
             .collect()
     });
 
-/// A matched step: its target, raw captures and the entry's parameter types.
+/// A matched step: its target, one argument per parameter (a plugin's trailing
+/// groups as they are) and the entry's parameter types.
 pub type Found<'a> = (StepTarget, Vec<String>, &'a [expression::Param]);
 
 #[derive(Debug)]
 struct Entry {
     target: StepTarget,
     regex: Regex,
-    /// One per capture group of an entry declared as an expression. A
+    /// One per parameter of an entry declared as an expression (a bare
+    /// `optional` one owns two capture groups, see `Param::groups`). A
     /// group-switch regex has none; a plugin's has them only up to its last
     /// secret group (`expression::plugin_params`). Captures of either are
     /// never type-checked.
@@ -906,17 +909,21 @@ impl Registry {
             .map(|(target, caps, _)| (target, caps)))
     }
 
-    /// `find`, plus the matched entry's parameter types in capture order —
+    /// `find`, plus the matched entry's parameter types in declaration order —
     /// what the runner checks interpolated values against.
     pub fn find_with_params(&self, text: &str) -> Result<Option<Found<'_>>, String> {
         let mut hits = Vec::new();
         for entry in &self.entries {
             if let Some(c) = entry.regex.captures(text) {
-                let caps = c
+                let caps = expression::arguments(&entry.params, &c);
+                if entry
+                    .params
                     .iter()
-                    .skip(1)
-                    .map(|g| g.map(|m| m.as_str().to_string()).unwrap_or_default())
-                    .collect();
+                    .zip(&caps)
+                    .any(|(p, v)| !p.slot_is_whole(v))
+                {
+                    continue;
+                }
                 hits.push((entry.target, caps, entry.params.as_slice()));
             }
         }
@@ -952,9 +959,8 @@ impl Registry {
         let mut spans: Vec<(usize, usize)> = entry
             .params
             .iter()
-            .enumerate()
-            .filter(|(_, param)| param.ty.secret)
-            .filter_map(|(index, _)| captures.get(index + 1))
+            .filter(|param| param.ty.secret)
+            .filter_map(|param| param.span(&captures))
             .filter(|capture| !crate::vars::is_whole_slot(capture.as_str()))
             .map(|capture| (capture.start(), capture.end()))
             .collect();
@@ -1490,6 +1496,21 @@ mod tests {
 
     fn reg() -> Registry {
         Registry::new().unwrap()
+    }
+
+    #[test]
+    fn a_malformed_slot_in_a_typed_position_matches_no_step() {
+        let r = reg();
+        for text in ["I sleep <<x>> seconds", r#"I sleep "<<x>>" seconds"#] {
+            assert!(r.find(text).unwrap().is_some(), "{text}");
+        }
+        for text in [
+            "I sleep <<user-id>> seconds",
+            "I sleep <<>> seconds",
+            "I sleep <<1x>> seconds",
+        ] {
+            assert!(r.find(text).unwrap().is_none(), "{text}");
+        }
     }
 
     #[test]

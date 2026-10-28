@@ -10,10 +10,16 @@
 //! template and each parameter's type. Nothing else in the host parses a
 //! declaration, which is what keeps the three from drifting apart (#66).
 
-use crate::vars::PLACEHOLDER;
 use cucumber_expressions::{Alternative, Expression, SingleExpression, Spanned};
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+/// The shape of a whole `<<…>>` slot as the step regex sees it. Deliberately
+/// wider than `vars::PLACEHOLDER`, which a typed parameter checks after
+/// interpolation anyway: the crate expands `\w` in `PLACEHOLDER` into ~11 KB of
+/// unicode ranges per use (0.5 s in a debug build, and a bare `optional`
+/// parameter uses it twice), so the exact grammar cannot sit in every pattern.
+const SLOT_SHAPE: &str = r#"<<[^<>"\s]*(?:\([^)]*\))?>>"#;
 
 #[derive(Debug)]
 pub struct ParamType {
@@ -26,7 +32,24 @@ pub struct ParamType {
     /// The value is a secret: the runner registers it when the step is
     /// prepared and a literal one is written `***` in the step text it shows.
     pub secret: bool,
+    /// Whether a bare `{x}` of this type is written in quotes in `.feature` text.
+    quoting: Quoting,
     shape: Shape,
+}
+
+/// What a type says about the quotes around a BARE parameter, one without
+/// quotes of its own in the declaration — a `"{x}"` is always literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quoting {
+    /// Only `"…"`; the host adds the quotes. A bare `{x}` that matched unquoted
+    /// text would let `the response body contains {text}` match `… contains JSON:`.
+    Required,
+    /// `5` and `"5"` alike. Allowed only for a type whose values hold neither
+    /// whitespace nor `"` — `"5"` would be ambiguous otherwise, and a value with
+    /// spaces would swallow the step's next word.
+    Optional,
+    /// Exactly what the template says, nothing added.
+    AsWritten,
 }
 
 /// What a type can match, for conflict detection. It may be WIDER than the
@@ -46,6 +69,7 @@ pub static TYPES: &[ParamType] = &[
         regex: r#"[^"]*"#,
         typed: false,
         secret: false,
+        quoting: Quoting::Required,
         shape: Shape::Star(CharClass::NonQuote),
     },
     ParamType {
@@ -53,6 +77,7 @@ pub static TYPES: &[ParamType] = &[
         regex: r#"[^"]*"#,
         typed: false,
         secret: true,
+        quoting: Quoting::Required,
         shape: Shape::Star(CharClass::NonQuote),
     },
     ParamType {
@@ -60,34 +85,39 @@ pub static TYPES: &[ParamType] = &[
         regex: ".*?",
         typed: false,
         secret: false,
+        quoting: Quoting::AsWritten,
         shape: Shape::Star(CharClass::Any),
     },
     ParamType {
         name: "uint",
-        regex: r"\d+",
+        regex: "[0-9]+",
         typed: true,
         secret: false,
+        quoting: Quoting::Optional,
         shape: Shape::Plus(CharClass::Digit),
     },
     ParamType {
         name: "int",
-        regex: r"-?\d+",
+        regex: "-?[0-9]+",
         typed: true,
         secret: false,
+        quoting: Quoting::Optional,
         shape: Shape::SignedInt,
     },
     ParamType {
         name: "float",
-        regex: r"[+-]?(?:inf|NaN|(?:\d+|\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?)",
+        regex: r"[+-]?(?:inf|NaN|(?:[0-9]+|[0-9]+\.[0-9]*|[0-9]*\.[0-9]+)(?:[eE][+-]?[0-9]+)?)",
         typed: true,
         secret: false,
+        quoting: Quoting::Optional,
         shape: Shape::Star(CharClass::Any),
     },
     ParamType {
         name: "word",
-        regex: r"[^\s]+",
+        regex: r#"[^\s"]+"#,
         typed: true,
         secret: false,
+        quoting: Quoting::Optional,
         shape: Shape::Plus(CharClass::NonSpace),
     },
     ParamType {
@@ -95,20 +125,48 @@ pub static TYPES: &[ParamType] = &[
         regex: "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS",
         typed: true,
         secret: false,
+        quoting: Quoting::Optional,
         shape: Shape::Words(&["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
     },
 ];
 
 impl ParamType {
-    fn pattern(&self) -> String {
+    fn value(&self) -> String {
         if self.typed {
-            format!("{}|{PLACEHOLDER}", self.regex)
+            format!("{}|{SLOT_SHAPE}", self.regex)
         } else {
             self.regex.to_string()
         }
     }
 
-    fn tokens(&self) -> Vec<Vec<PatternToken>> {
+    /// The regex for the parameter's slot in the step. The crate wraps one that
+    /// holds no group in a group of its own and renames the groups of one that
+    /// does (`__{id}_0`, `__{id}_1`), so the quotes of a bare parameter sit
+    /// outside what it captures.
+    fn pattern(&self, quoting: Quoting) -> String {
+        let value = self.value();
+        match quoting {
+            Quoting::AsWritten => value,
+            Quoting::Required => format!(r#""({value})""#),
+            Quoting::Optional => format!(r#""({value})"|({value})"#),
+        }
+    }
+
+    fn tokens(&self, quoting: Quoting) -> Vec<Vec<PatternToken>> {
+        let bare = self.unquoted_tokens();
+        let quoted = |value: &Vec<PatternToken>| [exact("\""), value.clone(), exact("\"")].concat();
+        match quoting {
+            Quoting::AsWritten => bare,
+            Quoting::Required => bare.iter().map(quoted).collect(),
+            Quoting::Optional => bare
+                .iter()
+                .map(quoted)
+                .chain(bare.iter().cloned())
+                .collect(),
+        }
+    }
+
+    fn unquoted_tokens(&self) -> Vec<Vec<PatternToken>> {
         use PatternToken::{One, Star};
         let mut alternatives = match self.shape {
             Shape::Star(class) => vec![vec![Star(class)]],
@@ -137,7 +195,43 @@ impl ParamType {
 pub struct Param {
     pub name: String,
     pub ty: &'static ParamType,
+    /// The capture groups of the step regex that can hold this parameter's
+    /// value, 1-based: one, or two for a bare `optional` one (quoted, unquoted).
+    /// Exactly one of them matched.
+    groups: Vec<usize>,
     check: Option<Regex>,
+}
+
+/// One argument per parameter, as `dispatch` and the macros read them: the
+/// first group of each parameter that matched. Groups beyond the last
+/// parameter's — a plugin's regex has more groups than `plugin_params` names —
+/// follow as they are.
+pub fn arguments(params: &[Param], captures: &regex::Captures<'_>) -> Vec<String> {
+    let text = |group| captures.get(group).map(|m| m.as_str().to_string());
+    let covered = params
+        .last()
+        .and_then(|p| p.groups.last())
+        .copied()
+        .unwrap_or(0);
+    params
+        .iter()
+        .map(|p| p.groups.iter().find_map(|&g| text(g)).unwrap_or_default())
+        .chain((covered + 1..captures.len()).map(|g| text(g).unwrap_or_default()))
+        .collect()
+}
+
+impl Param {
+    /// A typed parameter matched a `<<…>>` shape wider than a real slot (see
+    /// `SLOT_SHAPE`); `false` means the step does not match, so `validate::check`
+    /// refuses it before the first request instead of `prepare` failing mid-run.
+    pub fn slot_is_whole(&self, value: &str) -> bool {
+        !self.ty.typed || !value.starts_with("<<") || crate::vars::is_whole_slot(value)
+    }
+
+    /// Where the value sits in the step text, `None` if no group matched.
+    pub fn span<'t>(&self, captures: &regex::Captures<'t>) -> Option<regex::Match<'t>> {
+        self.groups.iter().find_map(|&g| captures.get(g))
+    }
 }
 
 /// The parameters of a plugin step, whose regex has unnamed groups: one per
@@ -155,6 +249,7 @@ pub fn plugin_params(secret_groups: &[usize]) -> Vec<Param> {
     (1..=secret_groups.iter().copied().max().unwrap_or(0))
         .map(|group| Param {
             name: format!("group {group}"),
+            groups: vec![group],
             ty: ty(if secret_groups.contains(&group) {
                 "secret"
             } else {
@@ -194,7 +289,7 @@ impl Param {
 #[derive(Debug, Clone)]
 pub struct Compiled {
     pub regex: Regex,
-    /// In capture order: `params[i]` describes capture group `i + 1`.
+    /// In declaration order; each knows its own capture groups.
     pub params: Vec<Param>,
     pub variants: Vec<Vec<PatternToken>>,
     /// `{name:type}` → `<name>`, everything else verbatim.
@@ -232,7 +327,7 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
                 .collect(),
             SingleExpression::Parameter(parameter) => {
                 let raw: &str = parameter.input.fragment();
-                let param = param(raw, default_type, expr)?;
+                let mut param = param(raw, default_type, expr)?;
                 if params.iter().any(|seen| seen.name == param.name) {
                     return Err(format!(
                         "parameter {:?} is declared more than once in {expr:?}",
@@ -241,11 +336,26 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
                 }
                 // `location_offset` is the byte offset of the name, just past `{`.
                 let start = parameter.input.location_offset() - 1;
+                let end = start + raw.len() + 2;
+                // Bare unless the parameter sits inside a quoted literal of the
+                // template: an odd number of `"` before it (Cucumber has no `\"`).
+                let bare = expr[..start].matches('"').count().is_multiple_of(2);
+                let quoting = if bare {
+                    param.ty.quoting
+                } else {
+                    Quoting::AsWritten
+                };
                 template.push_str(&expr[last..start]);
-                template.push_str(&format!("<{}>", param.name));
-                last = start + raw.len() + 2;
-                types.insert(raw.to_string(), param.ty.pattern());
-                let alternatives = param.ty.tokens();
+                template.push_str(&match quoting {
+                    Quoting::Required => format!("\"<{}>\"", param.name),
+                    Quoting::Optional | Quoting::AsWritten => format!("<{}>", param.name),
+                });
+                last = end;
+                types.insert(raw.to_string(), param.ty.pattern(quoting));
+                let first = params.iter().map(|p| p.groups.len()).sum::<usize>() + 1;
+                let count = if quoting == Quoting::Optional { 2 } else { 1 };
+                param.groups = (first..first + count).collect();
+                let alternatives = param.ty.tokens(quoting);
                 params.push(param);
                 alternatives
             }
@@ -285,6 +395,7 @@ fn param(raw: &str, default_type: &str, expr: &str) -> Result<Param, String> {
     Ok(Param {
         name: name.to_string(),
         ty,
+        groups: Vec::new(),
         check,
     })
 }
@@ -313,8 +424,9 @@ fn exact(text: &str) -> Vec<PatternToken> {
         .collect()
 }
 
-// ponytail: each optional doubles the variants and each alternation / typed
-// parameter multiplies them, so a template with ~20 of them means ~10^6
+// ponytail: each optional doubles the variants and each alternation multiplies
+// them, a typed parameter by 2-8 and a bare `optional` one by twice that (the
+// quoted and the unquoted form), so a template with ~20 of them means ~10^6
 // variants at startup; cap the count with a load error if real templates ever
 // approach that.
 fn cross(
@@ -524,10 +636,126 @@ mod tests {
     }
 
     #[test]
-    fn no_type_regex_adds_a_capture_group() {
+    fn an_optional_parameter_owns_two_groups_and_every_other_one() {
+        // Two groups for a bare `optional` parameter (quoted, unquoted), one for
+        // everything else: the `groups` map is what `arguments` reads.
         for ty in TYPES {
-            let compiled = compile(&format!("x {{v:{}}}", ty.name), "text").unwrap();
-            assert_eq!(compiled.regex.captures_len(), 2, "type {}", ty.name);
+            for expr in [
+                format!("x {{v:{}}}", ty.name),
+                format!(r#"x "{{v:{}}}""#, ty.name),
+            ] {
+                let compiled = compile(&expr, "text").unwrap();
+                let groups = &compiled.params[0].groups;
+                assert_eq!(compiled.regex.captures_len(), groups.len() + 1, "{expr}");
+                let optional = ty.quoting == Quoting::Optional && !expr.contains('"');
+                assert_eq!(groups.len(), if optional { 2 } else { 1 }, "{expr}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_optional_type_matches_with_or_without_quotes() {
+        let compiled = builtin("I sleep {n:uint} seconds");
+        assert_eq!(compiled.template, "I sleep <n> seconds");
+        for text in [
+            "I sleep 5 seconds",
+            r#"I sleep "5" seconds"#,
+            "I sleep <<n>> seconds",
+            r#"I sleep "<<n>>" seconds"#,
+        ] {
+            assert!(compiled.regex.is_match(text), "{text}");
+        }
+        for text in [
+            r#"I sleep "5 seconds"#,
+            r#"I sleep 5" seconds"#,
+            "I sleep  seconds",
+        ] {
+            assert!(!compiled.regex.is_match(text), "{text}");
+        }
+        for text in ["I sleep 5 seconds", r#"I sleep "5" seconds"#] {
+            let captures = compiled.regex.captures(text).unwrap();
+            assert_eq!(arguments(&compiled.params, &captures), ["5"], "{text}");
+        }
+    }
+
+    #[test]
+    fn quotes_written_in_a_declaration_stay_mandatory() {
+        let compiled = builtin(r#"I sleep "{n:uint}" seconds"#);
+        assert_eq!(compiled.template, r#"I sleep "<n>" seconds"#);
+        assert!(compiled.regex.is_match(r#"I sleep "5" seconds"#));
+        assert!(!compiled.regex.is_match("I sleep 5 seconds"));
+        assert_eq!(compiled.params[0].groups.len(), 1);
+    }
+
+    #[test]
+    fn a_bare_text_parameter_requires_the_quotes_and_an_any_parameter_adds_none() {
+        let text = builtin("the body contains {v}");
+        assert_eq!(text.template, r#"the body contains "<v>""#);
+        assert!(text.regex.is_match(r#"the body contains "JSON:""#));
+        assert!(!text.regex.is_match("the body contains JSON:"));
+        let any = compile("I compare {a} with {b}", "any").unwrap();
+        assert_eq!(any.template, "I compare <a> with <b>");
+        assert!(any.regex.is_match("I compare x with y z"));
+    }
+
+    #[test]
+    fn a_parameter_inside_a_quoted_literal_is_written_not_bare() {
+        // An odd number of `"` before it: the quotes are the template's own.
+        let compiled = builtin(r#"I send the header "Bearer {token:secret}""#);
+        assert!(
+            compiled
+                .regex
+                .is_match(r#"I send the header "Bearer abcdefghij""#)
+        );
+        assert_eq!(compiled.template, r#"I send the header "Bearer <token>""#);
+        let compiled = builtin(r#"I say "{a:text} {b:text}""#);
+        assert!(compiled.regex.is_match(r#"I say "x y""#));
+        let compiled = builtin(r#"I say "{a:uint}-{b:uint}""#);
+        assert!(compiled.regex.is_match(r#"I say "1-2""#));
+        assert!(!compiled.regex.is_match(r#"I say ""1"-"2"""#));
+    }
+
+    #[test]
+    fn two_optional_parameters_each_yield_the_group_that_matched() {
+        let compiled = builtin("a {x:uint} b {y:word} c");
+        for (text, want) in [
+            ("a 1 b two c", ["1", "two"]),
+            (r#"a "1" b "two" c"#, ["1", "two"]),
+            (r#"a 1 b "two" c"#, ["1", "two"]),
+            (r#"a "1" b two c"#, ["1", "two"]),
+        ] {
+            let captures = compiled.regex.captures(text).unwrap();
+            assert_eq!(arguments(&compiled.params, &captures), want, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_optional_type_cannot_hold_whitespace_or_a_quote() {
+        // The rule that keeps a bare parameter unambiguous. `pattern` is what
+        // the step regex uses, so the `<<…>>` slot is covered too (its
+        // arguments, `[^)]*`, are the one place a space can ride along; an
+        // existing limit of the slot grammar, bounded by the closing `)>>`).
+        for ty in TYPES.iter().filter(|ty| ty.quoting == Quoting::Optional) {
+            let re = Regex::new(&format!("^(?:{})$", ty.value())).unwrap();
+            let sample = match ty.name {
+                "method" => "GET",
+                "float" => "1.5",
+                "word" => "abc",
+                _ => "5",
+            };
+            for probe in [
+                " ".to_string(),
+                "\t".to_string(),
+                "\"".to_string(),
+                format!("{sample} {sample}"),
+                format!("\"{sample}"),
+                format!("{sample}\""),
+                "<<a b>>".to_string(),
+                "<<a\"b>>".to_string(),
+            ] {
+                assert!(!re.is_match(&probe), "{} matches {probe:?}", ty.name);
+            }
+            assert!(re.is_match(sample), "{} rejects {sample:?}", ty.name);
         }
     }
 
