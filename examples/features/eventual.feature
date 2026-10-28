@@ -8,7 +8,7 @@ Feature: an assertion that is allowed to pass later
 
   Scenario: poll a job until it finishes
     When I request "/jobs/1" using HTTP GET
-    Then I expect the next assertion to pass within "5" seconds, checking every "200" milliseconds
+    Then I expect the next assertion to pass within 5 seconds, checking every 200 milliseconds
     And the response body contains JSON:
       """
       {"status": "done"}
@@ -18,3 +18,12 @@ Feature: an assertion that is allowed to pass later
     And the response code is 200
     And extract "result" from JSON as "jobResult"
     And variable "jobResult" should be equal to "42"
+
+  # A typed parameter takes its quotes or leaves them: the type decides, so
+  # `5` and `"5"` are the same step. The quoted form is what older suites wrote.
+  Scenario: numbers need no quotes, and may keep them
+    Given I sleep 0 seconds
+    And I sleep "0" seconds
+    When I request "/jobs/1" using HTTP GET
+    Then I expect the next assertion to pass within "5" seconds
+    And the response code is 200

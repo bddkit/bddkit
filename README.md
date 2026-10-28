@@ -20,7 +20,7 @@ Scenario: registering a company charges the account
     """
   When I request "/api/v1/companies" using HTTP POST
   Then the response code is 201
-  And I expect the next assertion to pass within "10" seconds
+  And I expect the next assertion to pass within 10 seconds
   And I should have "accounts" with "balance: 75"
 ```
 
@@ -38,9 +38,7 @@ instead of silently shadowing each other.
 
 **Checking the database shouldn't mean leaving the feature file.** DB steps introspect the real schema — PostgreSQL, MySQL or MariaDB, the same step text on each: primary keys fill themselves the way the column declares them, values coerce to real column types, and a missing `NOT NULL` column fails by name at the step rather than as a driver error. Hawk signing, SRP-6a, and AES are steps too, so a login handshake stays declarative.
 
-**Async systems shouldn't need sleep loops.** Prefix any assertion with
-`I expect the next assertion to pass within "10" seconds` and it retries —
-re-sending the request or re-running the query — until it holds.
+**Async systems shouldn't need sleep loops.** Prefix any assertion with `I expect the next assertion to pass within 10 seconds` and it retries — re-sending the request or re-running the query — until it holds.
 
 **Test data shouldn't collide, and should be removable afterwards.** Every `<<unique()>>` value in a run shares one prefix drawn once per process, so uniqueness is guaranteed rather than probable — and `<<run_id>>` writes that prefix down, so cleanup afterwards is one step: `I delete "companies" where "slug~: u<<run_id>>%"`. `<<unique()>>` is a bare token; `unique(email)`, `unique(slug)` and `unique(url)` are aliases of it and give no address, slug or URL shape, so build the shape around it, as in `user-<<unique()>>@example.com`.
 
@@ -378,7 +376,7 @@ An include can nest up to 16 levels deep, checked at validation time; a cycle (f
 
 ### Writing a macro
 
-A macro file is a YAML list of `step:` templates with a `do:` body. A template is a [Cucumber Expression](https://cucumber.io/docs/cucumber/cucumber-expressions/): `(main )` is optional text, `post/article` an alternation, and `\(`, `\/`, `\{`, `\\` mean the character itself. Parameters use a bddkit extension, because Cucumber's own parameters have a type but no name: `{title}` is a named parameter that matches any text, `{n:uint}` restricts it to a type — `uint`, `int`, `float`, `word`, or `method` (an HTTP method) — and `{pw:secret}` matches what `{pw}` does and marks the value as a secret to hide (see Privacy). The body refers to a parameter as `<<title>>`.
+A macro file is a YAML list of `step:` templates with a `do:` body. A template is a [Cucumber Expression](https://cucumber.io/docs/cucumber/cucumber-expressions/): `(main )` is optional text, `post/article` an alternation, and `\(`, `\/`, `\{`, `\\` mean the character itself. Parameters use a bddkit extension, because Cucumber's own parameters have a type but no name: `{title}` is a named parameter that matches any text, `{n:uint}` restricts it to a type — `uint`, `int`, `float`, `word`, or `method` (an HTTP method) — and `{pw:secret}` marks the value as a secret to hide (see Privacy). Whether a typed parameter takes quotes in the `.feature` text is decided by its type, for a parameter written bare: `uint`, `int`, `float`, `word` and `method` accept `5` and `"5"` alike, `text` and `secret` accept only `"…"` (the quotes are added for you), and an untyped `{title}` matches exactly what the template says. Quotes you write into the template are always literal, so `"{n:uint}"` keeps them mandatory. Because a typed parameter may now also stand without quotes, a template that puts an untyped `"{x}"` before one (`the "{path}" page answers {code:uint}`) can overlap a built-in step that ends in a quoted `any` parameter and is refused at startup; type the quoted one `{path:text}`. The body refers to a parameter as `<<title>>`.
 
 An alternation takes the whole word between spaces, optional parts included: `(the )post/article` means `(the )post` or `article`, not an optional `the` in front of either.
 

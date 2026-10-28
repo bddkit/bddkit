@@ -12,7 +12,7 @@
 
 # A typed parameter (#66): `{code:uint}` accepts digits or a whole <<variable>>,
 # and a variable's value is checked when the step runs.
-- step: 'the "{path}" page answers {code:uint}'
+- step: 'the "{path:text}" page answers {code:uint}'
   do:
     - I request "<<path>>"
     - the response code is <<code>>

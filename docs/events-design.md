@@ -216,9 +216,9 @@ I sign the next request with Hawk id "{id}" and key "{key:secret}"
 
 The interpolated value of a `secret` parameter enters the set when the step is prepared. A value that arrived through a slot leaves the step text as written (`key "<<hawk_key>>"`). A literal one is replaced in the output text: `key "***"`. That is a deliberate exception to "step text in a report is the raw feature text", and it applies to the console, both reports and the stream alike.
 
-Macro templates use the same parser and therefore the same syntax: `step: I log in as {user} with password {pw:secret}`.
+Macro templates use the same parser and therefore the same syntax: `step: I log in as {user} with password "{pw:secret}"`.
 
-**Detail.** Under the quoting rule proposed in issue #79, `secret` is a `required` type like `text`: its values can contain spaces and quotes stay mandatory.
+**Detail.** Under the quoting rule of issue #79, `secret` is a `required` type like `text`: its values can contain spaces and quotes stay mandatory.
 
 **Detail.** The built-in declarations are updated: the Hawk `key`, the AES `key`, the SRP `password`. The SRP steps also register the private values they compute (`<prefix>_a`, `<prefix>_sessionKey`) whatever the prefix is.
 
