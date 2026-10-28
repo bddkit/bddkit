@@ -738,11 +738,9 @@ pub(crate) mod tests {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        target.join("debug").join(format!(
-            "{}echo_plugin{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        ))
+        target
+            .join("debug")
+            .join(crate::plugin::install::dll_name("echo_plugin"))
     }
 
     pub fn entry() -> crate::plugin::lock::LockEntry {

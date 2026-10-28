@@ -126,11 +126,7 @@ fn host_target() -> &'static str {
 }
 
 fn lib_file() -> String {
-    format!(
-        "{}echo_plugin{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    )
+    common::dll_name("echo_plugin")
 }
 
 fn pack(top: &str) -> Vec<u8> {
@@ -156,7 +152,40 @@ fn pack_files(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
 
 const INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    description: Echo values back\n  - name: mail\n    repo: bddkit/bddkit-mail\n    description: Read a mailbox\n";
 
-fn temp(name: &str) -> PathBuf {
+/// A scratch directory, removed when the test ends.
+struct Temp(PathBuf);
+
+impl std::ops::Deref for Temp {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for Temp {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Temp {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp(name: &str) -> Temp {
+    Temp(scratch(name))
+}
+
+/// The same directory with no one to remove it, for what cleans up itself.
+fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-plugin-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -426,6 +455,10 @@ async fn update_moves_to_the_latest_release_and_drops_the_old_one() {
         lock.contains("version: 0.1.0"),
         "dry run writes nothing:\n{lock}"
     );
+    assert!(
+        !dir.join("plugins/echo-plugin/0.2.0").exists(),
+        "a dry run unpacks nothing"
+    );
 
     let out = plugin(&dir, &github, &["update"]);
     assert!(out.status.success(), "{}", text(&out));
@@ -499,6 +532,8 @@ async fn remove_leaves_a_hand_written_entrys_file_alone() {
         own.is_file(),
         "a file install did not put there is never deleted"
     );
+    let lock = std::fs::read_to_string(dir.join("plugins.yaml")).expect("lock");
+    assert!(!lock.contains("echo"), "the entry is gone:\n{lock}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -804,6 +839,48 @@ async fn a_good_reinstall_of_the_same_version_replaces_it_and_leaves_nothing_bes
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_failing_update_does_not_stop_the_others() {
+    let (stub, github) = spawn().await;
+    let dir = temp("update-partial");
+    installed(&dir, &github, &stub, "0.1.0");
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.latest("bddkit/echo-plugin", "0.2.0");
+    // An entry installed from a repository that publishes nothing.
+    let mut lock = std::fs::read_to_string(dir.join("plugins.yaml")).expect("lock");
+    lock.push_str(&format!(
+        "- name: gone\n  path: {}\n  version: 1.0.0\n  source: nobody/gone\n",
+        common::build_fixture_plugin().display()
+    ));
+    std::fs::write(dir.join("plugins.yaml"), lock).expect("lock");
+
+    let out = plugin(&dir, &github, &["update"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("gone (override): failed"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("updated 0.1.0 → 0.2.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_layer_lock_records_an_absolute_library_path() {
+    let (stub, github) = spawn().await;
+    let root = temp("absolute-path");
+    std::fs::create_dir_all(root.join("suite")).expect("suite");
+    installed_in(&root, &github, &stub);
+    let lock = std::fs::read_to_string(root.join("config/bddkit/plugins.yaml")).expect("lock");
+    let line = lock.lines().find(|l| l.contains("path:")).expect("path");
+    let path = Path::new(line.split("path:").nth(1).expect("value").trim());
+    assert!(path.is_absolute(), "{lock}");
+    assert!(path.starts_with(root.join("data/bddkit")), "{lock}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_names_a_typo_that_matched_nothing() {
     let (_stub, github) = spawn().await;
     let dir = temp("update-typo");
@@ -1105,7 +1182,7 @@ impl Drop for Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Self {
-        let root = temp(name);
+        let root = scratch(name);
         let bin_dir = root.join("bin");
         std::fs::create_dir_all(&bin_dir).expect("mkdir");
         let bin = bin_dir.join("bddkit");
