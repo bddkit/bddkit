@@ -180,6 +180,7 @@ pub async fn check(
     report_paths: &[&Path],
     events_path: Option<&Path>,
     privacy_flags: &crate::privacy::PrivacyLayer,
+    settings: &crate::settings::SettingsArgs,
     telemetry_flag: Option<bool>,
 ) -> Report {
     let resolved = config::resolve_config_path(explicit_config);
@@ -254,15 +255,7 @@ pub async fn check(
     let config_path = config_path.as_path();
 
     let cfg = match config::load(config_path, env) {
-        Ok(cfg) => {
-            report.push(
-                "config",
-                None,
-                Status::Ok,
-                "parsed, ${VAR} expanded, defaults resolved",
-            );
-            cfg
-        }
+        Ok(cfg) => cfg,
         Err(error) => {
             report.push("config", None, Status::Failed, &format!("{error:#}"));
             report.note_telemetry(
@@ -274,6 +267,28 @@ pub async fn check(
             return report;
         }
     };
+    // The flags and the environment on top of the file, as `run` lays them. A
+    // bad one is a failed row, but the file itself was readable, so its own
+    // telemetry key still decides.
+    let mut cfg = cfg;
+    let applied = crate::settings::resolve(settings, &crate::privacy::process_env)
+        .and_then(|overrides| cfg.apply(&overrides));
+    if let Err(error) = applied {
+        report.push("config", None, Status::Failed, &format!("{error:#}"));
+        report.note_telemetry(
+            telemetry_flag,
+            (&cfg.telemetry).into(),
+            dir_env,
+            crate::config_dir(config_path),
+        );
+        return report;
+    }
+    report.push(
+        "config",
+        None,
+        Status::Ok,
+        "parsed, ${VAR} expanded, defaults resolved",
+    );
 
     // The same resolution `run` makes, so a bad `BDDKIT_PRIVACY_*` value or a
     // list given in both forms is a failed row here and exit 2 there. The row
@@ -505,12 +520,14 @@ fn check_features(
             Err(error) => problems.push((feature::display_path(&path), format!("{error:#}"))),
         }
     }
-    // No tag filter: `doctor` answers "is this suite whole", not "is this tag
-    // green", so every scenario is checked whatever a run would select. The
-    // filter is still applied to the file list, because that is how `run`
-    // decides whether it has anything to do at all.
+    // No tag filter on the steps: `doctor` answers "is this suite whole", not
+    // "is this tag green", so every scenario of every file is checked whatever
+    // a run would select. The config's `tags` only decide whether a run would
+    // have anything to do at all.
     let filter = feature::TagFilter::new(&[]);
     loaded.retain(|lf| lf.has_selected_scenario(&filter));
+    let selection = feature::TagFilter::new(&cfg.tags);
+    let selects_nothing = !loaded.iter().any(|lf| lf.has_selected_scenario(&selection));
     let unmarked = unmarked_names(&loaded, registry.ok(), words);
 
     let skipped = match registry {
@@ -545,7 +562,7 @@ fn check_features(
         for (target, detail) in &problems {
             report.push("steps", Some(target), Status::Failed, detail);
         }
-    } else if loaded.is_empty() {
+    } else if selects_nothing {
         // `run` exits 2 here. A green "0 file(s), every step matched" would be
         // the most misleading line the command can print: a tick on a suite
         // that cannot run.
@@ -553,7 +570,7 @@ fn check_features(
             "steps",
             None,
             Status::Failed,
-            "no scenario to run: the config's `paths` select no feature file",
+            "no scenario to run: the config's `paths` and `tags` select no scenario",
         );
     } else if let Some(reason) = skipped {
         report.push("steps", None, Status::Skipped, reason);
