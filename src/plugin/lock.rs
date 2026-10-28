@@ -164,7 +164,10 @@ fn plugin_list<'a>(doc: &'a mut Value, file: &Path) -> Result<&'a mut Vec<Value>
 /// Written beside and renamed over, so a crash mid-write — or a `bddkit run`
 /// reading at that moment — never sees half of a lock file.
 fn write_value(file: &Path, doc: &Value) -> Result<()> {
-    crate::telemetry::write_atomically(file, &serde_yaml_ng::to_string(doc)?)
+    // Through a symlink (a lock kept in dotfiles), not over it: the rename
+    // would otherwise swap the link for a regular file.
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    crate::telemetry::write_atomically(&file, &serde_yaml_ng::to_string(doc)?)
 }
 
 #[cfg(test)]
@@ -212,6 +215,28 @@ mod tests {
             .map(|e| e.expect("entry").file_name())
             .collect();
         assert_eq!(names, ["plugins.yaml"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_lock_file_is_written_through_not_replaced() {
+        let dir = temp("symlink");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let real = dir.join("dotfiles-plugins.yaml");
+        let link = dir.join("plugins.yaml");
+        std::fs::write(&real, "plugin: []\n").expect("real");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let record = Record {
+            name: "widget".into(),
+            path: "/opt/libwidget.so".into(),
+            version: "1".into(),
+            source: "o/widget".into(),
+            sha256: "00".into(),
+            target: "t".into(),
+        };
+        upsert(&link, &record).expect("writes");
+        assert!(std::fs::symlink_metadata(&link).expect("stat").is_symlink());
+        assert_eq!(read_file(&real).expect("reads").len(), 1);
     }
 
     #[test]
