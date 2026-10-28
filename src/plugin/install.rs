@@ -250,7 +250,7 @@ fn extract_one(
     what: &str,
     accept: fn(&str) -> Option<String>,
 ) -> Result<PathBuf> {
-    let found = if asset.ends_with(".zip") {
+    let (found, skipped) = if asset.ends_with(".zip") {
         zip_entries(archive, accept)
     } else {
         tar_entries(archive, accept)
@@ -259,7 +259,7 @@ fn extract_one(
     let (file, bytes) = match <[_; 1]>::try_from(found) {
         Ok([one]) => one,
         Err(found) => bail!(
-            "{asset} must hold exactly one {what}, found {}: {:?}",
+            "{asset} must hold exactly one {what}, found {}: {:?} (other files, ignored: {skipped:?})",
             found.len(),
             found.iter().map(|(name, _)| name).collect::<Vec<_>>()
         ),
@@ -285,43 +285,49 @@ fn binary_name(entry: &str) -> Option<String> {
     (file == format!("bddkit{}", std::env::consts::EXE_SUFFIX)).then(|| file.to_string())
 }
 
-fn tar_entries(
-    archive: &[u8],
-    accept: fn(&str) -> Option<String>,
-) -> Result<Vec<(String, Vec<u8>)>> {
+/// The accepted files with their bytes, and the names of the files left out —
+/// so a release with no library says what it did hold.
+type Entries = (Vec<(String, Vec<u8>)>, Vec<String>);
+
+fn tar_entries(archive: &[u8], accept: fn(&str) -> Option<String>) -> Result<Entries> {
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
         let mut entry = entry?;
         if !entry.header().entry_type().is_file() {
             continue;
         }
-        if let Some(name) = accept(&entry.path()?.to_string_lossy()) {
+        let path = entry.path()?.to_string_lossy().into_owned();
+        if let Some(name) = accept(&path) {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             out.push((name, bytes));
+        } else {
+            skipped.push(path);
         }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
-fn zip_entries(
-    archive: &[u8],
-    accept: fn(&str) -> Option<String>,
-) -> Result<Vec<(String, Vec<u8>)>> {
+fn zip_entries(archive: &[u8], accept: fn(&str) -> Option<String>) -> Result<Entries> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))?;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for index in 0..zip.len() {
         let mut file = zip.by_index(index)?;
-        let name = match accept(file.name()) {
-            Some(name) if file.is_file() => name,
-            _ => continue,
+        if !file.is_file() {
+            continue;
+        }
+        let Some(name) = accept(file.name()) else {
+            skipped.push(file.name().to_string());
+            continue;
         };
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         out.push((name, bytes));
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 pub const DEFAULT_REGISTRY: &str =
@@ -736,6 +742,16 @@ mod tests {
         let two = tar_gz(&[(&lib("a"), b"1"), (&lib("b"), b"2")]);
         let error = extract_library(&two, "w.tar.gz", &temp("tar-two")).expect_err("two");
         assert!(format!("{error:#}").contains("found 2"), "{error:#}");
+    }
+
+    #[test]
+    fn a_release_without_a_library_names_the_files_it_did_hold() {
+        let none = tar_gz(&[("pkg/README.md", b"readme")]);
+        let error = extract_library(&none, "w.tar.gz", &temp("tar-held")).expect_err("none");
+        assert!(format!("{error:#}").contains("pkg/README.md"), "{error:#}");
+        let none = zip_of(&[("pkg/README.md", b"readme")]);
+        let error = extract_library(&none, "w.zip", &temp("zip-held")).expect_err("none");
+        assert!(format!("{error:#}").contains("pkg/README.md"), "{error:#}");
     }
 
     #[test]

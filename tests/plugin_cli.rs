@@ -542,6 +542,119 @@ async fn a_layer_flag_is_refused_under_bddkit_dir_on_every_subcommand() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_layer_flag_is_refused_before_install_touches_the_network() {
+    // The stub has no index at all: reaching it would fail with a 404 instead.
+    let (_stub, github) = spawn().await;
+    let dir = temp("install-layer-first");
+    let out = plugin(&dir, &github, &["install", "echo", "--layer", "user"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("--bddkit-dir"), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_lock_file_is_refused_before_anything_is_downloaded() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("install-bad-lock");
+    std::fs::write(dir.join("plugins.yaml"), "plugin: 5\n").expect("lock");
+    let out = plugin(&dir, &github, &["install", "echo"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("not a list"), "{}", text(&out));
+    assert!(!dir.join("plugins").exists(), "nothing was unpacked");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_says_so_when_an_installed_entry_has_no_version() {
+    let (_stub, github) = spawn().await;
+    let dir = temp("update-no-version");
+    std::fs::write(
+        dir.join("plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n    source: bddkit/echo-plugin\n",
+            common::build_fixture_plugin().display()
+        ),
+    )
+    .expect("lock");
+    let out = plugin(&dir, &github, &["update"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("no version recorded"), "{}", text(&out));
+    assert!(
+        !text(&out).contains("not installed by bddkit"),
+        "{}",
+        text(&out)
+    );
+}
+
+/// `plugin <args>` in a suite directory with a user layer beside it, no
+/// `--bddkit-dir`: the layer chain is the real one.
+fn layered(root: &Path, github: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .arg("plugin")
+        .args(args)
+        .env("BDDKIT_PLUGIN_REGISTRY", format!("{github}/registry.yaml"))
+        .env("BDDKIT_GITHUB_URL", github)
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env_remove("BDDKIT_DIR")
+        .env_remove("BDDKIT_CONFIG")
+        .current_dir(root.join("suite"))
+        .output()
+        .expect("run bddkit")
+}
+
+/// A hand-written `echo` entry in `<dir>/plugins.yaml` pointing at the fixture.
+fn declare_echo(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    std::fs::write(
+        dir.join("plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n",
+            common::build_fixture_plugin().display()
+        ),
+    )
+    .expect("lock");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installing_under_a_project_entry_warns_and_show_names_the_shadow() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let root = temp("shadow");
+    declare_echo(&root.join("suite/.bddkit"));
+
+    let out = layered(&root, &github, &["install", "echo", "--layer", "user"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("takes precedence"), "{stderr}");
+    assert!(stderr.contains("project"), "{stderr}");
+
+    // The project entry wins, and `show` says what it hides.
+    let out = layered(&root, &github, &["show", "echo"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("shadowed:    user"), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_first_project_install_is_not_reported_as_shadowed() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let root = temp("no-shadow");
+    declare_echo(&root.join("config/bddkit"));
+    std::fs::create_dir_all(root.join("suite")).expect("suite");
+
+    let out = layered(&root, &github, &["install", "echo", "--layer", "project"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!text(&out).contains("takes precedence"), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_names_a_typo_that_matched_nothing() {
     let (_stub, github) = spawn().await;
     let dir = temp("update-typo");

@@ -401,12 +401,16 @@ A plugin that genuinely cannot be shared declares `per_worker` and then runs at 
 
 A plugin's library file is not written beside its lock entry: it goes into the data directory paired with the chosen layer, at `<data>/plugins/<repo-basename>/<version>/<library file>` — keyed by the repository, not the plugin's own name, because for `owner/repo` the name is known only after the library is loaded, and on Windows a directory holding a mapped DLL cannot be renamed.
 
-| Layer | Linux | macOS | Windows |
-|---|---|---|---|
-| shared | `/usr/local/lib/bddkit` | `/Library/Application Support/bddkit` | `%ProgramData%\bddkit` |
-| user | `$XDG_DATA_HOME/bddkit`, else `~/.local/share/bddkit` | same as Linux | `%LOCALAPPDATA%\bddkit` |
-| project, project.local | `.bddkit/` itself | same | same |
-| override | the override directory itself | same | same |
+Each layer has a lock directory (where `plugins.yaml` lives, and where `bddkit doctor` looks) and a library directory (where `install` unpacks):
+
+| Layer | Lock directory | Library directory |
+|---|---|---|
+| shared | Linux `/etc/bddkit/`; macOS `/Library/Application Support/bddkit/`; Windows `%ProgramData%\bddkit\` | Linux `/usr/local/lib/bddkit`; macOS `/Library/Application Support/bddkit`; Windows `%ProgramData%\bddkit` |
+| user | Linux and macOS `$XDG_CONFIG_HOME/bddkit/`, else `~/.config/bddkit/`; Windows `%LOCALAPPDATA%\bddkit\` | Linux and macOS `$XDG_DATA_HOME/bddkit`, else `~/.local/share/bddkit`; Windows `%LOCALAPPDATA%\bddkit` |
+| project, project.local | the nearest `.bddkit/` walking up from `<directory of the --config file>` | `.bddkit/` itself |
+| override | the `--bddkit-dir` directory itself | the same directory |
+
+Two repositories with the same basename — `alice/bddkit-exec` and `bob/bddkit-exec` — share `<library directory>/plugins/bddkit-exec/<version>/`, so installing the second at a version the first has overwrites it. Keep one of them per layer, or install the other with `--layer`.
 
 A `project` entry is vendoring: `.bddkit/plugins/` is committed along with the lock file that points into it; `project.local` is the gitignored variant, for a local build that never leaves the machine.
 
@@ -433,11 +437,7 @@ plugin:
 
 The lock file is not a single fixed path — it comes from a chain of `.bddkit/` directories, one per layer, read lowest-precedence-first:
 
-| Layer | Linux | macOS | Windows |
-|---|---|---|---|
-| shared | `/etc/bddkit/` | `/Library/Application Support/bddkit/` | `%ProgramData%\bddkit\` |
-| user | `$XDG_CONFIG_HOME/bddkit/`, else `~/.config/bddkit/` | same as Linux | `%LOCALAPPDATA%\bddkit\` |
-| project | nearest `.bddkit/` walking up from `<directory of the --config file>` | same | same |
+(The directories are in the table under "Where it goes" in §7 above.)
 
 Each layer is read as `plugins.yaml` then `plugins.local.yaml`, so up to six candidate files are checked per run. A later candidate overrides an earlier one **entry by entry, keyed by `name`** — a project lock can pin the version CI uses without losing what a developer has installed globally, and a `plugins.local.yaml` beside a committed `plugins.yaml` can point one entry at a local debug build without editing the committed file. Commit `plugins.yaml`; gitignore `plugins.local.yaml`.
 

@@ -42,18 +42,31 @@ pub struct Context {
     pub(crate) sources: Sources,
 }
 
+/// No total timeout: a large library on a slow link is not a hang. A silent
+/// server is, and so is an https base that redirects to plain http.
+fn http_client(sources: &Sources) -> Result<reqwest::Client> {
+    let https = sources.registry.starts_with("https://") && sources.github.starts_with("https://");
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(30))
+        .https_only(https)
+        .build()
+        .context("failed to build the HTTP client")
+}
+
 impl Context {
     pub fn new(env: Env, config_dir: &Path) -> Result<Self> {
         let os = Os::current();
         let layers = dirs::layers(os, &env, config_dir)?;
+        let sources = Sources::from_env();
         Ok(Self {
             acted: Default::default(),
             os,
             env,
             layers,
             config_dir: config_dir.to_path_buf(),
-            client: reqwest::Client::new(),
-            sources: Sources::from_env(),
+            client: http_client(&sources)?,
+            sources,
         })
     }
 
@@ -220,6 +233,12 @@ impl Context {
     /// The label of a higher-precedence file that declares `name` too, which
     /// makes an install into `label` invisible to `run`.
     fn shadowed_by(&self, name: &str, label: &str) -> Result<Option<String>> {
+        // A project layer `install_target` made up for a suite with no
+        // `.bddkit/` yet is not in the chain, and it would be the top of it.
+        let layer = label.strip_suffix(".local").unwrap_or(label);
+        if !self.layers.iter().any(|l| l.name == layer) {
+            return Ok(None);
+        }
         let winner = lock::load(&dirs::candidates(&self.layers, "plugins"))?
             .into_iter()
             .find(|entry| entry.name == name);
@@ -250,6 +269,10 @@ impl Context {
 
     async fn install_one(&self, arg: &str, layer: Option<&str>, acted: &mut Acted) -> Result<i32> {
         let spec = install::Spec::parse(arg)?;
+        // Everything that can be refused without the network is refused first.
+        let target = self.install_target(layer)?;
+        lock::check_writable(&target.lock)?;
+        acted.layer = Some(target.label.clone());
         let indexed = if spec.is_repo() {
             acted.from = Some(PluginFrom::Repository);
             acted.repo = Some(spec.target.clone());
@@ -303,8 +326,6 @@ impl Context {
         if !pinned {
             acted.version = Some(version.clone());
         }
-        let target = self.install_target(layer)?;
-        acted.layer = Some(target.label.clone());
         let name = self.install_into(&target, &repo, &version).await?;
         acted.name = Some(name.clone());
         acted.version = Some(version.clone());
@@ -313,10 +334,14 @@ impl Context {
             target.label,
             target.lock.display()
         );
-        if let Some(winner) = self.shadowed_by(&name, &target.label)? {
-            println!(
+        // The install is done: a lock file that cannot be re-read now is a
+        // warning, not a failure of what was already printed.
+        match self.shadowed_by(&name, &target.label) {
+            Ok(Some(winner)) => eprintln!(
                 "warning: {winner} also declares {name:?} and takes precedence, so this install is not the one that runs"
-            );
+            ),
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: could not check for a shadowing entry: {error:#}"),
         }
         Ok(0)
     }
@@ -366,8 +391,14 @@ impl Context {
                 }
                 matched.insert(entry.name.clone());
                 let row = format!("{} ({})", entry.name, target.label);
-                let (Some(source), Some(current)) = (&entry.source, &entry.version) else {
+                let Some(source) = &entry.source else {
                     println!("{row}: skipped: not installed by bddkit");
+                    continue;
+                };
+                let Some(current) = &entry.version else {
+                    println!(
+                        "{row}: skipped: no version recorded, reinstall it with `plugin install`"
+                    );
                     continue;
                 };
                 let mut acted = Acted {

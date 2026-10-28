@@ -239,14 +239,7 @@ enum PluginCommand {
 /// start a 2 would date — the same currency as `resource add`.
 async fn plugin_command(args: PluginArgs) -> Result<i32> {
     let Some(command) = args.command else {
-        use clap::CommandFactory;
-        let mut cli = Cli::command();
-        cli.build();
-        cli.find_subcommand_mut("plugin")
-            .expect("the plugin subcommand is declared")
-            .print_help()?;
-        println!();
-        return Ok(0);
+        return subcommand_help("plugin");
     };
     let started = std::time::Instant::now();
     let telemetry_command = match &command {
@@ -517,16 +510,7 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
             })
             .await
         }
-        None => {
-            use clap::CommandFactory;
-            let mut cli = Cli::command();
-            cli.build();
-            cli.find_subcommand_mut("resource")
-                .expect("the resource subcommand is declared")
-                .print_help()?;
-            println!();
-            Ok(0)
-        }
+        None => subcommand_help("resource"),
     }
 }
 
@@ -817,19 +801,24 @@ struct ListArgs {
 
 /// Bare `bddkit steps` is a signpost, not an error: it prints what the family
 /// can do and how, which is the question someone typing it is asking.
+/// What a subcommand that needs a further subcommand prints when it has none.
+fn subcommand_help(name: &str) -> Result<i32> {
+    use clap::CommandFactory;
+    let mut cli = Cli::command();
+    // `build` first: an unbuilt `Command` has not propagated `bin_name` to
+    // its subcommands, so the help would print `Usage: steps [COMMAND]` —
+    // a line the reader cannot type.
+    cli.build();
+    cli.find_subcommand_mut(name)
+        .expect("the subcommand is declared")
+        .print_help()?;
+    println!();
+    Ok(0)
+}
+
 fn steps_command(args: StepsArgs) -> Result<i32> {
     let Some(StepsCommand::List(args)) = args.command else {
-        use clap::CommandFactory;
-        let mut cli = Cli::command();
-        // `build` first: an unbuilt `Command` has not propagated `bin_name` to
-        // its subcommands, so the help would print `Usage: steps [COMMAND]` —
-        // a line the reader cannot type.
-        cli.build();
-        cli.find_subcommand_mut("steps")
-            .expect("the steps subcommand is declared")
-            .print_help()?;
-        println!();
-        return Ok(0);
+        return subcommand_help("steps");
     };
     list_steps(args)
 }
