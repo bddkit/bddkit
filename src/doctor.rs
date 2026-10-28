@@ -592,10 +592,7 @@ fn check_features(
             }
             let hints = include_hints(&loaded, registry);
             if !hints.is_empty() {
-                detail.push_str("\ninclude hints:");
-                for hint in hints {
-                    detail.push_str(&format!("\n{hint}"));
-                }
+                detail.push_str(&format!("\ninclude hints:\n{}", hints.join("\n")));
             }
         }
         report.push("steps", None, Status::Ok, &detail);
@@ -633,10 +630,9 @@ fn include_hints(
     loaded: &[std::sync::Arc<feature::LoadedFeature>],
     registry: &crate::steps::Registry,
 ) -> Vec<String> {
-    use crate::steps::{StepId, StepTarget};
+    use crate::steps::StepTarget;
     let mut extracts = std::collections::BTreeSet::new();
     let mut unset = std::collections::BTreeSet::new();
-    let mut seen = std::collections::BTreeSet::new();
     for lf in loaded {
         let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
         for sc in lf.scenarios() {
@@ -652,16 +648,10 @@ fn include_hints(
                     else {
                         continue;
                     };
-                    let (name, prefix) = match id {
-                        StepId::Include => (None, caps.get(1)),
-                        StepId::IncludeScenario => (Some(caps[1].as_str()), caps.get(2)),
-                        _ => continue,
-                    };
-                    let prefix = prefix.map_or("", String::as_str);
-                    let Ok(resolved) = crate::include::resolve(&caps[0], base) else {
+                    let Some((name, prefix)) = include_call(id, &caps) else {
                         continue;
                     };
-                    let Ok(included) = feature::load(&resolved) else {
+                    let Some(included) = load_included(&caps[0], base) else {
                         continue;
                     };
                     let Ok(chosen) = crate::include::select_scenario(&included, name) else {
@@ -673,14 +663,7 @@ fn include_hints(
                     if let Some(next) = steps.get(i + 1)
                         && let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
                             registry.find(&next.text)
-                        && matches!(
-                            id,
-                            StepId::ExtractFromJson
-                                | StepId::ExtractFromJsonGlobal
-                                | StepId::ExtractFromCookies
-                                | StepId::ExtractFromCookiesGlobal
-                                | StepId::ExtractFromMarkup
-                        )
+                        && RESPONSE_EXTRACTS.contains(&id)
                         && !exported(&exports, prefix, &caps[1])
                     {
                         extracts.insert(format!(
@@ -690,9 +673,6 @@ fn include_hints(
                             next.line,
                             caps[1]
                         ));
-                    }
-                    if !seen.insert((resolved, chosen.scenario.name.clone())) {
-                        continue;
                     }
                     let Some(written) = written_names(&included, chosen, registry) else {
                         continue;
@@ -721,22 +701,56 @@ fn include_hints(
 /// Whether `name`, as the caller sees it after `with prefix`, is one of the
 /// helper's `exports` (a trailing `*` matches the rest).
 fn exported(exports: &[String], prefix: &str, name: &str) -> bool {
-    let join = |e: &str| {
-        if prefix.is_empty() {
-            e.to_string()
-        } else {
-            format!("{prefix}_{e}")
-        }
-    };
     exports.iter().any(|e| match e.strip_suffix('*') {
-        Some(stem) => name.starts_with(&join(stem)),
-        None => name == join(e),
+        Some(stem) => name.starts_with(&prefixed(prefix, stem)),
+        None => name == prefixed(prefix, e),
     })
+}
+
+fn prefixed(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}_{name}")
+    }
+}
+
+/// The steps that read a variable out of the last response.
+const RESPONSE_EXTRACTS: [crate::steps::StepId; 5] = {
+    use crate::steps::StepId::*;
+    [
+        ExtractFromJson,
+        ExtractFromJsonGlobal,
+        ExtractFromCookies,
+        ExtractFromCookiesGlobal,
+        ExtractFromMarkup,
+    ]
+};
+
+/// An include step's scenario name and `with prefix` (empty when absent), or
+/// `None` for any other step.
+fn include_call(id: crate::steps::StepId, caps: &[String]) -> Option<(Option<&str>, &str)> {
+    use crate::steps::StepId;
+    match id {
+        StepId::Include => Some((None, caps.get(1).map_or("", String::as_str))),
+        StepId::IncludeScenario => Some((
+            Some(caps[1].as_str()),
+            caps.get(2).map_or("", String::as_str),
+        )),
+        _ => None,
+    }
+}
+
+/// The included file, or `None` for a path `validate::check` already refused.
+fn load_included(path_literal: &str, base: &std::path::Path) -> Option<feature::LoadedFeature> {
+    let resolved = crate::include::resolve(path_literal, base).ok()?;
+    feature::load(&resolved).ok()
 }
 
 /// The variable names a scenario's own steps write, or `None` when it has a
 /// step whose writes cannot be listed (SRP and AES derive a prefix, a name
-/// holding a `<<slot>>`, a macro or include exporting a glob).
+/// holding a `<<slot>>` or an Outline `<column>`, a macro or include exporting
+/// a glob, a plugin step, which can publish what the host cannot see).
 fn written_names(
     lf: &feature::LoadedFeature,
     chosen: feature::ScenarioRef<'_>,
@@ -759,18 +773,15 @@ fn written_names(
         .chain(chosen.scenario.steps.iter().map(feature::to_step));
     for step in steps {
         let Ok(Some((target, caps))) = registry.find(&step.text) else {
-            continue;
+            return None;
         };
         let names: Vec<String> = match target {
             StepTarget::Macro(index) => registry.macro_def(index).exports.clone(),
             StepTarget::Builtin { id, .. } => match id {
                 StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
-                StepId::ExtractFromJson
-                | StepId::ExtractFromJsonGlobal
-                | StepId::ExtractFromCookies
-                | StepId::ExtractFromCookiesGlobal
-                | StepId::ExtractFromMarkup
-                | StepId::GetSequence => vec![caps[1].clone()],
+                id if RESPONSE_EXTRACTS.contains(&id) || id == StepId::GetSequence => {
+                    vec![caps[1].clone()]
+                }
                 StepId::ExtractJsonFromVariable
                 | StepId::ExtractJsonFromVariableGlobal
                 | StepId::ExtractRegexFromVariable
@@ -783,33 +794,20 @@ fn written_names(
                 | StepId::SrpCompleteLogin
                 | StepId::EncryptWithAes => return None,
                 StepId::Include | StepId::IncludeScenario => {
-                    let (name, prefix) = if id == StepId::Include {
-                        (None, caps.get(1))
-                    } else {
-                        (Some(caps[1].as_str()), caps.get(2))
-                    };
-                    let inner = crate::include::resolve(&caps[0], base)
-                        .ok()
-                        .and_then(|path| feature::load(&path).ok())?;
+                    let (name, prefix) = include_call(id, &caps)?;
+                    let inner = load_included(&caps[0], base)?;
                     let chosen = crate::include::select_scenario(&inner, name).ok()?;
-                    let prefix = prefix.map_or("", String::as_str);
                     feature::exports_of(&inner, chosen.scenario)
                         .ok()?
-                        .into_iter()
-                        .map(|e| {
-                            if prefix.is_empty() {
-                                e
-                            } else {
-                                format!("{prefix}_{e}")
-                            }
-                        })
+                        .iter()
+                        .map(|e| prefixed(prefix, e))
                         .collect()
                 }
                 _ => continue,
             },
-            StepTarget::Plugin { .. } => continue,
+            StepTarget::Plugin { .. } => return None,
         };
-        if names.iter().any(|n| n.contains("<<") || n.ends_with('*')) {
+        if names.iter().any(|n| n.contains('<') || n.ends_with('*')) {
             return None;
         }
         out.extend(names);

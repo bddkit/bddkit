@@ -1467,6 +1467,27 @@ fn doctor_include_pair(name: &str, caller: &str, helper: &str) -> (Option<i32>, 
 const TEAM_CALLER: &str = "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n    And extract \"id\" from JSON as \"team_id\"\n";
 
 #[test]
+fn doctor_include_hints_follow_with_prefix_and_ignore_an_outline_placeholder() {
+    // `with prefix "a"` renames the export, so the extract is still a hint.
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-prefix",
+        "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\" with prefix \"a\"\n    And extract \"id\" from JSON as \"a_team_id\"\n",
+        "Feature: helper\n  @exports(team_id)\n  Scenario: make\n    Given set variable \"team_id\" to \"1\"\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(!stdout.contains("left behind"), "{stdout}");
+
+    // A name made of an Outline column is not known before the row is chosen.
+    let (code, stdout) = doctor_include_pair(
+        "doctor-include-placeholder",
+        "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\" with:\n      | k   |\n      | foo |\n",
+        "Feature: helper\n  @exports(foo)\n  Scenario Outline: make\n    Given set variable \"<k>\" to \"1\"\n    Examples:\n      | k   |\n      | foo |\n",
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(!stdout.contains("sets it"), "{stdout}");
+}
+
+#[test]
 fn doctor_hints_at_an_extract_that_reads_the_response_an_include_left_behind() {
     let (code, stdout) = doctor_include_pair(
         "doctor-include-extract",
