@@ -38,9 +38,14 @@ impl Stub {
     /// the plugin release workflows do: a tar.gz holding a top directory with
     /// the library and a README, plus `<asset>.sha256` in sha256sum format.
     fn publish(&self, repo: &str, version: &str) {
+        self.publish_archive(repo, version, pack);
+    }
+
+    /// The same release with whatever archive `make` builds from its top directory.
+    fn publish_archive(&self, repo: &str, version: &str, make: impl Fn(&str) -> Vec<u8>) {
         let basename = repo.rsplit('/').next().unwrap();
         let asset = format!("{basename}-v{version}-{}.tar.gz", host_target());
-        let archive = pack(&format!("{basename}-v{version}-{}", host_target()));
+        let archive = make(&format!("{basename}-v{version}-{}", host_target()));
         let sha = format!("{:x}  {asset}\n", Sha256::digest(&archive));
         let base = format!("/{repo}/releases/download/v{version}/{asset}");
         self.set(&base, Reply::Body(archive));
@@ -712,6 +717,90 @@ fn installed_in(root: &Path, github: &str, stub: &Stub) {
     stub.publish("bddkit/echo-plugin", "0.1.0");
     let out = layered(root, github, &["install", "echo@0.1.0", "--layer", "user"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broken_republished_tag_leaves_the_working_copy_in_place() {
+    let (stub, github) = spawn().await;
+    let dir = temp("republish");
+    installed(&dir, &github, &stub, "0.1.0");
+    let release = dir.join("plugins/echo-plugin/0.1.0");
+    let library = release.join(lib_file());
+    let before = std::fs::read(&library).expect("installed");
+    let lock = std::fs::read_to_string(dir.join("plugins.yaml")).expect("lock");
+
+    // A library that will not load, then an archive with no library at all.
+    stub.publish_archive("bddkit/echo-plugin", "0.1.0", |top| {
+        pack_files(top, &[(&lib_file(), b"not a library")])
+    });
+    let out = plugin(&dir, &github, &["install", "echo@0.1.0"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert_eq!(std::fs::read(&library).expect("kept"), before);
+    assert!(
+        text(&out).contains("echo-plugin"),
+        "names the release: {}",
+        text(&out)
+    );
+
+    stub.publish_archive("bddkit/echo-plugin", "0.1.0", |top| pack_files(top, &[]));
+    let out = plugin(&dir, &github, &["install", "echo@0.1.0"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert_eq!(std::fs::read(&library).expect("kept"), before);
+
+    // Nothing was left beside it, and the entry still loads.
+    let names: Vec<_> = std::fs::read_dir(release.parent().unwrap())
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(names, ["0.1.0"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("plugins.yaml")).unwrap(),
+        lock
+    );
+    let out = plugin(&dir, &github, &["show", "echo"]);
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_write_that_fails_puts_the_old_copy_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let (stub, github) = spawn().await;
+    let dir = temp("lock-write-fails");
+    installed(&dir, &github, &stub, "0.1.0");
+    let library = dir.join("plugins/echo-plugin/0.1.0").join(lib_file());
+    let before = std::fs::read(&library).expect("installed");
+    // Same library with a different tail, so a copy that was not restored shows.
+    stub.publish_archive("bddkit/echo-plugin", "0.1.0", |top| {
+        let mut lib = std::fs::read(common::build_fixture_plugin()).expect("fixture");
+        lib.extend_from_slice(b"\0second build");
+        pack_files(top, &[(&lib_file(), lib.as_slice())])
+    });
+    // The lock is replaced by a rename inside `dir`, which a read-only `dir`
+    // refuses; `plugins/` below it stays writable, so the release still unpacks.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let writable = std::fs::File::create(dir.join("probe")).is_ok();
+    let out = plugin(&dir, &github, &["install", "echo@0.1.0"]);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod back");
+    if writable {
+        return; // root ignores the mode, so there is nothing to fail
+    }
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert_eq!(std::fs::read(&library).expect("kept"), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_good_reinstall_of_the_same_version_replaces_it_and_leaves_nothing_beside() {
+    let (stub, github) = spawn().await;
+    let dir = temp("reinstall");
+    installed(&dir, &github, &stub, "0.1.0");
+    let out = plugin(&dir, &github, &["install", "echo@0.1.0"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let names: Vec<_> = std::fs::read_dir(dir.join("plugins/echo-plugin"))
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(names, ["0.1.0"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

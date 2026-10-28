@@ -342,6 +342,8 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
             .fetch_into(&planned.target, &planned.repo, &planned.to)
             .await
             .with_context(|| format!("{} {}", planned.name, planned.to))?;
+        // `upgrade` never kept a copy of the version it is about to replace.
+        got.commit();
         cleanup.created.push(got.lib_path.clone());
         if let Err(error) = check_with_staged(&staged, &planned.name, &got.lib_path) {
             // The same condition as a missing release, found later: --force
