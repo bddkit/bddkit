@@ -428,7 +428,7 @@ pub async fn latest_version(client: &reqwest::Client, github: &str, repo: &str) 
     Ok(version)
 }
 
-/// The ABI a release declares in its `bddkit-plugin.json` asset (`{"abi": 2}`),
+/// The ABI a release declares in its `bddkit-plugin.json` asset (`{"abi": 3}`),
 /// or `None` when it publishes none — the 404 is the answer, not a failure.
 pub async fn release_abi(
     client: &reqwest::Client,
