@@ -261,6 +261,12 @@ impl Plugins {
         })
     }
 
+    /// The spec a plugin declared for one of its steps; `None` for an index
+    /// no library has.
+    pub fn step_spec(&self, lib: usize, step: usize) -> Option<&abi::StepSpec> {
+        self.libs.get(lib)?.steps.get(step)
+    }
+
     /// `(lib index, step index, pattern, is assertion, secret groups)` for
     /// registry loading.
     pub fn steps(&self) -> Vec<(usize, usize, String, bool, Vec<usize>)> {

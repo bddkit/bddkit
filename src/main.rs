@@ -1034,7 +1034,12 @@ fn build_registry(
     let plugin_steps = plugins.map(|p| p.steps()).unwrap_or_default();
     let plugin_groups = plugins.map(|p| p.group_names()).unwrap_or_default();
     macros::MacroCatalog::load(&cfg.macro_paths).and_then(|catalog| {
-        steps::Registry::with_macros_and_plugins(catalog, &plugin_steps, &plugin_groups)
+        steps::Registry::with_macros_and_plugins(
+            catalog,
+            &plugin_steps,
+            &plugin_groups,
+            plugins.cloned(),
+        )
     })
 }
 

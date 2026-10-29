@@ -1337,8 +1337,13 @@ mod tests {
                 )
             })
             .collect();
-        Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &["echo".to_string()])
-            .expect("the plugin registry builds")
+        Registry::with_macros_and_plugins(
+            MacroCatalog::default(),
+            &steps,
+            &["echo".to_string()],
+            None,
+        )
+        .expect("the plugin registry builds")
     }
 
     /// The `Arc` comes back too: a test that asserts how many instances were
@@ -1770,9 +1775,13 @@ Feature: macro
         /// change, with no network under the paused clock.
         async fn run_with_echo(feature: &str, macros: MacroCatalog) -> FileResult {
             let plugins = echo_plugins();
-            let registry =
-                Registry::with_macros_and_plugins(macros, &plugins.steps(), &["echo".to_string()])
-                    .expect("the plugin registry builds");
+            let registry = Registry::with_macros_and_plugins(
+                macros,
+                &plugins.steps(),
+                &["echo".to_string()],
+                None,
+            )
+            .expect("the plugin registry builds");
             let context = context_with(
                 registry,
                 apis(),

@@ -138,6 +138,12 @@ pub struct StepSpec {
     /// (`library::check_secret_groups`).
     #[serde(default)]
     pub secret_groups: Vec<usize>,
+    /// The dispatch request carries `vars` for this step, and for no other.
+    #[serde(default)]
+    pub wants_vars: bool,
+    /// The host does not interpolate this step's doc string.
+    #[serde(default)]
+    pub raw_docstring: bool,
 }
 
 impl StepSpec {
@@ -332,6 +338,14 @@ impl InitResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_spec_defaults_both_new_flags_to_false() {
+        let spec: StepSpec =
+            serde_json::from_str(r#"{"pattern":"^x$","group":"g","kind":"action"}"#).unwrap();
+        assert!(!spec.wants_vars);
+        assert!(!spec.raw_docstring);
+    }
 
     #[test]
     fn a_manifest_parses() {
