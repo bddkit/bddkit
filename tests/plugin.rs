@@ -1849,6 +1849,22 @@ fn a_secret_group_no_pattern_group_has_stops_the_run_at_load() {
 }
 
 #[test]
+fn a_plugin_built_for_abi_2_is_refused_by_a_generation_3_host() {
+    let dir = project(
+        "abi2-refused",
+        "Feature: f\n  Scenario: s\n    When I echo \"x\" as \"y\"\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &[], &[("BDDKIT_ECHO_FIXTURE_ABI", "2")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ABI version 2") && stderr.contains("this bddkit speaks 3"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn commented_plugin_steps_are_disabled_only_while_the_plugin_is_loaded() {
     let dir = project(
         "annotation-plugin",

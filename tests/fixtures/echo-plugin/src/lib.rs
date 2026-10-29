@@ -65,7 +65,7 @@ pub extern "C" fn bddkit_abi_version() -> u32 {
     std::env::var("BDDKIT_ECHO_FIXTURE_ABI")
         .ok()
         .and_then(|abi| abi.parse().ok())
-        .unwrap_or(2)
+        .unwrap_or(3)
 }
 
 #[unsafe(no_mangle)]

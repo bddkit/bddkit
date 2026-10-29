@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 /// diagnostic `media_type` and a step spec `secret_groups` (#90). Each is
 /// optional on its own; the generation moved once, for the lot, so a plugin
 /// that sends `secrets` can rely on a host that reads them.
-pub const ABI_VERSION: u32 = 2;
+///
+/// 3: the request's `vars`, the spec's `wants_vars` and `raw_docstring`, and
+/// an optional `bddkit_validate_step` (#55), moved once for the lot.
+pub const ABI_VERSION: u32 = 3;
 
 /// A message used whenever a plugin reports failure without giving a reason.
 const NO_MESSAGE: &str = "the plugin reported a failure with no message";
