@@ -2017,3 +2017,135 @@ fn an_ordinary_plugin_doc_string_is_still_interpolated() {
     );
     assert_green(&run(&dir));
 }
+
+const MACRO_CALL: &str = "Feature: f\n  Scenario: s\n    When I do the checked thing\n";
+const CHECKED_MACRO: &str = "- step: I do the checked thing\n  do: [I echo validated \"bad\"]\n";
+
+/// A feature whose one step, at line 3, hands `arg` to the fixture's validator.
+fn validated(arg: &str) -> String {
+    format!("Feature: f\n  Scenario: s\n    When I echo validated \"{arg}\"\n")
+}
+
+/// Every way a plugin step can be refused before the first request, and
+/// every way a hook can misbehave, is exit 2 naming the file and line.
+#[test]
+fn a_rejected_step_exits_2_before_the_first_request() {
+    const RAW_DOC: &str = r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo validated doc string:
+      """
+      a <<x>> b
+      """
+"#;
+    const INCLUDE: &str = "Feature: f\n  Scenario: s\n    When I include \"../inc/inc.feature\"\n";
+    let cases = [
+        (
+            "feature",
+            validated("bad"),
+            vec![],
+            ("the echo refuses \"bad\"", "plugin.feature:3"),
+        ),
+        // Interpolated, `<<x>>` would be `VALUE` and the fixture would accept it.
+        (
+            "raw-doc",
+            RAW_DOC.into(),
+            vec![],
+            ("reached validation uninterpolated", "plugin.feature:4"),
+        ),
+        // Outside `paths`, so the file is reached only through the include.
+        (
+            "include",
+            INCLUDE.into(),
+            vec![("inc/inc.feature", validated("bad"))],
+            ("the echo refuses", "inc.feature:3"),
+        ),
+        (
+            "macro",
+            MACRO_CALL.into(),
+            vec![("macros/m.yaml", CHECKED_MACRO.into())],
+            ("the echo refuses", "m.yaml:1"),
+        ),
+        (
+            "panic",
+            validated("panic"),
+            vec![],
+            ("the plugin panicked", "plugin.feature:3"),
+        ),
+        (
+            "malformed",
+            validated("malformed"),
+            vec![],
+            ("malformed validate_step", "plugin.feature:3"),
+        ),
+        (
+            "noerror",
+            validated("noerror"),
+            vec![],
+            ("no message", "plugin.feature:3"),
+        ),
+    ];
+    for (name, feature, files, (expect, at)) in cases {
+        let macros = files.iter().any(|(path, _)| path.starts_with("macros/"));
+        let tail = if macros {
+            "macro_paths: [macros]\n"
+        } else {
+            ""
+        };
+        let dir = project(&format!("validate-{name}"), &feature, tail);
+        for (path, text) in files {
+            std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(path), text).unwrap();
+        }
+        let out = run(&dir);
+        let all = common::db::combined(&out);
+        assert_eq!(out.status.code(), Some(2), "{name}: {all}");
+        assert!(all.contains(expect), "{name}: {all}");
+        assert!(all.contains(at), "{name}: {all}");
+    }
+}
+
+fn doctor(dir: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml"])
+        .current_dir(dir)
+        .output()
+        .expect("run doctor")
+}
+
+#[test]
+fn doctor_files_a_rejected_macro_body_under_macros() {
+    let dir = macro_project("validate-macro-doctor", MACRO_CALL, CHECKED_MACRO);
+    let out = doctor(&dir);
+    let all = common::db::combined(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    let line = all
+        .lines()
+        .find(|l| l.contains("the echo refuses"))
+        .unwrap_or_else(|| panic!("{all}"));
+    assert!(line.contains("macros"), "{all}");
+}
+
+#[test]
+fn doctor_reports_a_rejected_step() {
+    let out = doctor(&project("validate-doctor", &validated("bad"), ""));
+    let all = common::db::combined(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("the echo refuses"), "{all}");
+}
+
+#[test]
+fn a_plugin_without_the_hook_accepts_every_step() {
+    // The worker fixture does not export bddkit_validate_step.
+    const WORKER_STEP: &str = "I count in the worker as \"n\"";
+    let dir = worker_project(
+        "validate-absent",
+        &[(
+            "w.feature",
+            &format!("Feature: f\n  Scenario: s\n    When {WORKER_STEP}\n"),
+        )],
+        "",
+        1,
+    );
+    assert_green(&run(&dir));
+}

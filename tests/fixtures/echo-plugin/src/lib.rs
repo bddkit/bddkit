@@ -141,7 +141,11 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I echo the raw doc string:$"#, "group": "echo", "kind": "action", "raw_docstring": true,
               "description": "publishes its doc string as echo_doc, which the host did not interpolate" },
             { "pattern": r#"^I echo the plain doc string:$"#, "group": "echo", "kind": "action",
-              "description": "publishes its doc string as echo_doc, interpolated as for any step" }
+              "description": "publishes its doc string as echo_doc, interpolated as for any step" },
+            { "pattern": r#"^I echo validated "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "description": "passes; its validate_step refuses the argument bad, panics on panic, replies malformed on malformed and refuses without a message on noerror" },
+            { "pattern": r#"^I echo validated doc string:$"#, "group": "echo", "kind": "action",
+              "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" }
         ])
         .to_string()
     })
@@ -393,10 +397,30 @@ pub extern "C" fn bddkit_dispatch(
                 "vars": {"echo_doc": value["docstring"].as_str().unwrap_or_default().trim()}
             })
             .to_string(),
+            16 | 17 => serde_json::json!({"status": "passed"}).to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
             }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bddkit_validate_step(step_index: u32, request: *const c_char) -> *mut c_char {
+    guard("envelope", move || {
+        let value: serde_json::Value = serde_json::from_str(&input(request)).unwrap_or_default();
+        let refuse = |why: &str| serde_json::json!({"ok": false, "error": why}).to_string();
+        let doc = value["docstring"].as_str().unwrap_or_default();
+        match (step_index, value["args"][0].as_str()) {
+            (16, Some("bad")) => refuse("the echo refuses \"bad\""),
+            (16, Some("panic")) => panic!("the echo validator exploded"),
+            (16, Some("malformed")) => "not json".to_string(),
+            (16, Some("noerror")) => r#"{"ok":false}"#.to_string(),
+            (17, _) if doc.contains("<<") => {
+                refuse("the doc string reached validation uninterpolated")
+            }
+            _ => r#"{"ok":true}"#.to_string(),
         }
     })
 }

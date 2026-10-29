@@ -1156,7 +1156,26 @@ impl Registry {
                         })?;
                     }
                     Some((StepTarget::Builtin { .. }, _)) => {}
-                    Some((StepTarget::Plugin { .. }, _)) => {}
+                    Some((target @ StepTarget::Plugin { .. }, caps)) => {
+                        // ponytail: a file included from a macro body is not
+                        // walked, so its plugin steps are checked only at run time.
+                        crate::validate::check_plugin_step(
+                            self,
+                            &target,
+                            &caps,
+                            step.docstring.as_deref(),
+                            // A macro body step has no table.
+                            None,
+                        )
+                        .map_err(|e| {
+                            format!(
+                                "{e}, in macro {:?} from {}:{}",
+                                definition.step,
+                                definition.source.display(),
+                                definition.line,
+                            )
+                        })?;
+                    }
                     Some((StepTarget::Macro(_), _)) if step.docstring.is_some() => {
                         return Err(format!(
                             "macro call {:?} with a doc string inside macro {:?} from {}:{} is not supported",

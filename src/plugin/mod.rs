@@ -277,6 +277,18 @@ impl Plugins {
         })
     }
 
+    /// A plugin's verdict on one raw step; `None` when the plugin exports no
+    /// hook. A hook that fails (a panic, a malformed reply) is an error to
+    /// report, never an accepted step.
+    pub fn validate_step(
+        &self,
+        lib: usize,
+        step: usize,
+        request: &str,
+    ) -> Option<Result<(), String>> {
+        self.libs.get(lib)?.validate_step(step as u32, request)
+    }
+
     /// The spec a plugin declared for one of its steps; `None` for an index
     /// no library has.
     pub fn step_spec(&self, lib: usize, step: usize) -> Option<&abi::StepSpec> {
@@ -891,7 +903,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 16);
+        assert_eq!(plugins.step_count(), 18);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

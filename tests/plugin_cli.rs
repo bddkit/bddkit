@@ -909,7 +909,7 @@ async fn show_lists_installed_plugins_and_one_in_detail() {
     for part in [
         "groups:      echo",
         "concurrency: shared",
-        "steps:       12",
+        "steps:       18",
     ] {
         assert!(text(&out).contains(part), "{part}: {}", text(&out));
     }

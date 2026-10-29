@@ -24,7 +24,7 @@ impl std::fmt::Display for Problem {
 struct SelectedStep {
     text: String,
     line: usize,
-    has_docstring: bool,
+    docstring: Option<String>,
     table: Option<Vec<Vec<String>>>,
 }
 
@@ -41,7 +41,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
             .unwrap_or_else(|| PathBuf::from("."));
         for step in selected_steps(lf, filter) {
             match reg.find(&step.text) {
-                Ok(Some((StepTarget::Macro(_), _))) if step.has_docstring => {
+                Ok(Some((StepTarget::Macro(_), _))) if step.docstring.is_some() => {
                     problems.push(Problem {
                         file: lf.path.clone(),
                         line: step.line,
@@ -61,7 +61,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         crate::steps::StepId::Include | crate::steps::StepId::IncludeScenario
                     ) =>
                 {
-                    if step.has_docstring {
+                    if step.docstring.is_some() {
                         problems.push(Problem {
                             file: lf.path.clone(),
                             line: step.line,
@@ -103,7 +103,22 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         });
                     }
                 }
-                Ok(Some(_)) => {}
+                Ok(Some((target, caps))) => {
+                    let checked = check_plugin_step(
+                        reg,
+                        &target,
+                        &caps,
+                        step.docstring.as_deref(),
+                        step.table.as_deref(),
+                    );
+                    if let Err(message) = checked {
+                        problems.push(Problem {
+                            file: lf.path.clone(),
+                            line: step.line,
+                            message,
+                        });
+                    }
+                }
                 Ok(None) => problems.push(Problem {
                     file: lf.path.clone(),
                     line: step.line,
@@ -129,11 +144,11 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
 /// are not — a typo in something that never runs must not fail the run.
 fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
     let mut all_steps: Vec<SelectedStep> = Vec::new();
-    let mut push = |text: String, line, has_docstring, table| {
+    let mut push = |text: String, line, docstring, table| {
         all_steps.push(SelectedStep {
             text,
             line,
-            has_docstring,
+            docstring,
             table,
         });
     };
@@ -144,7 +159,7 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
                 (
                     s.value.clone(),
                     s.position.line,
-                    s.docstring.is_some(),
+                    s.docstring.clone(),
                     s.table.as_ref().map(|t| t.rows.clone()),
                 )
             })
@@ -169,7 +184,7 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
                 continue;
             }
             for st in ex.steps {
-                push(st.text, st.line, st.docstring.is_some(), st.table);
+                push(st.text, st.line, st.docstring, st.table);
             }
         }
     }
@@ -313,6 +328,27 @@ pub(crate) fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), Str
     }
 }
 
+/// A plugin step is checked by its plugin, on the RAW step: no variable has a
+/// value yet, so captures, doc string and table are as written. One function
+/// for the three places a step can sit (a feature file, an include body, a
+/// macro body), the way `check_attached_file` is shared; any other target
+/// passes.
+pub(crate) fn check_plugin_step(
+    reg: &Registry,
+    target: &StepTarget,
+    caps: &[String],
+    docstring: Option<&str>,
+    table: Option<&[Vec<String>]>,
+) -> Result<(), String> {
+    let (&StepTarget::Plugin { lib, step, .. }, Some(plugins)) = (target, reg.plugins()) else {
+        return Ok(());
+    };
+    let request = serde_json::json!({"args": caps, "docstring": docstring, "table": table});
+    plugins
+        .validate_step(lib, step, &request.to_string())
+        .unwrap_or(Ok(()))
+}
+
 fn check_include_body_step(
     step: &crate::feature::ExpandedStep,
     base_dir: &Path,
@@ -356,7 +392,13 @@ fn check_include_body_step(
             },
             caps,
         ))) => check_attached_file(&caps[0], base_dir),
-        Ok(Some(_)) => Ok(()),
+        Ok(Some((target, caps))) => check_plugin_step(
+            reg,
+            &target,
+            &caps,
+            step.docstring.as_deref(),
+            step.table.as_deref(),
+        ),
         Ok(None) => Err(format!(
             "unknown step: {:?}{}",
             step.text,
