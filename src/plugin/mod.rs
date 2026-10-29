@@ -20,6 +20,22 @@ use std::sync::Mutex;
 /// exactly overlaps the built-in one, so it is refused for the same reason.
 const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
 
+/// The variables a `wants_vars` step receives: what `<<name>>` would resolve,
+/// with the sentinel as `None` and the secret flag the plugin cannot compute.
+pub fn request_vars(
+    vars: &crate::vars::VarStack,
+    redactor: &crate::privacy::Redactor,
+) -> BTreeMap<String, abi::VarJson> {
+    vars.visible()
+        .into_iter()
+        .map(|(name, value)| {
+            let secret = redactor.reveals(&name, &value, vars.is_secret(&name));
+            let value = (value != crate::vars::NULL_SENTINEL).then_some(value);
+            (name, abi::VarJson { value, secret })
+        })
+        .collect()
+}
+
 /// Everything about plugins that lives for the whole run. Shared through
 /// `RunContext`, so every field is `Send + Sync`: handles are `u64`, and the
 /// only mutable state sits behind a `Mutex`.
@@ -875,7 +891,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 12);
+        assert_eq!(plugins.step_count(), 14);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

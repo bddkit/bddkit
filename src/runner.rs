@@ -414,6 +414,10 @@ async fn run_step(
                 .display()
                 .to_string();
 
+            let wants_vars = reg
+                .plugin_step(lib, step_index)
+                .is_some_and(|spec| spec.wants_vars);
+
             let mut attempts = 0;
             loop {
                 let dispatch_dir = world.artifacts.next_dir();
@@ -426,6 +430,11 @@ async fn run_step(
                     debug: world.debug,
                     options: OptionsJson::from(&effective),
                     evidence: world.trace.evidence_on(),
+                    vars: if wants_vars {
+                        crate::plugin::request_vars(&world.vars, &world.redactor)
+                    } else {
+                        Default::default()
+                    },
                 })
                 .map_err(|error| {
                     StepError::plugin(format!("failed to encode the plugin request: {error}"))

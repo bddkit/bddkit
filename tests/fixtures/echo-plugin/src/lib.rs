@@ -133,7 +133,11 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "description": "answers not_yet, quoting its argument, which it also declares as a secret, and the request's evidence flag" },
             { "pattern": r#"^I echo "(?P<user>[^"]*)" with password "(?P<password>[^"]*)"$"#, "group": "echo", "kind": "action",
               "secret_groups": [secret_group()],
-              "description": "fails quoting its password, which the step spec marks secret" }
+              "description": "fails quoting its password, which the step spec marks secret" },
+            { "pattern": r#"^I echo the vars$"#, "group": "echo", "kind": "action", "wants_vars": true,
+              "description": "publishes the request's vars as the variable echo_vars, as JSON" },
+            { "pattern": r#"^I echo the vars without asking$"#, "group": "echo", "kind": "action",
+              "description": "publishes the request's vars as echo_vars though it did not ask for them" }
         ])
         .to_string()
     })
@@ -373,6 +377,11 @@ pub extern "C" fn bddkit_dispatch(
             11 => serde_json::json!({
                 "status": "fatal",
                 "error": format!("the echo was given {}", args.get(1).cloned().unwrap_or_default()),
+            })
+            .to_string(),
+            12 | 13 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_vars": value["vars"].to_string()}
             })
             .to_string(),
             other => {

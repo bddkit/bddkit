@@ -1913,3 +1913,70 @@ fn commented_plugin_steps_are_disabled_only_while_the_plugin_is_loaded() {
         "Given I echo \"<<undefined>>\" as \"never\""
     );
 }
+
+#[test]
+fn a_step_that_wants_vars_receives_them_flagged_and_null_aware() {
+    let dir = project(
+        "wants-vars",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "plain" to "hello"
+    And set variable "db_secret" to "hunter22"
+    And set variable "empty" to "<<null>>"
+    And set variable "x" to "global" global
+    And set variable "x" to "frame"
+    When I echo the vars
+    Then variable "echo_vars" should contain JSON:
+      """
+      {
+        "plain": {"value": "hello", "secret": false},
+        "db_secret": {"value": "hunter22", "secret": true},
+        "empty": {"value": null, "secret": false},
+        "x": {"value": "frame", "secret": false}
+      }
+      """
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+/// `project` with `macros/m.yaml` holding `yaml`.
+fn macro_project(name: &str, feature: &str, yaml: &str) -> PathBuf {
+    let dir = project(name, feature, "macro_paths: [macros]\n");
+    std::fs::create_dir_all(dir.join("macros")).unwrap();
+    std::fs::write(dir.join("macros/m.yaml"), yaml).unwrap();
+    dir
+}
+
+#[test]
+fn a_short_macro_secret_parameter_is_flagged_secret_in_the_vars() {
+    let dir = macro_project(
+        "vars-macro-secret",
+        r#"Feature: f
+  Scenario: s
+    When I pin "1234"
+    Then variable "echo_vars" should contain JSON:
+      """
+      {"pin": {"value": "1234", "secret": true}}
+      """
+"#,
+        "- step: 'I pin \"{pin:secret}\"'\n  do: [I echo the vars]\n  exports: [echo_vars]\n",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn a_step_that_does_not_ask_receives_an_empty_vars() {
+    let dir = project(
+        "no-vars",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "plain" to "hello"
+    When I echo the vars without asking
+    Then variable "echo_vars" should be equal to "{}"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}

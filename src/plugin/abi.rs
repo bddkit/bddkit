@@ -200,6 +200,19 @@ pub struct DispatchRequest<'a> {
     /// plugin may attach a screenshot nobody would read otherwise. Sent on
     /// every attempt of a polled assertion.
     pub evidence: bool,
+    /// The file's variables, for a step whose spec says `wants_vars`; `{}`
+    /// for every other step.
+    pub vars: BTreeMap<String, VarJson>,
+}
+
+/// One variable as a plugin that asked for them sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct VarJson {
+    /// `None` for a variable holding the `<<null>>` sentinel: a plugin never
+    /// receives the sentinel's NUL bytes.
+    pub value: Option<String>,
+    /// Whether the host would mask the value (`Redactor::reveals`).
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -496,6 +509,7 @@ mod tests {
             debug: false,
             options: OptionsJson::from(&crate::options::Options::default()),
             evidence: true,
+            vars: BTreeMap::new(),
         };
         let value = serde_json::to_value(&request).expect("serialises");
         // `serde_json::Value::Object` is a `BTreeMap` (no `preserve_order`
@@ -512,6 +526,7 @@ mod tests {
             "debug",
             "options",
             "evidence",
+            "vars",
         ];
         expected.sort();
         assert_eq!(keys, expected);
