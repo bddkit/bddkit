@@ -1,6 +1,6 @@
 use crate::privacy::Redactor;
 use crate::unique::{Generator, parse_kind};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 /// Frame stack: reads look downward, writes always go to the top.
@@ -42,6 +42,16 @@ impl VarStack {
             }
         }
         self.globals.get(name).map(String::as_str)
+    }
+
+    /// Every variable a step can read, as one map: globals first, then the
+    /// frames from the root up, so the nearest definition wins like `get`.
+    pub fn visible(&self) -> BTreeMap<String, String> {
+        self.globals
+            .iter()
+            .chain(self.frames.iter().flatten())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     pub fn set(&mut self, name: &str, value: String) {
@@ -214,6 +224,19 @@ pub fn interpolate_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn visible_merges_globals_and_frames_with_the_top_frame_winning() {
+        let mut s = VarStack::new();
+        s.set_global("a", "global".into());
+        s.set("a", "frame".into());
+        s.set("b", "b".into());
+        s.push_frame();
+        s.set("b", "inner".into());
+        let v = s.visible();
+        assert_eq!(v["a"], "frame");
+        assert_eq!(v["b"], "inner");
+    }
+
     use super::*;
 
     #[test]
