@@ -137,7 +137,11 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I echo the vars$"#, "group": "echo", "kind": "action", "wants_vars": true,
               "description": "publishes the request's vars as the variable echo_vars, as JSON" },
             { "pattern": r#"^I echo the vars without asking$"#, "group": "echo", "kind": "action",
-              "description": "publishes the request's vars as echo_vars though it did not ask for them" }
+              "description": "publishes the request's vars as echo_vars though it did not ask for them" },
+            { "pattern": r#"^I echo the raw doc string:$"#, "group": "echo", "kind": "action", "raw_docstring": true,
+              "description": "publishes its doc string as echo_doc, which the host did not interpolate" },
+            { "pattern": r#"^I echo the plain doc string:$"#, "group": "echo", "kind": "action",
+              "description": "publishes its doc string as echo_doc, interpolated as for any step" }
         ])
         .to_string()
     })
@@ -382,6 +386,11 @@ pub extern "C" fn bddkit_dispatch(
             12 | 13 => serde_json::json!({
                 "status": "passed",
                 "vars": {"echo_vars": value["vars"].to_string()}
+            })
+            .to_string(),
+            14 | 15 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_doc": value["docstring"].as_str().unwrap_or_default().trim()}
             })
             .to_string(),
             other => {

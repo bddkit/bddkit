@@ -1980,3 +1980,40 @@ fn a_step_that_does_not_ask_receives_an_empty_vars() {
     );
     assert_green(&run(&dir));
 }
+
+#[test]
+fn a_raw_docstring_step_receives_its_text_uninterpolated() {
+    let dir = project(
+        "raw-doc",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo the raw doc string:
+      """
+      a <<x>> b
+      """
+    # Expected values are interpolated, so a literal <<x>> cannot be written; [x] keeps the pattern from reading as a slot and still matches the text.
+    Then variable "echo_doc" should match "^a <<[x]>> b$"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn an_ordinary_plugin_doc_string_is_still_interpolated() {
+    let dir = project(
+        "plain-doc",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo the plain doc string:
+      """
+      a <<x>> b
+      """
+    Then variable "echo_doc" should be equal to "a VALUE b"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}

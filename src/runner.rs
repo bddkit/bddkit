@@ -54,6 +54,7 @@ fn prepare(
     vars: &VarStack,
     redactor: &crate::privacy::Redactor,
     generator: &Generator,
+    raw_docstring: bool,
 ) -> Result<(Args, Vec<Value>), String> {
     let mut shown = Vec::new();
     // Substitution applies to arguments, the doc string, and table cells —
@@ -81,13 +82,18 @@ fn prepare(
         let secret = params.get(i).is_some_and(|param| param.ty.secret);
         shown_slots(slots, secret, vars, redactor, &mut shown);
     }
-    let mut slots = Vec::new();
-    let docstring = step
-        .docstring
-        .as_ref()
-        .map(|d| interpolate_with(d, vars, generator, &mut slots))
-        .transpose()?;
-    shown_slots(slots, false, vars, redactor, &mut shown);
+    let docstring = if raw_docstring {
+        step.docstring.clone()
+    } else {
+        let mut slots = Vec::new();
+        let doc = step
+            .docstring
+            .as_ref()
+            .map(|d| interpolate_with(d, vars, generator, &mut slots))
+            .transpose()?;
+        shown_slots(slots, false, vars, redactor, &mut shown);
+        doc
+    };
     let mut slots = Vec::new();
     let table = step
         .table
@@ -151,8 +157,25 @@ fn resolve(
             ..
         }
     );
+    // A plugin step may ask for its doc string untouched: a script is code,
+    // and a value spliced into code can change what the code is.
+    let raw_docstring = matches!(
+        target,
+        StepTarget::Plugin { lib, step, .. }
+            if reg.plugin_step(lib, step).is_some_and(|spec| spec.raw_docstring)
+    );
     let interpolated = (!is_include)
-        .then(|| prepare(step, &caps, params, &world.vars, &world.redactor, generator))
+        .then(|| {
+            prepare(
+                step,
+                &caps,
+                params,
+                &world.vars,
+                &world.redactor,
+                generator,
+                raw_docstring,
+            )
+        })
         .transpose()?;
     let (args, vars) = interpolated.unzip();
     Ok(Resolved {

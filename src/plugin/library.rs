@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn lists_the_steps() {
         let lib = Library::load("echo", &fixture()).expect("loads");
-        assert_eq!(lib.steps.len(), 14);
+        assert_eq!(lib.steps.len(), 16);
         assert!(!lib.steps[0].is_assertion());
         assert!(lib.steps[1].is_assertion());
         assert_eq!(lib.steps[0].group, "echo");
