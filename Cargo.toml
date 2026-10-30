@@ -19,6 +19,9 @@ exclude = [
     "/docker-compose.yml",
     "/CLAUDE.md",
     "/AGENTS.md",
+    "/.claude",
+    "src/**/CLAUDE.md",
+    "/docs/design",
 ]
 
 [[bin]]
