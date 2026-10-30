@@ -851,9 +851,18 @@ struct Entry {
 pub struct Registry {
     entries: Vec<Entry>,
     macros: Vec<MacroDef>,
+    plugins: Option<std::sync::Arc<crate::plugin::Plugins>>,
 }
 
 impl Registry {
+    pub fn plugins(&self) -> Option<&std::sync::Arc<crate::plugin::Plugins>> {
+        self.plugins.as_ref()
+    }
+
+    pub fn plugin_step(&self, lib: usize, step: usize) -> Option<&crate::plugin::abi::StepSpec> {
+        self.plugins.as_ref()?.step_spec(lib, step)
+    }
+
     #[cfg(test)]
     pub fn new() -> Result<Self, String> {
         Self::with_macros(MacroCatalog::default())
@@ -863,17 +872,20 @@ impl Registry {
     /// through `with_macros_and_plugins`, which is a superset.
     #[cfg(test)]
     pub fn with_macros(catalog: MacroCatalog) -> Result<Self, String> {
-        Self::with_macros_and_plugins(catalog, &[], &[])
+        Self::with_macros_and_plugins(catalog, &[], &[], None)
     }
 
     /// Everything is registered before macros are validated, so a macro body may
     /// name a plugin step. Order inside `entries` is irrelevant — `find` collects
     /// every match and reports ambiguity — but a plugin pattern that is not in the
-    /// registry yet is indistinguishable from a typo.
+    /// registry yet is indistinguishable from a typo. `plugins` is the handle a
+    /// plugin step's spec is asked through at resolve, dispatch and validation
+    /// time, macro bodies included.
     pub fn with_macros_and_plugins(
         catalog: MacroCatalog,
         plugin_steps: &[(usize, usize, String, bool, Vec<usize>)],
         plugin_groups: &[String],
+        plugins: Option<std::sync::Arc<crate::plugin::Plugins>>,
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
         for (def, compiled) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
@@ -900,6 +912,7 @@ impl Registry {
         let mut registry = Self {
             entries,
             macros: catalog.definitions,
+            plugins,
         };
         for (lib, step, pattern, assertion, secret_groups) in plugin_steps {
             registry.add_plugin_step(*lib, *step, pattern, *assertion, secret_groups)?;
@@ -1143,7 +1156,26 @@ impl Registry {
                         })?;
                     }
                     Some((StepTarget::Builtin { .. }, _)) => {}
-                    Some((StepTarget::Plugin { .. }, _)) => {}
+                    Some((target @ StepTarget::Plugin { .. }, caps)) => {
+                        // ponytail: a file included from a macro body is not
+                        // walked, so its plugin steps are checked only at run time.
+                        crate::validate::check_plugin_step(
+                            self,
+                            &target,
+                            &caps,
+                            step.docstring.as_deref(),
+                            // A macro body step has no table.
+                            None,
+                        )
+                        .map_err(|e| {
+                            format!(
+                                "{e}, in macro {:?} from {}:{}",
+                                definition.step,
+                                definition.source.display(),
+                                definition.line,
+                            )
+                        })?;
+                    }
                     Some((StepTarget::Macro(_), _)) if step.docstring.is_some() => {
                         return Err(format!(
                             "macro call {:?} with a doc string inside macro {:?} from {}:{} is not supported",
@@ -1723,6 +1755,7 @@ mod tests {
             MacroCatalog::default(),
             &[],
             &["widget".to_string(), "browser".to_string()],
+            None,
         )
         .expect("registry");
 
@@ -1774,6 +1807,7 @@ mod tests {
             MacroCatalog::default(),
             &[],
             &["widget.beta".to_string()],
+            None,
         )
         .expect("registry");
 
@@ -1927,6 +1961,7 @@ mod tests {
                 Vec::new(),
             )],
             &[],
+            None,
         )
         .expect("a plugin step in a macro body is not a typo");
 
@@ -2025,7 +2060,7 @@ mod tests {
         let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
         std::fs::remove_file(&path).ok();
 
-        let error = Registry::with_macros_and_plugins(catalog, &[], &[])
+        let error = Registry::with_macros_and_plugins(catalog, &[], &[], None)
             .expect_err("no step matches the body");
         assert!(
             error.contains("did you mean: the response code is <code>"),
@@ -2047,7 +2082,7 @@ mod tests {
         let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
         std::fs::remove_file(&path).ok();
 
-        let error = Registry::with_macros_and_plugins(catalog, &[], &[])
+        let error = Registry::with_macros_and_plugins(catalog, &[], &[], None)
             .expect_err("no builtin, macro, or plugin step matches");
         assert!(error.contains("unknown step"), "{error}");
     }

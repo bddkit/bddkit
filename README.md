@@ -195,7 +195,7 @@ In CI the report is wanted exactly when `run` exited 1, so it has to run after a
 
 ## Checking a suite before running it
 
-`bddkit doctor` checks a suite without running it. It does every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and a DSN the driver cannot parse — and lists every problem it finds, one per row, instead of stopping at the first. An unknown step is explained: a typed parameter that refused its literal says which (`parameter <code> expects uint, got "abc"`), otherwise the closest step templates are offered as `did you mean`; `run` prints the same lines:
+`bddkit doctor` checks a suite without running it. It does every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, plugin steps a plugin's `validate_step` refuses, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and a DSN the driver cannot parse — and lists every problem it finds, one per row, instead of stopping at the first. An unknown step is explained: a typed parameter that refused its literal says which (`parameter <code> expects uint, got "abc"`), otherwise the closest step templates are offered as `did you mean`; `run` prints the same lines:
 
 ```console
 $ bddkit doctor --config suite.yaml

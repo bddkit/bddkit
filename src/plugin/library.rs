@@ -15,6 +15,7 @@ type JsonFn = unsafe extern "C" fn(*const c_char) -> *mut c_char;
 type DispatchFn = unsafe extern "C" fn(u64, u32, *const c_char) -> *mut c_char;
 type HandleFn = unsafe extern "C" fn(u64) -> *mut c_char;
 type FreeFn = unsafe extern "C" fn(*mut c_char);
+type StepValidateFn = unsafe extern "C" fn(u32, *const c_char) -> *mut c_char;
 
 /// One loaded plugin binary.
 ///
@@ -32,6 +33,7 @@ pub struct Library {
     drop_instance: HandleFn,
     reset_scenario: Option<HandleFn>,
     probe_config: Option<JsonFn>,
+    validate_step: Option<StepValidateFn>,
     free_string: FreeFn,
     _library: libloading::Library,
 }
@@ -119,6 +121,12 @@ impl Library {
         let probe_config: Option<JsonFn> = unsafe { library.get(b"bddkit_probe_config\0") }
             .ok()
             .map(|symbol| *symbol);
+        // Optional: a plugin that checks nothing before a run simply accepts
+        // every step.
+        let validate_step: Option<StepValidateFn> =
+            unsafe { library.get(b"bddkit_validate_step\0") }
+                .ok()
+                .map(|symbol| *symbol);
 
         // SAFETY: `manifest_fn` takes no arguments, and the pointer it returns
         // is handed straight back to this same plugin's `free_string` inside
@@ -151,6 +159,7 @@ impl Library {
             drop_instance,
             reset_scenario,
             probe_config,
+            validate_step,
             free_string,
             _library: ManuallyDrop::into_inner(library),
         })
@@ -177,6 +186,24 @@ impl Library {
     pub fn probe_config(&self, request: &str) -> Option<Result<Result<(), String>>> {
         let function = self.probe_config?;
         Some(self.envelope_call(function, request, "probe_config"))
+    }
+
+    /// `None` means the plugin exports no hook — every step is accepted.
+    /// Otherwise the plugin's verdict on the raw step; a hook that fails is
+    /// a refusal, never an accepted step.
+    pub fn validate_step(&self, step: u32, request: &str) -> Option<Result<(), String>> {
+        let function = self.validate_step?;
+        let verdict = self
+            .call_with("validate_step", request, |argument| {
+                // SAFETY: `function` was resolved from this library with this
+                // exact signature, and the plugin only reads from `argument`.
+                unsafe { function(step, argument) }
+            })
+            .and_then(|reply| {
+                serde_json::from_str::<Envelope>(&reply)
+                    .with_context(|| self.malformed("validate_step", &reply))
+            });
+        Some(verdict.map_or_else(|e| Err(format!("{e:#}")), Envelope::into_result))
     }
 
     pub fn init_instance(&self, request: &str) -> Result<Result<u64, String>> {
@@ -243,13 +270,27 @@ impl Library {
     }
 
     fn call_json(&self, function: JsonFn, request: &str, what: &str) -> Result<String> {
+        self.call_with(what, request, |argument| {
+            // SAFETY: `function` was resolved from this library with this
+            // exact signature, and the plugin only reads from `argument`.
+            unsafe { function(argument) }
+        })
+    }
+
+    /// Hands `request` to `call` as a C string that outlives it. `call` must
+    /// return a reply of this plugin's own (or NULL).
+    fn call_with(
+        &self,
+        what: &str,
+        request: &str,
+        call: impl FnOnce(*const c_char) -> *mut c_char,
+    ) -> Result<String> {
         let argument = CString::new(request).with_context(|| {
             format!("plugin {:?} {what} payload contains a NUL byte", self.name)
         })?;
-        // SAFETY: `function` was resolved from this library with this exact
-        // signature, `argument` outlives the call and the plugin only reads
-        // from it, and the reply is freed by the plugin's own `free_string`.
-        unsafe { take(self.free_string, function(argument.as_ptr())) }
+        // SAFETY: the pointer `call` returns came from this plugin, and `take`
+        // frees it with the plugin's own `free_string`.
+        unsafe { take(self.free_string, call(argument.as_ptr())) }
             .with_context(|| format!("plugin {:?} returned nothing from {what}", self.name))
     }
 
@@ -494,7 +535,7 @@ mod tests {
     #[test]
     fn lists_the_steps() {
         let lib = Library::load("echo", &fixture()).expect("loads");
-        assert_eq!(lib.steps.len(), 12);
+        assert_eq!(lib.steps.len(), 18);
         assert!(!lib.steps[0].is_assertion());
         assert!(lib.steps[1].is_assertion());
         assert_eq!(lib.steps[0].group, "echo");

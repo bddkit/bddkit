@@ -909,7 +909,7 @@ async fn show_lists_installed_plugins_and_one_in_detail() {
     for part in [
         "groups:      echo",
         "concurrency: shared",
-        "steps:       12",
+        "steps:       18",
     ] {
         assert!(text(&out).contains(part), "{part}: {}", text(&out));
     }
@@ -934,7 +934,7 @@ fn plugin_with_lib_abi(dir: &Path, github: &str, args: &[&str], abi: &str) -> Ou
         .expect("run bddkit")
 }
 
-const ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n      \"3\": 0.2.0\n";
+const ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"3\": 0.1.0\n      \"4\": 0.2.0\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_install_picks_the_release_for_the_host_abi() {
@@ -958,33 +958,33 @@ async fn plugin_install_picks_the_release_for_the_host_abi() {
 async fn an_index_without_the_host_abi_names_the_abis_it_has() {
     let (stub, github) = spawn().await;
     stub.index(
-        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"3\": 0.2.0\n",
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"4\": 0.2.0\n",
     );
     let dir = temp("abi-none");
 
     let out = plugin(&dir, &github, &["install", "echo"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("no release for plugin ABI 2"),
+        text(&out).contains("no release for plugin ABI 3"),
         "{}",
         text(&out)
     );
-    assert!(text(&out).contains("ABI 3"), "{}", text(&out));
+    assert!(text(&out).contains("ABI 4"), "{}", text(&out));
     assert!(!dir.join("plugins.yaml").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_install_refuses_a_release_for_another_abi_before_downloading() {
     let (stub, github) = spawn().await;
-    // Declared ABI 3, and NOT published: a download would be a 404, so the
+    // Declared ABI 4, and NOT published: a download would be a 404, so the
     // ABI message proves the refusal came first.
-    stub.declare_abi("someone/echo-plugin", "0.3.0", 3);
+    stub.declare_abi("someone/echo-plugin", "0.3.0", 4);
     let dir = temp("abi-declared");
 
     let out = plugin(&dir, &github, &["install", "someone/echo-plugin@0.3.0"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("targets plugin ABI 3"),
+        text(&out).contains("targets plugin ABI 4"),
         "{}",
         text(&out)
     );
@@ -1001,11 +1001,11 @@ async fn an_unknown_abi_release_is_checked_after_download_and_removed_on_mismatc
         &dir,
         &github,
         &["install", "someone/echo-plugin@0.3.0"],
-        "3",
+        "4",
     );
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("built for ABI version 3"),
+        text(&out).contains("built for ABI version 4"),
         "{}",
         text(&out)
     );
@@ -1018,9 +1018,9 @@ async fn plugin_update_does_not_move_to_a_newer_abi() {
     let (stub, github) = spawn().await;
     let dir = temp("abi-update");
     installed(&dir, &github, &stub, "0.1.0");
-    // 0.2.0 exists but is built for ABI 3, in a repository the index
+    // 0.2.0 exists but is built for ABI 4, in a repository the index
     // describes by a map that stops at 0.1.0.
-    stub.index(&ABI_INDEX.replace("\"3\": 0.2.0\n", ""));
+    stub.index(&ABI_INDEX.replace("\"4\": 0.2.0\n", ""));
     stub.publish("bddkit/echo-plugin", "0.2.0");
     stub.latest("bddkit/echo-plugin", "0.2.0");
 
@@ -1034,10 +1034,10 @@ async fn plugin_update_does_not_move_to_a_newer_abi() {
 
     // Without a map the release itself is asked, with the same outcome.
     stub.index(INDEX);
-    stub.declare_abi("bddkit/echo-plugin", "0.2.0", 3);
+    stub.declare_abi("bddkit/echo-plugin", "0.2.0", 4);
     let out = plugin(&dir, &github, &["update"]);
     assert!(
-        text(&out).contains("targets plugin ABI 3"),
+        text(&out).contains("targets plugin ABI 4"),
         "{}",
         text(&out)
     );
@@ -1285,13 +1285,13 @@ fn output_retrying(command: &mut Command) -> Output {
     panic!("the sandboxed binary stayed busy");
 }
 
-/// Echo 0.1.0 installed for ABI 2 and a 0.2.0 for ABI 3 published, with a
-/// bddkit 99.0.0 for ABI 3 as the latest release.
+/// Echo 0.1.0 installed for ABI 3 and a 0.2.0 for ABI 4 published, with a
+/// bddkit 99.0.0 for ABI 4 as the latest release.
 fn abi_upgrade_ready(sandbox: &Sandbox, github: &str, stub: &Stub, check_exit: i32) {
     sandbox.install_echo(github, stub);
     stub.index(ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 3, check_exit);
+    stub.publish_bddkit("99.0.0", 4, check_exit);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1303,7 +1303,7 @@ async fn version_json_reports_the_plugin_abi() {
     assert!(out.status.success(), "{}", text(&out));
     let info: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(info["version"], CURRENT);
-    assert_eq!(info["plugin_abi"], 2);
+    assert_eq!(info["plugin_abi"], 3);
     assert_eq!(info["target"], host_target());
 }
 
@@ -1361,7 +1361,7 @@ async fn upgrade_check_changes_nothing() {
 async fn without_a_terminal_upgrade_requires_yes() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-yes");
-    stub.publish_bddkit("99.0.0", 2, 0);
+    stub.publish_bddkit("99.0.0", 3, 0);
 
     let out = sandbox.upgrade(&github, &[]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
@@ -1376,7 +1376,7 @@ async fn a_same_abi_upgrade_replaces_only_the_binary() {
     sandbox.install_echo(&github, &stub);
     stub.publish("bddkit/echo-plugin", "0.2.0");
     stub.latest("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 2, 0);
+    stub.publish_bddkit("99.0.0", 3, 0);
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -1430,8 +1430,8 @@ async fn an_abi_upgrade_with_a_plugin_lacking_a_release_changes_nothing() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-blocked");
     abi_upgrade_ready(&sandbox, &github, &stub, 0);
-    // The index knows no release of echo for ABI 3.
-    stub.index(&ABI_INDEX.replace("      \"3\": 0.2.0\n", ""));
+    // The index knows no release of echo for ABI 4.
+    stub.index(&ABI_INDEX.replace("      \"4\": 0.2.0\n", ""));
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -1451,7 +1451,7 @@ async fn force_upgrades_and_leaves_the_blocking_plugin() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-force");
     abi_upgrade_ready(&sandbox, &github, &stub, 0);
-    stub.index(&ABI_INDEX.replace("      \"3\": 0.2.0\n", ""));
+    stub.index(&ABI_INDEX.replace("      \"4\": 0.2.0\n", ""));
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes", "--force"]);
@@ -1495,10 +1495,10 @@ async fn a_plugin_that_publishes_nothing_newer_blocks_an_abi_upgrade() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-no-newer");
     // No index map, no bddkit-plugin.json, and the latest release is the one
-    // installed: nothing says it can be loaded under ABI 3.
+    // installed: nothing says it can be loaded under ABI 4.
     sandbox.install_echo(&github, &stub);
     stub.latest("bddkit/echo-plugin", "0.1.0");
-    stub.publish_bddkit("99.0.0", 3, 0);
+    stub.publish_bddkit("99.0.0", 4, 0);
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -1524,10 +1524,10 @@ async fn plugin_check_prints_the_manifest_name_and_refuses_another_abi() {
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "echo");
 
-    let out = run(Some("3"));
+    let out = run(Some("4"));
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("built for ABI version 3"),
+        text(&out).contains("built for ABI version 4"),
         "{}",
         text(&out)
     );
@@ -1560,7 +1560,7 @@ async fn hand_written_and_project_entries_are_listed_not_changed() {
     let sandbox = Sandbox::new("upgrade-listed");
     stub.index(ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 3, 0);
+    stub.publish_bddkit("99.0.0", 4, 0);
 
     // The user layer: one entry bddkit installed, one a person wrote.
     let user = sandbox.root.join("cfg/bddkit");
@@ -1859,7 +1859,7 @@ async fn a_failed_plugin_install_reports_its_failure_class() {
         class(
             &["install", "echo@0.3.0"],
             &github,
-            &[("BDDKIT_ECHO_FIXTURE_ABI", "3")]
+            &[("BDDKIT_ECHO_FIXTURE_ABI", "4")]
         ),
         "refused"
     );

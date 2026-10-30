@@ -45,7 +45,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 
 ## 3. The ABI
 
-`ABI_VERSION` is **2**. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional and all described below: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. A plugin built for generation 1 is refused at load — bump the number the plugin returns and rebuild.
+`ABI_VERSION` is **3**. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. Generation 3 added, all optional and all described below: the request's `vars` key, a step's `wants_vars` and `raw_docstring`, and the `bddkit_validate_step` export. The check is strict: the host refuses a plugin that reports any number but 3 (an older one included), so bump the number the plugin returns and rebuild.
 
 | Symbol | Signature | Required |
 |---|---|---|
@@ -58,11 +58,12 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 | `bddkit_drop_instance` | `(u64) -> *mut c_char` | yes |
 | `bddkit_reset_scenario` | `(u64) -> *mut c_char` | no |
 | `bddkit_probe_config` | `(*const c_char) -> *mut c_char` | no |
+| `bddkit_validate_step` | `(u32, *const c_char) -> *mut c_char` | no |
 | `bddkit_free_string` | `(*mut c_char)` | yes |
 
 A missing required symbol fails the load with a message naming the symbol. **Returning NULL from any of the string-returning exports is an error**, reported as "plugin `<name>` returned nothing from `<call>`" — there is no reply shape that means "nothing to say"; say it with an envelope.
 
-At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `2`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim, or declares an `implicit_instance` for one; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim, or whose `secret_groups` names a capture group its pattern does not have; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below); call `bddkit_validate_config` once per instance — every one the config declares, plus the one synthesized from `implicit_instance` for a group the config has no section for. Nothing else is called until a scenario reaches a step.
+At load the host does, in order: `dlopen`; call `bddkit_abi_version` and refuse anything but `3`; resolve every required symbol, then `bddkit_reset_scenario` if it is exported; call `bddkit_manifest`; refuse a manifest whose `name` differs from the lock entry's name, or whose `groups` is empty, or whose `concurrency` is a value outside the closed set of section 6; refuse a manifest that describes the config of a group it does not claim, or declares an `implicit_instance` for one; call `bddkit_list_steps`; refuse any step whose `group` the manifest does not claim, or whose `secret_groups` names a capture group its pattern does not have; refuse a plugin that declares `shared`, exports `bddkit_reset_scenario`, and meets a run whose `concurrency` is greater than 1 (see that export below); call `bddkit_validate_config` once per instance — every one the config declares, plus the one synthesized from `implicit_instance` for a group the config has no section for. Then `bddkit_validate_step`, if exported (see that export below). Nothing else is called until a scenario reaches a step.
 
 Three questions can be asked about a `resources.<group>` entry, and each has its own mechanism. Together they state the boundary this document draws: the host knows *that* a group has a config, the plugin knows *what* it means, and only the plugin can find out whether it works.
 
@@ -74,7 +75,7 @@ Three questions can be asked about a `resources.<group>` entry, and each has its
 
 ### `bddkit_abi_version`
 
-Returns `2`. This is the one call made before the version is known, so it is an unavoidable act of faith on both sides: export it with exactly this signature.
+Returns `3`. This is the one call made before the version is known, so it is an unavoidable act of faith on both sides: export it with exactly this signature.
 
 ### `bddkit_manifest`
 
@@ -148,6 +149,8 @@ An **array** at the top level:
 - `kind` (string, required) — `"action"` or `"assertion"`. Only an assertion may answer `not_yet`, and only an assertion consumes an armed eventual-assertion modifier.
 - `description` (string, optional) — one line stating the step's effect, shown by `bddkit steps list --config <file> -v`. Localizing it is your job, not the host's: bddkit never translates a plugin's text. Omit it and the step lists without a description.
 - `secret_groups` (array of integers, optional, default `[]`) — the capture groups of `pattern` that hold a secret, **counted from 1 like the regex groups themselves**: `[2]` is the second `(…)`, which arrives as `args[1]`. The host treats such a group as it treats a `{name:secret}` parameter of a built-in step: a literal in it is written `***` in the step text the console, the reports and the stream show (a value that came through a `<<variable>>` is left as written), its value is registered with the privacy filter, and its slot is `***` in `step_started.vars`. A number no group has is refused at load, since it would protect nothing. The groups are unnamed, so this is the only way to say it.
+- `wants_vars` (boolean, optional, default `false`) — the step reads the file's variables: the dispatch request carries `vars` for it (see `bddkit_dispatch`) and for no other step, so a plugin neither receives values it never asked for nor makes the host serialize them.
+- `raw_docstring` (boolean, optional, default `false`) — the host does **not** interpolate this step's doc string: it arrives exactly as written, so a literal `<<` is just text. It exists for steps whose doc string is code (a script): a value spliced into code can change what the code means, so such a step reads values through `vars` instead. `args` and `table` cells are still interpolated. The doc string reaches the plugin dedented but with the leading newline and the trailing newline gherkin keeps, in the interpolated and the raw case alike; count the leading newline when you map a line of the script back to a line of the feature file.
 
 **Name your capture groups.** `bddkit steps list` renders a pattern as a template by replacing each group with its name, so `(?P<bucket>[^"]+)` reads as `<bucket>` while a bare `([^"]+)` degrades to `<value1>`. Named groups stay addressable by index, so nothing about dispatch changes.
 
@@ -156,6 +159,22 @@ An **array** at the top level:
 The `regex` crate has no backtracking and no lookahead. Patterns are matched against the **raw step text**, before any variable interpolation, so a pattern can never depend on a variable's value.
 
 If your pattern also matches a bddkit built-in step, another plugin's step, or a macro, that step is **ambiguous**: the run stops before the first request with a message listing every definition that matched. It is not "first wins" — nothing is silently shadowed, but nothing works either. Make your patterns specific.
+
+### `bddkit_validate_step`
+
+`bddkit_validate_step(step_index, request)`, **optional**: `(u32, *const c_char) -> *mut c_char`. `step_index` is the position in your `list_steps` array, as for dispatch. Unlike every other call it takes **no instance handle** — it runs before any instance exists, and nothing may be connected.
+
+Request:
+
+```json
+{ "args": ["report.pdf", "backups"], "docstring": null, "table": null }
+```
+
+All three keys are always present, and nothing is interpolated: the captures, doc string and table are as written in the feature file (after a Scenario Outline's `<column>` placeholders are substituted), `<<variable>>` slots included. A step in a macro body has `table: null`, and its captures may hold the macro's own `<<param>>` slots. Check what can be checked without one — a script's syntax, a literal that is not a number — and accept anything that holds a slot.
+
+Reply: the same envelope as `bddkit_validate_config`, `{"ok": true}` or `{"ok": false, "error": "…"}`. Write `error` so it reads after the step's file and line. Do not quote a `secret_groups` argument in it: validation errors are printed without the secret filter.
+
+The host calls it for every plugin step in a feature file, in the body of an `I include`d file and in a macro body, before the first request; every loaded macro body is checked whether or not a scenario calls it. A rejection is exit code 2 naming the file and line (for a macro body, the macro and its definition, reported once when the registry is built), and `bddkit doctor` reports it as a failed `steps` row (exit 1) for a feature file or an include; for a macro body it is the failed `macros` row, and the `steps` stage is then skipped. A plugin that does not export the symbol has every step accepted. A hook that fails — a panic, a malformed reply, a NUL byte in the payload, a NULL return — is an error and never acceptance: the run stops rather than start with a step nobody vetted.
 
 ### `bddkit_validate_config`
 
@@ -241,11 +260,12 @@ Request:
   "workspace_dir": "/tmp/bddkit-3n2k9a0f1x7q/workspace/000004",
   "debug": false,
   "options": { "polling": { "timeout_secs": 30, "interval_ms": 100 } },
-  "evidence": false
+  "evidence": false,
+  "vars": {}
 }
 ```
 
-All eight keys are always present; `docstring` and `table` are `null` when the step carries neither.
+All nine keys are always present; `docstring` and `table` are `null` when the step carries neither.
 
 - `args` — the regex capture groups in order, **already interpolated**: `<<variable>>`, `<<unique()>>` and `<<null>>` have been resolved before the payload was built. A plugin never sees raw step text and never sees bddkit's variable syntax.
 - `docstring` — the step's doc string, interpolated, or `null`.
@@ -254,6 +274,7 @@ All eight keys are always present; `docstring` and `table` are `null` when the s
 - `workspace_dir` — the working directory of the feature file this call belongs to, for files the run produces rather than evidence about a failure. **The host has already created it**, unlike `artifacts_dir`. It is the same directory for every dispatch in one feature file and a different one in every other file, so a plugin can accept a bare file name from a tester without two files colliding on it. It is shared with the host's own steps, so a file written by one and read by the other needs no path in the feature text. Nothing deletes it: a failed run's files stay inspectable.
 - `debug` — true while the scenario is inside `I am in debug mode`. It resets at the scenario boundary.
 - `evidence` — true when this step's evidence may be kept: always under `bddkit run --events <path> --evidence` (`all`), for a marked step under `--evidence=marked`, and for every step under `--evidence=failures`, where it is held and written only if the scenario fails (a file the plugin wrote, or the host's copy of one named outside the artifact root, stays on disk either way). So a plugin may attach a screenshot or a response that nobody would read otherwise. When it is false, a `passed` reply's diagnostics are dropped, and producing them is wasted work. Sent on every attempt of a polled assertion.
+- `vars` — the variables visible to a `wants_vars` step (`{}` for any other), taken again on every dispatch (so on each attempt of a polled step), `{name: {"value": string|null, "secret": bool}}`. The nearest definition of a name wins (a macro frame over the frames below it, those over the file's globals); inside an `I include`d scenario only that scenario's own variables are visible. `value` is `null` for a variable holding `<<null>>`. `secret` is true when the name contains a privacy word (by default only `secret`), the value is already in the file's secret set, or the variable was bound from a `{name:secret}` macro parameter, so a plugin can keep it out of what it prints. Under `--reveal` (`privacy.reveal`) it is false for everything. Example: `"vars": {"token": {"value": "abc", "secret": true}, "city": {"value": "Riga", "secret": false}}`.
 - `options` — the polling options resolved for this instance, after the global → instance cascade and after any armed eventual-assertion modifier. Informational: **the retry loop is the host's**, see section 5.
 
 Reply:
@@ -389,7 +410,7 @@ A plugin that genuinely cannot be shared declares `per_worker` and then runs at 
 
 `bddkit plugin update [<name>…]` moves every plugin `install` put there to its newest release built for this bddkit's ABI, or only the names given; a newer release for another ABI is reported (`up to date (0.1.0): … targets plugin ABI 3`), never installed; `--dry-run` prints what would move without moving it.
 
-**Only releases the host can load are installed.** The plugin ABI is compared by equality at load, so a release built for another ABI would be refused on every run. Each release says which ABI it targets in an asset `bddkit-plugin.json`, `{"abi": 2}` (see Publishing a plugin). `install <name>` takes the release listed under the host's ABI in the index's `abi` map (`"2": 0.2.0`) and, if the map has none, refuses and names the ABIs it does list; an index entry with no map, `owner/repo`, and `name@version` read the release's `bddkit-plugin.json` and refuse a mismatch before downloading anything. A release that publishes no such asset is downloaded and checked by the library itself (`bddkit_abi_version`); on a mismatch the new files are removed and the lock and any installed version are left as they were. An ABI bump therefore always means a new plugin release. The `abi` map is kept by the `registry-abi.yml` workflow in `bddkit/bddkit`, daily and on demand: it resolves each plugin's latest release, reads its `bddkit-plugin.json`, records the release under that ABI (older ABIs stay) and opens a pull request; a plugin release is installable by name within a day, and `name@version` or `owner/repo` work at once. A latest release without the asset is not recorded.
+**Only releases the host can load are installed.** The plugin ABI is compared by equality at load, so a release built for another ABI would be refused on every run. Each release says which ABI it targets in an asset `bddkit-plugin.json`, `{"abi": 3}` (see Publishing a plugin). `install <name>` takes the release listed under the host's ABI in the index's `abi` map (`"3": 0.2.0`) and, if the map has none, refuses and names the ABIs it does list; an index entry with no map, `owner/repo`, and `name@version` read the release's `bddkit-plugin.json` and refuse a mismatch before downloading anything. A release that publishes no such asset is downloaded and checked by the library itself (`bddkit_abi_version`); on a mismatch the new files are removed and the lock and any installed version are left as they were. An ABI bump therefore always means a new plugin release. The `abi` map is kept by the `registry-abi.yml` workflow in `bddkit/bddkit`, daily and on demand: it resolves each plugin's latest release, reads its `bddkit-plugin.json`, records the release under that ABI (older ABIs stay) and opens a pull request; a plugin release is installable by name within a day, and `name@version` or `owner/repo` work at once. A latest release without the asset is not recorded.
 
 `bddkit plugin remove <name>` unregisters a plugin and deletes the files `install` put there, unless another lock file of the chain (`user` and `user.local` share one library directory), or a `.before-upgrade` backup that `upgrade --rollback` would restore, still points into the same release: that one stays, and `plugin prune` collects it once nothing does. `plugin update` keeps the replaced release under the same rule.
 
@@ -484,11 +505,11 @@ Each archive holds exactly one dynamic library for its target (`lib*.so`, `lib*.
 
 Attach `<asset>.sha256` beside each archive, in plain `sha256sum` output (`<hex>  <file name>`). It is checked against the download before anything is written, and it comes from the same release as the archive — it guards the download's integrity, not who built it.
 
-Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the plugin ABI the library was built for (`bddkit_abi_version`): `{"abi": 2}`. Without it `install` has to download the archive to find out.
+Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the plugin ABI the library was built for (`bddkit_abi_version`): `{"abi": 3}`. Without it `install` has to download the archive to find out.
 
 `bddkit-exec`'s release workflow is a working template for all of this.
 
-To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"2": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand.
+To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"3": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand.
 
 `bddkit init` offers every plugin in the index as a checklist item with its `description`, so the index description is your plugin's pitch.
 

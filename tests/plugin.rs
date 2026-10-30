@@ -1849,6 +1849,22 @@ fn a_secret_group_no_pattern_group_has_stops_the_run_at_load() {
 }
 
 #[test]
+fn a_plugin_built_for_abi_2_is_refused_by_a_generation_3_host() {
+    let dir = project(
+        "abi2-refused",
+        "Feature: f\n  Scenario: s\n    When I echo \"x\" as \"y\"\n",
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &[], &[("BDDKIT_ECHO_FIXTURE_ABI", "2")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ABI version 2") && stderr.contains("this bddkit speaks 3"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn commented_plugin_steps_are_disabled_only_while_the_plugin_is_loaded() {
     let dir = project(
         "annotation-plugin",
@@ -1896,4 +1912,240 @@ fn commented_plugin_steps_are_disabled_only_while_the_plugin_is_loaded() {
         step["comment"],
         "Given I echo \"<<undefined>>\" as \"never\""
     );
+}
+
+#[test]
+fn a_step_that_wants_vars_receives_them_flagged_and_null_aware() {
+    let dir = project(
+        "wants-vars",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "plain" to "hello"
+    And set variable "db_secret" to "hunter22"
+    And set variable "empty" to "<<null>>"
+    And set variable "x" to "global" global
+    And set variable "x" to "frame"
+    When I echo the vars
+    Then variable "echo_vars" should contain JSON:
+      """
+      {
+        "plain": {"value": "hello", "secret": false},
+        "db_secret": {"value": "hunter22", "secret": true},
+        "empty": {"value": null, "secret": false},
+        "x": {"value": "frame", "secret": false}
+      }
+      """
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+/// `project` with `macros/m.yaml` holding `yaml`.
+fn macro_project(name: &str, feature: &str, yaml: &str) -> PathBuf {
+    let dir = project(name, feature, "macro_paths: [macros]\n");
+    std::fs::create_dir_all(dir.join("macros")).unwrap();
+    std::fs::write(dir.join("macros/m.yaml"), yaml).unwrap();
+    dir
+}
+
+#[test]
+fn a_short_macro_secret_parameter_is_flagged_secret_in_the_vars() {
+    let dir = macro_project(
+        "vars-macro-secret",
+        r#"Feature: f
+  Scenario: s
+    When I pin "1234"
+    Then variable "echo_vars" should contain JSON:
+      """
+      {"pin": {"value": "1234", "secret": true}}
+      """
+"#,
+        "- step: 'I pin \"{pin:secret}\"'\n  do: [I echo the vars]\n  exports: [echo_vars]\n",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn a_step_that_does_not_ask_receives_an_empty_vars() {
+    let dir = project(
+        "no-vars",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "plain" to "hello"
+    When I echo the vars without asking
+    Then variable "echo_vars" should be equal to "{}"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn a_raw_docstring_step_receives_its_text_uninterpolated() {
+    let dir = project(
+        "raw-doc",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo the raw doc string:
+      """
+      a <<x>> b
+      """
+    # Expected values are interpolated, so a literal <<x>> cannot be written; [x] keeps the pattern from reading as a slot and still matches the text.
+    Then variable "echo_doc" should match "^a <<[x]>> b$"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn an_ordinary_plugin_doc_string_is_still_interpolated() {
+    let dir = project(
+        "plain-doc",
+        r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo the plain doc string:
+      """
+      a <<x>> b
+      """
+    Then variable "echo_doc" should be equal to "a VALUE b"
+"#,
+        "",
+    );
+    assert_green(&run(&dir));
+}
+
+const MACRO_CALL: &str = "Feature: f\n  Scenario: s\n    When I do the checked thing\n";
+const CHECKED_MACRO: &str = "- step: I do the checked thing\n  do: [I echo validated \"bad\"]\n";
+
+/// A feature whose one step, at line 3, hands `arg` to the fixture's validator.
+fn validated(arg: &str) -> String {
+    format!("Feature: f\n  Scenario: s\n    When I echo validated \"{arg}\"\n")
+}
+
+/// Every way a plugin step can be refused before the first request, and
+/// every way a hook can misbehave, is exit 2 naming the file and line.
+#[test]
+fn a_rejected_step_exits_2_before_the_first_request() {
+    const RAW_DOC: &str = r#"Feature: f
+  Scenario: s
+    Given set variable "x" to "VALUE"
+    When I echo validated doc string:
+      """
+      a <<x>> b
+      """
+"#;
+    const INCLUDE: &str = "Feature: f\n  Scenario: s\n    When I include \"../inc/inc.feature\"\n";
+    let cases = [
+        (
+            "feature",
+            validated("bad"),
+            vec![],
+            ("the echo refuses \"bad\"", "plugin.feature:3"),
+        ),
+        // Interpolated, `<<x>>` would be `VALUE` and the fixture would accept it.
+        (
+            "raw-doc",
+            RAW_DOC.into(),
+            vec![],
+            ("reached validation uninterpolated", "plugin.feature:4"),
+        ),
+        // Outside `paths`, so the file is reached only through the include.
+        (
+            "include",
+            INCLUDE.into(),
+            vec![("inc/inc.feature", validated("bad"))],
+            ("the echo refuses", "inc.feature:3"),
+        ),
+        (
+            "macro",
+            MACRO_CALL.into(),
+            vec![("macros/m.yaml", CHECKED_MACRO.into())],
+            ("the echo refuses", "m.yaml:1"),
+        ),
+        (
+            "panic",
+            validated("panic"),
+            vec![],
+            ("the plugin panicked", "plugin.feature:3"),
+        ),
+        (
+            "malformed",
+            validated("malformed"),
+            vec![],
+            ("malformed validate_step", "plugin.feature:3"),
+        ),
+        (
+            "noerror",
+            validated("noerror"),
+            vec![],
+            ("no message", "plugin.feature:3"),
+        ),
+    ];
+    for (name, feature, files, (expect, at)) in cases {
+        let macros = files.iter().any(|(path, _)| path.starts_with("macros/"));
+        let tail = if macros {
+            "macro_paths: [macros]\n"
+        } else {
+            ""
+        };
+        let dir = project(&format!("validate-{name}"), &feature, tail);
+        for (path, text) in files {
+            std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(path), text).unwrap();
+        }
+        let out = run(&dir);
+        let all = common::db::combined(&out);
+        assert_eq!(out.status.code(), Some(2), "{name}: {all}");
+        assert!(all.contains(expect), "{name}: {all}");
+        assert!(all.contains(at), "{name}: {all}");
+    }
+}
+
+fn doctor(dir: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml"])
+        .current_dir(dir)
+        .output()
+        .expect("run doctor")
+}
+
+#[test]
+fn doctor_files_a_rejected_macro_body_under_macros() {
+    let dir = macro_project("validate-macro-doctor", MACRO_CALL, CHECKED_MACRO);
+    let out = doctor(&dir);
+    let all = common::db::combined(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    let line = all
+        .lines()
+        .find(|l| l.contains("the echo refuses"))
+        .unwrap_or_else(|| panic!("{all}"));
+    assert!(line.contains("macros"), "{all}");
+}
+
+#[test]
+fn doctor_reports_a_rejected_step() {
+    let out = doctor(&project("validate-doctor", &validated("bad"), ""));
+    let all = common::db::combined(&out);
+    assert_eq!(out.status.code(), Some(1), "{all}");
+    assert!(all.contains("the echo refuses"), "{all}");
+}
+
+#[test]
+fn a_plugin_without_the_hook_accepts_every_step() {
+    // The worker fixture does not export bddkit_validate_step.
+    const WORKER_STEP: &str = "I count in the worker as \"n\"";
+    let dir = worker_project(
+        "validate-absent",
+        &[(
+            "w.feature",
+            &format!("Feature: f\n  Scenario: s\n    When {WORKER_STEP}\n"),
+        )],
+        "",
+        1,
+    );
+    assert_green(&run(&dir));
 }

@@ -755,6 +755,17 @@ impl Redactor {
         }
     }
 
+    /// Whether a value read under `name` is a secret: the caller already knows
+    /// it is (`name_is_secret`), a privacy word in the name, or the value
+    /// already in the set. False while masking is off.
+    pub fn reveals(&self, name: &str, value: &str, name_is_secret: bool) -> bool {
+        let state = self.state();
+        state.enabled
+            && (name_is_secret
+                || variable_is_sensitive(name, &state.words)
+                || state.secrets.values.contains(value))
+    }
+
     pub fn field_is_sensitive(&self, name: &str) -> bool {
         let state = self.state();
         state.enabled && field_is_sensitive(name, &state.fields)
@@ -880,6 +891,22 @@ impl Secrets {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reveals_is_true_for_a_sensitive_name_or_a_known_value() {
+        let redactor = Redactor::new(&Privacy::default(), Secrets::new(1));
+        assert!(redactor.reveals("db_secret", "anything", false));
+        assert!(redactor.reveals("pin", "1234", true));
+        assert!(!redactor.reveals("greeting", "hello", false));
+        redactor.secret("hunter22");
+        assert!(redactor.reveals("greeting", "hunter22", false));
+    }
+
+    #[test]
+    fn reveals_is_false_while_masking_is_off() {
+        let redactor = Redactor::disabled();
+        assert!(!redactor.reveals("db_secret", "anything", true));
+    }
+
     use super::*;
 
     const WORDS: &[&str] = &["secret"];

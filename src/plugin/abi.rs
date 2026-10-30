@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 /// diagnostic `media_type` and a step spec `secret_groups` (#90). Each is
 /// optional on its own; the generation moved once, for the lot, so a plugin
 /// that sends `secrets` can rely on a host that reads them.
-pub const ABI_VERSION: u32 = 2;
+///
+/// 3: the request's `vars`, the spec's `wants_vars` and `raw_docstring`, and
+/// an optional `bddkit_validate_step` (#55), moved once for the lot.
+pub const ABI_VERSION: u32 = 3;
 
 /// A message used whenever a plugin reports failure without giving a reason.
 const NO_MESSAGE: &str = "the plugin reported a failure with no message";
@@ -135,6 +138,12 @@ pub struct StepSpec {
     /// (`library::check_secret_groups`).
     #[serde(default)]
     pub secret_groups: Vec<usize>,
+    /// The dispatch request carries `vars` for this step, and for no other.
+    #[serde(default)]
+    pub wants_vars: bool,
+    /// The host does not interpolate this step's doc string.
+    #[serde(default)]
+    pub raw_docstring: bool,
 }
 
 impl StepSpec {
@@ -191,6 +200,19 @@ pub struct DispatchRequest<'a> {
     /// plugin may attach a screenshot nobody would read otherwise. Sent on
     /// every attempt of a polled assertion.
     pub evidence: bool,
+    /// The file's variables, for a step whose spec says `wants_vars`; `{}`
+    /// for every other step.
+    pub vars: BTreeMap<String, VarJson>,
+}
+
+/// One variable as a plugin that asked for them sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct VarJson {
+    /// `None` for a variable holding the `<<null>>` sentinel: a plugin never
+    /// receives the sentinel's NUL bytes.
+    pub value: Option<String>,
+    /// Whether the host would mask the value (`Redactor::reveals`).
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -329,6 +351,14 @@ impl InitResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_spec_defaults_both_new_flags_to_false() {
+        let spec: StepSpec =
+            serde_json::from_str(r#"{"pattern":"^x$","group":"g","kind":"action"}"#).unwrap();
+        assert!(!spec.wants_vars);
+        assert!(!spec.raw_docstring);
+    }
 
     #[test]
     fn a_manifest_parses() {
@@ -479,6 +509,7 @@ mod tests {
             debug: false,
             options: OptionsJson::from(&crate::options::Options::default()),
             evidence: true,
+            vars: BTreeMap::new(),
         };
         let value = serde_json::to_value(&request).expect("serialises");
         // `serde_json::Value::Object` is a `BTreeMap` (no `preserve_order`
@@ -495,6 +526,7 @@ mod tests {
             "debug",
             "options",
             "evidence",
+            "vars",
         ];
         expected.sort();
         assert_eq!(keys, expected);

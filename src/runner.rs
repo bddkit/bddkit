@@ -54,6 +54,7 @@ fn prepare(
     vars: &VarStack,
     redactor: &crate::privacy::Redactor,
     generator: &Generator,
+    raw_docstring: bool,
 ) -> Result<(Args, Vec<Value>), String> {
     let mut shown = Vec::new();
     // Substitution applies to arguments, the doc string, and table cells —
@@ -81,13 +82,18 @@ fn prepare(
         let secret = params.get(i).is_some_and(|param| param.ty.secret);
         shown_slots(slots, secret, vars, redactor, &mut shown);
     }
-    let mut slots = Vec::new();
-    let docstring = step
-        .docstring
-        .as_ref()
-        .map(|d| interpolate_with(d, vars, generator, &mut slots))
-        .transpose()?;
-    shown_slots(slots, false, vars, redactor, &mut shown);
+    let docstring = if raw_docstring {
+        step.docstring.clone()
+    } else {
+        let mut slots = Vec::new();
+        let doc = step
+            .docstring
+            .as_ref()
+            .map(|d| interpolate_with(d, vars, generator, &mut slots))
+            .transpose()?;
+        shown_slots(slots, false, vars, redactor, &mut shown);
+        doc
+    };
     let mut slots = Vec::new();
     let table = step
         .table
@@ -151,8 +157,25 @@ fn resolve(
             ..
         }
     );
+    // A plugin step may ask for its doc string untouched: a script is code,
+    // and a value spliced into code can change what the code is.
+    let raw_docstring = matches!(
+        target,
+        StepTarget::Plugin { lib, step, .. }
+            if reg.plugin_step(lib, step).is_some_and(|spec| spec.raw_docstring)
+    );
     let interpolated = (!is_include)
-        .then(|| prepare(step, &caps, params, &world.vars, &world.redactor, generator))
+        .then(|| {
+            prepare(
+                step,
+                &caps,
+                params,
+                &world.vars,
+                &world.redactor,
+                generator,
+                raw_docstring,
+            )
+        })
         .transpose()?;
     let (args, vars) = interpolated.unzip();
     Ok(Resolved {
@@ -414,6 +437,10 @@ async fn run_step(
                 .display()
                 .to_string();
 
+            let wants_vars = reg
+                .plugin_step(lib, step_index)
+                .is_some_and(|spec| spec.wants_vars);
+
             let mut attempts = 0;
             loop {
                 let dispatch_dir = world.artifacts.next_dir();
@@ -426,6 +453,11 @@ async fn run_step(
                     debug: world.debug,
                     options: OptionsJson::from(&effective),
                     evidence: world.trace.evidence_on(),
+                    vars: if wants_vars {
+                        crate::plugin::request_vars(&world.vars, &world.redactor)
+                    } else {
+                        Default::default()
+                    },
                 })
                 .map_err(|error| {
                     StepError::plugin(format!("failed to encode the plugin request: {error}"))
@@ -1337,8 +1369,13 @@ mod tests {
                 )
             })
             .collect();
-        Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &["echo".to_string()])
-            .expect("the plugin registry builds")
+        Registry::with_macros_and_plugins(
+            MacroCatalog::default(),
+            &steps,
+            &["echo".to_string()],
+            None,
+        )
+        .expect("the plugin registry builds")
     }
 
     /// The `Arc` comes back too: a test that asserts how many instances were
@@ -1770,9 +1807,13 @@ Feature: macro
         /// change, with no network under the paused clock.
         async fn run_with_echo(feature: &str, macros: MacroCatalog) -> FileResult {
             let plugins = echo_plugins();
-            let registry =
-                Registry::with_macros_and_plugins(macros, &plugins.steps(), &["echo".to_string()])
-                    .expect("the plugin registry builds");
+            let registry = Registry::with_macros_and_plugins(
+                macros,
+                &plugins.steps(),
+                &["echo".to_string()],
+                None,
+            )
+            .expect("the plugin registry builds");
             let context = context_with(
                 registry,
                 apis(),

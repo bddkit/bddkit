@@ -65,7 +65,7 @@ pub extern "C" fn bddkit_abi_version() -> u32 {
     std::env::var("BDDKIT_ECHO_FIXTURE_ABI")
         .ok()
         .and_then(|abi| abi.parse().ok())
-        .unwrap_or(2)
+        .unwrap_or(3)
 }
 
 #[unsafe(no_mangle)]
@@ -133,7 +133,19 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "description": "answers not_yet, quoting its argument, which it also declares as a secret, and the request's evidence flag" },
             { "pattern": r#"^I echo "(?P<user>[^"]*)" with password "(?P<password>[^"]*)"$"#, "group": "echo", "kind": "action",
               "secret_groups": [secret_group()],
-              "description": "fails quoting its password, which the step spec marks secret" }
+              "description": "fails quoting its password, which the step spec marks secret" },
+            { "pattern": r#"^I echo the vars$"#, "group": "echo", "kind": "action", "wants_vars": true,
+              "description": "publishes the request's vars as the variable echo_vars, as JSON" },
+            { "pattern": r#"^I echo the vars without asking$"#, "group": "echo", "kind": "action",
+              "description": "publishes the request's vars as echo_vars though it did not ask for them" },
+            { "pattern": r#"^I echo the raw doc string:$"#, "group": "echo", "kind": "action", "raw_docstring": true,
+              "description": "publishes its doc string as echo_doc, which the host did not interpolate" },
+            { "pattern": r#"^I echo the plain doc string:$"#, "group": "echo", "kind": "action",
+              "description": "publishes its doc string as echo_doc, interpolated as for any step" },
+            { "pattern": r#"^I echo validated "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "description": "passes; its validate_step refuses the argument bad, panics on panic, replies malformed on malformed and refuses without a message on noerror" },
+            { "pattern": r#"^I echo validated doc string:$"#, "group": "echo", "kind": "action",
+              "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" }
         ])
         .to_string()
     })
@@ -375,10 +387,40 @@ pub extern "C" fn bddkit_dispatch(
                 "error": format!("the echo was given {}", args.get(1).cloned().unwrap_or_default()),
             })
             .to_string(),
+            12 | 13 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_vars": value["vars"].to_string()}
+            })
+            .to_string(),
+            14 | 15 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_doc": value["docstring"].as_str().unwrap_or_default().trim()}
+            })
+            .to_string(),
+            16 | 17 => serde_json::json!({"status": "passed"}).to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
             }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bddkit_validate_step(step_index: u32, request: *const c_char) -> *mut c_char {
+    guard("envelope", move || {
+        let value: serde_json::Value = serde_json::from_str(&input(request)).unwrap_or_default();
+        let refuse = |why: &str| serde_json::json!({"ok": false, "error": why}).to_string();
+        let doc = value["docstring"].as_str().unwrap_or_default();
+        match (step_index, value["args"][0].as_str()) {
+            (16, Some("bad")) => refuse("the echo refuses \"bad\""),
+            (16, Some("panic")) => panic!("the echo validator exploded"),
+            (16, Some("malformed")) => "not json".to_string(),
+            (16, Some("noerror")) => r#"{"ok":false}"#.to_string(),
+            (17, _) if doc.contains("<<") => {
+                refuse("the doc string reached validation uninterpolated")
+            }
+            _ => r#"{"ok":true}"#.to_string(),
         }
     })
 }
