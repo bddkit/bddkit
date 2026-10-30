@@ -11,3 +11,8 @@ docs/superpowers/
 
 # Written by selftest/ scenarios.
 /selftest/out/
+
+# Claude Code local state; only .claude/rules/ is shared.
+/.claude/worktrees/
+/.claude/tmp/
+/.claude/settings.local.json
