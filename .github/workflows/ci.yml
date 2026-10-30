@@ -15,8 +15,49 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Decides which jobs below have anything to check. A skipped job counts as
+  # passed for a required status check, so a docs-only PR can still merge —
+  # which `paths-ignore` on the trigger would not allow, as the check would
+  # never be created. Everything not named as prose is code: a new kind of
+  # file runs the tests until someone lists it here.
+  changes:
+    name: changed files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+      installers: ${{ steps.diff.outputs.installers }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -z "$BASE" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "installers=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "origin/$BASE...HEAD")
+          echo "$files"
+          if echo "$files" | grep -qvE '^(docs/|\.claude/|.*\.md$|LICENSE|\.gitignore$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$files" | grep -qE '^(install\.sh|install\.ps1|\.github/workflows/ci\.yml)$'; then
+            echo "installers=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installers=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint-install-scripts:
     name: lint install scripts
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,6 +79,8 @@ jobs:
 
   test:
     name: test & clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # `checks: write` is for the example report below, which is published as a
     # Check Run; the rest is the default read-only token.
