@@ -36,6 +36,8 @@ jobs:
           git switch -C "$branch"
           git commit -am "chore: update the plugin index's ABI map"
           git push --force origin "$branch"
-          gh pr view "$branch" >/dev/null 2>&1 ||
+          # `gh pr view` also finds a merged or closed PR of the same branch,
+          # which would leave the pushed branch without a PR for good.
+          [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ] ||
             gh pr create --head "$branch" --title "chore: update the plugin index's ABI map" \
               --body "Daily run of \`registry-abi.yml\`: newest release per plugin ABI, each checked to declare the ABI it is listed under."
