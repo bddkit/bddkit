@@ -31,3 +31,5 @@ plugin:
   - name: script
     repo: bddkit/bddkit-script
     description: Transform values inside a test with Rhai scripts, without a browser or a plugin of your own
+    abi:
+      "3": 0.1.1
