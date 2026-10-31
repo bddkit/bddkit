@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/bddkit/bddkit/compare/v0.4.0...v0.4.1) - 2026-10-31
+
+### Added
+
+- *(plugins)* list the script plugin in the index (bddkit/bddkit#55)
+
+### Other
+
+- update the plugin index's ABI map
+- Merge pull request #175 from sergeym/docs/upgrade-force-abi
+- split CLAUDE.md into cascading per-subsystem files
+- say what upgrade --force leaves behind across an ABI bump (bddkit/bddkit#173)
+
 ## [0.4.0](https://github.com/bddkit/bddkit/compare/v0.3.4...v0.4.0) - 2026-10-30
 
 ### Added
