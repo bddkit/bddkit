@@ -15,7 +15,7 @@ DB steps live in `steps/db.rs`; SQL is built in `db/plan.rs`, dialected in `db/p
 `<pairs>`/`<cond>`/`<where>` are one-liners: comma-separated `col: value`; a literal comma inside a value is escaped `\,`. In a CONDITION the column may carry an operator suffix — `col!:` (`<>`), `col~:` (`LIKE`), `col!~:` (`NOT LIKE`), plain `col:` being `=`; the same column may appear twice, so a range is `amount>=: …` shaped as two pairs once ordering operators exist. Where a value is WRITTEN — `I have`, the SET of `I update` — a suffix is an error, not a column name. `<<...>>` is runtime variable interpolation (`vars::interpolate`), and `<<null>>` yields a SQL NULL (see Gotchas). In a WHERE, a NULL value compiles to `col IS NULL` (`col!:` → `IS NOT NULL`, no bind either way).
 
 **Result variables** written back after a step (readable as `<<...>>`):
-- `last_insert_*` — PK values from the last insert: `last_insert_id_<table>` for a single-column `id` PK, `last_insert_<table>_<col>` per column for other/composite PKs, plus a `_<index>` suffix in multi-row/`I have:` inserts.
+- `last_insert_*` — PK values from the last insert: `last_insert_id_<table>` for a single-column `id` PK, `last_insert_<table>_<col>` per column for other/composite PKs, plus a 0-based `_<index>` suffix for every row of `I have "<table>" where:`, a single row included (`last_insert_id_<table>_0`). `I have "<table>" with` and `I have:` add no suffix, so in `I have:` a later row of the same table overwrites the earlier one's variables.
 - `updated_<table>` — rows affected by the last update on that table.
 - `deleted_<table>` — rows affected by the last delete on that table.
 
