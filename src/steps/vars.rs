@@ -4,9 +4,8 @@ use crate::world::World;
 use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use bddkit_crate_json::path;
+use bddkit_crate_json::{matcher, path};
 
-use super::assert;
 use super::markup::{self, MarkupError};
 use regex::Regex;
 
@@ -212,16 +211,90 @@ fn subject(name: &str) -> String {
 
 pub fn variable_contains(w: &World, name: &str, needle: &str, negate: bool) -> AttemptResult {
     let text = variable(w, name)?;
-    settled(assert::check_contains(&subject(name), text, needle, negate))
+    settled(check_contains(&subject(name), text, needle, negate))
 }
 
 pub fn variable_matches(w: &World, name: &str, pattern: &str, negate: bool) -> AttemptResult {
     let text = variable(w, name)?;
-    settled(assert::check_matches(&subject(name), text, pattern, negate))
+    settled(check_matches(&subject(name), text, pattern, negate))
 }
 
 pub fn variable_empty(w: &World, name: &str) -> AttemptResult {
-    settled(assert::check_empty(&subject(name), variable(w, name)?))
+    settled(check_empty(&subject(name), variable(w, name)?))
+}
+
+/// The doc string of a JSON step, parsed. Shared by the body and the variable steps.
+pub(super) fn expected_json(docstring: Option<&String>) -> Result<serde_json::Value, AttemptError> {
+    let expected_src = docstring
+        .ok_or_else(|| AttemptError::input("step requires a doc string with JSON".to_string()))?;
+    bddkit_crate_json::parse_expected(expected_src).map_err(|e| AttemptError::input(e.to_string()))
+}
+
+pub(super) fn check_contains_json(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
+    matcher::contains(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
+}
+
+pub(super) fn check_equals_json(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
+    matcher::equals(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
+}
+
+pub(super) fn check_not_contains_json(
+    subject: &str,
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> AttemptResult {
+    matcher::not_contains(actual, expected)
+        .map_err(|unexpected| AttemptError::not_yet(unexpected.describe(subject)))
+}
+
+/// The raw-text checks, over whichever text `subject` names: the response
+/// body or a variable (issue #39).
+pub(super) fn check_empty(subject: &str, text: &str) -> AttemptResult {
+    if text.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(AttemptError::not_yet(format!(
+            "    expected: empty {subject}\n    actual:   {text:?}"
+        )))
+    }
+}
+
+pub(super) fn check_contains(
+    subject: &str,
+    text: &str,
+    needle: &str,
+    negate: bool,
+) -> AttemptResult {
+    if text.contains(needle) != negate {
+        return Ok(());
+    }
+    let not = if negate { "NOT " } else { "" };
+    Err(AttemptError::not_yet(format!(
+        "    expected {subject} to {not}contain: {needle:?}\n    actual {subject}:\n{text}"
+    )))
+}
+
+pub(super) fn check_matches(
+    subject: &str,
+    text: &str,
+    pattern: &str,
+    negate: bool,
+) -> AttemptResult {
+    let re = Regex::new(pattern)
+        .map_err(|e| AttemptError::input(format!("invalid regex {pattern:?}: {e}")))?;
+    if re.is_match(text) != negate {
+        return Ok(());
+    }
+    let not = if negate { "NOT " } else { "" };
+    Err(AttemptError::not_yet(format!(
+        "    expected {subject} to {not}match: {pattern}\n    actual {subject}:\n{text}"
+    )))
 }
 
 fn json_check(
@@ -230,16 +303,16 @@ fn json_check(
     docstring: Option<&String>,
     check: impl FnOnce(&serde_json::Value, &serde_json::Value) -> AttemptResult,
 ) -> AttemptResult {
-    let expected = assert::expected_json(docstring)?;
+    let expected = expected_json(docstring)?;
     settled(check(&variable_json(w, name)?, &expected))
 }
 
 pub fn variable_contains_json(w: &World, name: &str, docstring: Option<&String>) -> AttemptResult {
-    json_check(w, name, docstring, assert::check_contains_json)
+    json_check(w, name, docstring, check_contains_json)
 }
 
 pub fn variable_equals_json(w: &World, name: &str, docstring: Option<&String>) -> AttemptResult {
-    json_check(w, name, docstring, assert::check_equals_json)
+    json_check(w, name, docstring, check_equals_json)
 }
 
 pub fn variable_not_contains_json(
@@ -248,7 +321,7 @@ pub fn variable_not_contains_json(
     docstring: Option<&String>,
 ) -> AttemptResult {
     json_check(w, name, docstring, |actual, expected| {
-        assert::check_not_contains_json(&subject(name), actual, expected)
+        check_not_contains_json(&subject(name), actual, expected)
     })
 }
 

@@ -1,6 +1,17 @@
+use crate::failure::StepError;
 use crate::world::World;
 
 use super::markup::{self, BodyKind};
+
+pub fn debug_on(w: &mut World) -> Result<(), StepError> {
+    w.debug = true;
+    Ok(())
+}
+
+pub fn debug_off(w: &mut World) -> Result<(), StepError> {
+    w.debug = false;
+    Ok(())
+}
 
 fn headers_table(headers: &[(String, String)]) -> String {
     let width = headers
