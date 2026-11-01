@@ -34,7 +34,10 @@ pub fn print_headers(w: &World) -> Result<(), String> {
         headers_table(
             &ex.resp_headers
                 .iter()
-                .map(|(name, value)| (name.clone(), ex.shown_header(name, value, &w.redactor)))
+                .map(|(name, value)| (
+                    name.clone(),
+                    crate::diagnostic::shown_header(&ex.masked_headers, name, value, &w.redactor)
+                ))
                 .collect::<Vec<_>>()
         )
     );

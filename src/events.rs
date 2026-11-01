@@ -7,11 +7,11 @@
 //! so a slow reader of a FIFO cannot change a test's timing.
 
 use crate::artifacts::{Artifacts, media_type};
+use crate::diagnostic::{HttpDiagnostic, SqlDiagnostic};
 use crate::failure::FailureKind;
 use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
-use crate::http::Exchange;
 use crate::plugin::abi::Diagnostic;
-use crate::privacy::{Redactor, mask_ranges};
+use crate::privacy::Redactor;
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
@@ -193,7 +193,7 @@ impl Tally {
     }
 }
 
-fn micros(duration: Duration) -> u64 {
+pub(crate) fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
@@ -765,7 +765,7 @@ impl Trace {
 
 /// Text of at most this many bytes stays in the event; `bddkit-exec` applies
 /// the same limit to what it returns.
-const INLINE_LIMIT: usize = 16 * 1024;
+pub(crate) const INLINE_LIMIT: usize = 16 * 1024;
 
 impl Trace {
     /// Masked text as the stream carries it: itself when short, else a file
@@ -831,77 +831,34 @@ impl Trace {
         self.record("evidence", fields);
     }
 
-    /// One HTTP exchange, as `HttpState` stored it. Header values are hidden by
-    /// name, sensitive fields by position, the rest by value — the order the
-    /// failure dump uses — and only then is a body weighed against the limit.
-    pub fn http(&self, resource: &str, exchange: &Exchange, elapsed: Duration) {
+    /// One `http` diagnostic, rendered by the host: hidden by position, then
+    /// by value, and only then is a body weighed against the limit.
+    pub fn http(&self, diagnostic: &HttpDiagnostic) {
         if !self.evidence_on() {
             return;
         }
-        let masked = |text: &str, spans: &[std::ops::Range<usize>]| {
-            self.redactor.mask(&mask_ranges(text, spans))
-        };
-        let headers = |pairs: &[(String, String)]| -> Vec<Value> {
-            pairs
-                .iter()
-                .map(|(name, value)| {
-                    json!([name, exchange.shown_header(name, value, &self.redactor)])
-                })
-                .collect()
-        };
-        let body = |text: &str, spans: &[std::ops::Range<usize>], name: &str| {
-            let masked = masked(text, spans);
-            let extension =
-                if masked.len() > INLINE_LIMIT && serde_json::from_str::<Value>(&masked).is_ok() {
-                    "json"
-                } else {
-                    "txt"
-                };
-            self.text(masked, &format!("{name}.{extension}"))
-        };
-        let request_body = exchange
-            .req_body
-            .as_deref()
-            .map(|text| body(text, &exchange.spans.req_body, "request-body"));
+        let place = |text: String, name: &str| self.text(text, name);
+        let content = diagnostic.content(&self.redactor, &place);
         self.evidence_event(
             "api",
-            resource,
+            &diagnostic.resource,
             "http",
             None,
-            json!({"content": {
-                "method": exchange.method,
-                "url": masked(&exchange.url, &exchange.spans.url),
-                "request": {"headers": headers(&exchange.req_headers), "body": request_body},
-                "status": exchange.status,
-                "response": {
-                    "headers": headers(&exchange.resp_headers),
-                    "body": body(&exchange.body, &exchange.spans.body, "response-body"),
-                },
-                "duration_us": micros(elapsed),
-            }}),
+            json!({ "content": content }),
         );
     }
 
-    /// One statement with its binds, after it ran.
-    pub fn sql(&self, resource: &str, sql: &str, binds: &[Option<String>], elapsed: Duration) {
+    /// One `sql` diagnostic, after the statement ran.
+    pub fn sql(&self, diagnostic: &SqlDiagnostic) {
         if !self.evidence_on() {
             return;
         }
-        let binds: Vec<Value> = binds
-            .iter()
-            .map(|bind| match bind.as_deref() {
-                None | Some(NULL_SENTINEL) => Value::Null,
-                Some(value) => self.redactor.mask(value).into(),
-            })
-            .collect();
         self.evidence_event(
             "db",
-            resource,
+            &diagnostic.resource,
             "sql",
             None,
-            json!({"content": {
-                "sql": self.redactor.mask(sql), "binds": binds, "duration_us": micros(elapsed),
-            }}),
+            json!({ "content": diagnostic.content(&self.redactor) }),
         );
     }
 
@@ -1142,7 +1099,7 @@ mod tests {
         };
         trace.step_started("Given ", "s", origin, Path::new("a.feature"), Vec::new());
         assert!(trace.evidence_on(), "a plugin is told evidence is wanted");
-        trace.sql("main", "select 1", &[], Duration::ZERO);
+        trace.sql(&SqlDiagnostic::new("main", "select 1", &[], Duration::ZERO));
         trace.step_finished(Some(FailureKind::Assertion), Duration::ZERO, &[]);
         let failure = Some(("boom", FailureKind::Assertion));
         trace.scenario_finished(failure, Duration::ZERO, interrupted);

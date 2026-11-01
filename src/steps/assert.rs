@@ -398,7 +398,8 @@ mod tests {
             resp_headers: headers,
             body: body.to_string(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: Default::default(),
+            api: String::new(),
         });
         w
     }

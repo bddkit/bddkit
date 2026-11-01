@@ -10,6 +10,7 @@ mod annotate;
 mod artifacts;
 mod config;
 mod db;
+mod diagnostic;
 mod dirs;
 mod doctor;
 mod events;

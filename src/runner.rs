@@ -1003,8 +1003,12 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         ctx.reg.display_text(&step.text, &world.redactor),
                         e.message
                     ));
-                    if let Some(ex) = world.http.last() {
-                        msg.push_str(&format!("\n\n{}", ex.render(&world.redactor)));
+                    if let Some(dump) = world
+                        .http
+                        .last()
+                        .and_then(|ex| ex.diagnostic(None).dump(&world.redactor))
+                    {
+                        msg.push_str(&format!("\n\n{dump}"));
                     }
                     failure = Some((msg, e.kind));
                     StepStatus::Failed
