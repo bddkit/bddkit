@@ -8,16 +8,6 @@ pub fn use_connection(w: &mut World, name: &str) -> Result<(), StepError> {
     w.db.set_current(name).map_err(StepError::input)
 }
 
-pub fn debug_on(w: &mut World) -> Result<(), StepError> {
-    w.debug = true;
-    Ok(())
-}
-
-pub fn debug_off(w: &mut World) -> Result<(), StepError> {
-    w.debug = false;
-    Ok(())
-}
-
 pub async fn have_with(w: &mut World, table: &str, kv: &str) -> Result<(), StepError> {
     let values = value::parse_oneliner(kv).map_err(StepError::input)?;
     ops::insert(w, table, &values, None).await

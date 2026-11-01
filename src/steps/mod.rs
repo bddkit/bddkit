@@ -1460,8 +1460,8 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
             plugin::use_instance(w, a.cap(1), a.cap(0)).map_err(StepError::input)
         }
         StepId::UseConnection => db::use_connection(w, a.cap(0)),
-        StepId::DebugOn => db::debug_on(w),
-        StepId::DebugOff => db::debug_off(w),
+        StepId::DebugOn => debug::debug_on(w),
+        StepId::DebugOff => debug::debug_off(w),
         StepId::EvidenceOn => {
             w.trace.mark(true);
             Ok(())

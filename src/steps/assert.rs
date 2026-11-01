@@ -1,8 +1,12 @@
 use super::markup::{self, MarkupError};
+use super::vars::{
+    check_contains, check_contains_json, check_empty, check_equals_json, check_matches,
+    check_not_contains_json, expected_json,
+};
 use crate::http::ReplayError;
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
-use bddkit_crate_json::{matcher, path};
+use bddkit_crate_json::path;
 use regex::Regex;
 
 pub(super) async fn replay_response(w: &mut World, attempt: u64) -> AttemptResult {
@@ -137,13 +141,6 @@ pub fn response_header_matches(
     })
 }
 
-/// The doc string of a JSON step, parsed. Shared by the body and the variable steps.
-pub(super) fn expected_json(docstring: Option<&String>) -> Result<serde_json::Value, AttemptError> {
-    let expected_src = docstring
-        .ok_or_else(|| AttemptError::input("step requires a doc string with JSON".to_string()))?;
-    bddkit_crate_json::parse_expected(expected_src).map_err(|e| AttemptError::input(e.to_string()))
-}
-
 fn body_json(w: &World) -> Result<serde_json::Value, AttemptError> {
     last(w)
         .map_err(AttemptError::input)?
@@ -159,20 +156,6 @@ pub fn body_contains_json(w: &World, docstring: Option<&String>) -> AttemptResul
 pub fn body_equals_json(w: &World, docstring: Option<&String>) -> AttemptResult {
     let expected = expected_json(docstring)?;
     check_equals_json(&body_json(w)?, &expected)
-}
-
-pub(super) fn check_contains_json(
-    actual: &serde_json::Value,
-    expected: &serde_json::Value,
-) -> AttemptResult {
-    matcher::contains(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
-}
-
-pub(super) fn check_equals_json(
-    actual: &serde_json::Value,
-    expected: &serde_json::Value,
-) -> AttemptResult {
-    matcher::equals(actual, expected).map_err(|m| AttemptError::not_yet(m.to_string()))
 }
 
 pub fn array_length(w: &World, expected: &str) -> AttemptResult {
@@ -278,15 +261,6 @@ pub fn body_not_contains_json(w: &World, docstring: Option<&String>) -> AttemptR
     check_not_contains_json("body", &body_json(w)?, &expected)
 }
 
-pub(super) fn check_not_contains_json(
-    subject: &str,
-    actual: &serde_json::Value,
-    expected: &serde_json::Value,
-) -> AttemptResult {
-    matcher::not_contains(actual, expected)
-        .map_err(|unexpected| AttemptError::not_yet(unexpected.describe(subject)))
-}
-
 pub fn json_node_not_contains(w: &World, p: &str, needle: &str) -> AttemptResult {
     path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
@@ -349,50 +323,6 @@ pub fn body_not_matches(w: &World, pattern: &str) -> AttemptResult {
         pattern,
         true,
     )
-}
-
-/// The raw-text checks, over whichever text `subject` names: the response
-/// body or a variable (issue #39).
-pub(super) fn check_empty(subject: &str, text: &str) -> AttemptResult {
-    if text.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(AttemptError::not_yet(format!(
-            "    expected: empty {subject}\n    actual:   {text:?}"
-        )))
-    }
-}
-
-pub(super) fn check_contains(
-    subject: &str,
-    text: &str,
-    needle: &str,
-    negate: bool,
-) -> AttemptResult {
-    if text.contains(needle) != negate {
-        return Ok(());
-    }
-    let not = if negate { "NOT " } else { "" };
-    Err(AttemptError::not_yet(format!(
-        "    expected {subject} to {not}contain: {needle:?}\n    actual {subject}:\n{text}"
-    )))
-}
-
-pub(super) fn check_matches(
-    subject: &str,
-    text: &str,
-    pattern: &str,
-    negate: bool,
-) -> AttemptResult {
-    let re = Regex::new(pattern)
-        .map_err(|e| AttemptError::input(format!("invalid regex {pattern:?}: {e}")))?;
-    if re.is_match(text) != negate {
-        return Ok(());
-    }
-    let not = if negate { "NOT " } else { "" };
-    Err(AttemptError::not_yet(format!(
-        "    expected {subject} to {not}match: {pattern}\n    actual {subject}:\n{text}"
-    )))
 }
 
 fn selected_element(w: &World, selector: &str) -> Result<String, AttemptError> {
