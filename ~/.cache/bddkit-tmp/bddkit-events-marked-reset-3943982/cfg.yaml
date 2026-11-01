@@ -1,6 +1,0 @@
-paths: [~/.cache/bddkit-tmp/bddkit-events-marked-reset-3943982/features]
-resources:
-  api:
-    stub:
-      base_url: http://127.0.0.1:36597/
-      timeout_secs: 2
