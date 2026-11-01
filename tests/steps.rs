@@ -18,9 +18,9 @@ fn steps(args: &[&str]) -> (String, Option<i32>) {
 fn the_listing_groups_templates_by_resource_and_shows_no_regex() {
     let (out, code) = steps(&["steps", "list"]);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("api:"), "{out}");
-    assert!(out.contains("db:"), "{out}");
-    assert!(out.contains(r#"  I request "<path>""#), "{out}");
+    assert!(out.contains("general:"), "{out}");
+    assert!(out.contains("vars:"), "{out}");
+    assert!(out.contains("  I sleep <seconds> seconds"), "{out}");
     assert!(
         !out.contains("[^") && !out.contains("?P<"),
         "no raw regex may leak into the listing:\n{out}"
@@ -29,10 +29,13 @@ fn the_listing_groups_templates_by_resource_and_shows_no_regex() {
 
 #[test]
 fn a_resource_argument_narrows_the_listing() {
-    let (out, code) = steps(&["steps", "list", "db"]);
+    let (out, code) = steps(&["steps", "list", "vars"]);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains(r#"I have "<table>" with "<pairs>""#), "{out}");
-    assert!(!out.contains("I request"), "{out}");
+    assert!(
+        out.contains(r#"set variable "<name>" to "<value>""#),
+        "{out}"
+    );
+    assert!(!out.contains("I sleep"), "{out}");
 }
 
 #[test]
@@ -45,14 +48,14 @@ fn an_unknown_resource_is_a_nothing_ran_failure() {
 fn filter_and_verbose_narrow_to_one_step_and_describe_it() {
     // This pair is the "help for a single step" path: no `describe`
     // subcommand, just filter until one step is left.
-    let (out, code) = steps(&["steps", "list", "--filter", "response code", "-v"]);
+    let (out, code) = steps(&["steps", "list", "--filter", "I sleep", "-v"]);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("the response code is <code>"), "{out}");
+    assert!(out.contains("I sleep <seconds> seconds"), "{out}");
     assert!(
-        out.contains("status code"),
+        out.contains("pauses the scenario"),
         "the description must appear under -v:\n{out}"
     );
-    assert!(!out.contains("I request"), "{out}");
+    assert!(!out.contains("set variable"), "{out}");
 }
 
 #[test]
@@ -64,13 +67,13 @@ fn a_filter_matching_nothing_is_empty_and_still_a_success() {
 
 #[test]
 fn json_is_machine_readable_and_carries_the_raw_pattern() {
-    let (out, code) = steps(&["steps", "list", "api", "--json"]);
+    let (out, code) = steps(&["steps", "list", "vars", "--json"]);
     assert_eq!(code, Some(0), "{out}");
     let rows: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
     let rows = rows.as_array().expect("an array");
     assert!(!rows.is_empty());
     let first = &rows[0];
-    assert_eq!(first["group"], "api");
+    assert_eq!(first["group"], "vars");
     assert!(first["template"].is_string());
     assert!(
         first["pattern"].as_str().expect("pattern").starts_with('^'),
@@ -93,22 +96,14 @@ fn the_family_help_names_the_list_subcommand() {
 
 #[test]
 fn a_locale_replaces_the_description_but_never_the_template() {
-    let (out, code) = steps(&[
-        "steps",
-        "list",
-        "--filter",
-        "response code",
-        "-v",
-        "--lang",
-        "ru",
-    ]);
+    let (out, code) = steps(&["steps", "list", "--filter", "I sleep", "-v", "--lang", "ru"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(
-        out.contains("the response code is <code>"),
+        out.contains("I sleep <seconds> seconds"),
         "the step text a feature file must contain stays English:\n{out}"
     );
     assert!(
-        !out.contains("status code"),
+        !out.contains("pauses the scenario"),
         "the description must be translated:\n{out}"
     );
 }

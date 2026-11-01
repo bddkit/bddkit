@@ -2098,7 +2098,7 @@ fn a_rejected_step_exits_2_before_the_first_request() {
             std::fs::write(dir.join(path), text).unwrap();
         }
         let out = run(&dir);
-        let all = common::db::combined(&out);
+        let all = common::combined(&out);
         assert_eq!(out.status.code(), Some(2), "{name}: {all}");
         assert!(all.contains(expect), "{name}: {all}");
         assert!(all.contains(at), "{name}: {all}");
@@ -2117,7 +2117,7 @@ fn doctor(dir: &Path) -> std::process::Output {
 fn doctor_files_a_rejected_macro_body_under_macros() {
     let dir = macro_project("validate-macro-doctor", MACRO_CALL, CHECKED_MACRO);
     let out = doctor(&dir);
-    let all = common::db::combined(&out);
+    let all = common::combined(&out);
     assert_eq!(out.status.code(), Some(1), "{all}");
     let line = all
         .lines()
@@ -2129,7 +2129,7 @@ fn doctor_files_a_rejected_macro_body_under_macros() {
 #[test]
 fn doctor_reports_a_rejected_step() {
     let out = doctor(&project("validate-doctor", &validated("bad"), ""));
-    let all = common::db::combined(&out);
+    let all = common::combined(&out);
     assert_eq!(out.status.code(), Some(1), "{all}");
     assert!(all.contains("the echo refuses"), "{all}");
 }

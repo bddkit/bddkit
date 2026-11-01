@@ -145,7 +145,9 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I echo validated "(?P<value>[^"]*)"$"#, "group": "echo", "kind": "action",
               "description": "passes; its validate_step refuses the argument bad, panics on panic, replies malformed on malformed and refuses without a message on noerror" },
             { "pattern": r#"^I echo validated doc string:$"#, "group": "echo", "kind": "action",
-              "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" }
+              "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" },
+            { "pattern": r#"^I echo one piece of evidence(?: for "(?P<value>[^"]*)")?$"#, "group": "echo", "kind": "action",
+              "description": "passes, reporting exactly one text diagnostic; an optional \"for\" argument gives the step a slot" }
         ])
         .to_string()
     })
@@ -398,6 +400,11 @@ pub extern "C" fn bddkit_dispatch(
             })
             .to_string(),
             16 | 17 => serde_json::json!({"status": "passed"}).to_string(),
+            18 => serde_json::json!({
+                "status": "passed",
+                "diagnostics": [{"title": "echo state", "kind": "text", "content": "one"}]
+            })
+            .to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()

@@ -61,6 +61,7 @@ fn run_against(dsn: &str) -> String {
     )
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_engine_selects_its_own_platform() {
     for (env, expected_signal) in [

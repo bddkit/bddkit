@@ -14,6 +14,15 @@ pub fn read_payloads(log: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+/// stdout+stderr as one string — for checking error messages.
+pub fn combined(out: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
 /// Cuts a command off from this machine's own telemetry answer, config and CI
 /// environment. Call it before setting the variables a test wants.
 pub fn isolate_telemetry(command: &mut std::process::Command) -> &mut std::process::Command {
@@ -38,6 +47,8 @@ pub fn isolate_telemetry(command: &mut std::process::Command) -> &mut std::proce
     command
 }
 
+// moves-to: api — everything below up to `build_fixture_plugin` is the HTTP/SRP/Hawk
+// stub (`spawn`, `spawn_secondary` and their handlers); it leaves with the HTTP API.
 use axum::extract::Query;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -47,8 +58,7 @@ use num_bigint::BigUint;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::Barrier;
+use std::sync::{LazyLock, Mutex};
 
 pub async fn spawn() -> String {
     let app = Router::new()
@@ -84,33 +94,6 @@ pub async fn spawn_secondary() -> String {
     let app = Router::new().route(
         "/ping",
         get(|| async { Json(json!({"status": "ok", "source": "secondary"})) }),
-    );
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("local_addr");
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve");
-    });
-    format!("http://{addr}/")
-}
-
-/// A stub with a barrier: `/barrier` does not respond until `n` requests are
-/// in flight at once. A sequential runner hangs on it until timeout; a
-/// parallel one passes — this proves parallelism without comparing run
-/// times, i.e. without a flaky test.
-pub async fn spawn_barrier(n: usize) -> String {
-    let barrier = Arc::new(Barrier::new(n));
-    let app = Router::new().route(
-        "/barrier",
-        get(move || {
-            let barrier = barrier.clone();
-            async move {
-                barrier.wait().await;
-                Json(json!({"status": "ok"}))
-            }
-        }),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

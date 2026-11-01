@@ -43,6 +43,7 @@ fn config(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("bddkit.yaml")).expect("bddkit.yaml written")
 }
 
+// moves-to: api
 #[test]
 fn init_with_flags_writes_a_config_that_doctor_accepts() {
     let dir = temp("doctor");
@@ -76,6 +77,7 @@ fn init_with_flags_writes_a_config_that_doctor_accepts() {
     assert_eq!(doctor.status.code(), Some(0), "{}", text(&doctor));
 }
 
+// moves-to: api
 #[test]
 fn the_example_feature_passes_without_a_network() {
     let dir = temp("example");
@@ -103,6 +105,7 @@ fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
     );
 }
 
+// moves-to: api
 #[test]
 fn an_empty_api_answer_writes_no_api_resource() {
     let dir = temp("no-api");
@@ -147,6 +150,7 @@ fn a_non_interactive_init_without_telemetry_writes_no_key() {
     );
 }
 
+// moves-to: db
 #[test]
 fn mismatched_flags_are_refused() {
     for args in [
@@ -199,6 +203,7 @@ fn gitignore_gains_only_missing_lines_and_only_in_a_git_work_tree() {
     assert!(!outside.join(".gitignore").exists());
 }
 
+// moves-to: db
 #[test]
 fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
     // The config is `$`-expanded when it is read: `$$` must survive the
@@ -232,6 +237,7 @@ fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
     );
 }
 
+// moves-to: db
 #[test]
 fn a_dsn_of_another_engine_is_refused() {
     let dir = temp("scheme");
@@ -319,6 +325,7 @@ fn payloads(dir: &Path) -> Vec<serde_json::Value> {
     common::read_payloads(&dir.join("t.log"))
 }
 
+// moves-to: db
 #[test]
 fn an_init_that_ends_with_yes_sends_one_init_payload() {
     let dir = temp("telemetry-yes");

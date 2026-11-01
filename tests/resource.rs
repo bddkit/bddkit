@@ -15,6 +15,7 @@ fn resource(args: &[&str]) -> (String, Option<i32>) {
     )
 }
 
+// moves-to: api
 #[test]
 fn the_listing_covers_every_kind_the_host_serves() {
     let (out, code) = resource(&["resource", "fields"]);
@@ -31,6 +32,7 @@ fn the_listing_covers_every_kind_the_host_serves() {
     );
 }
 
+// moves-to: db
 #[test]
 fn a_kind_argument_narrows_the_listing() {
     let (out, code) = resource(&["resource", "fields", "db"]);
@@ -45,6 +47,7 @@ fn an_unknown_kind_is_a_nothing_listed_failure() {
     assert_eq!(code, Some(2));
 }
 
+// moves-to: api
 #[test]
 fn json_carries_every_key_of_the_field_description() {
     let (out, code) = resource(&["resource", "fields", "api", "--json"]);

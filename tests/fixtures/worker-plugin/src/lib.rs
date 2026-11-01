@@ -11,13 +11,49 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char};
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 /// A handle is an index into this table, never a pointer: a `u64` cannot be
 /// dangled by the host and needs no `Send` reasoning on either side.
 static INSTANCES: Mutex<Option<HashMap<u64, Instance>>> = Mutex::new(None);
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+/// The barrier behind `I wait at the worker barrier for <n> parties`. A `static`, so
+/// it is process-wide: every instance, hence every feature file, meets at the
+/// same one. That is what a parallelism proof needs, and the opposite of the
+/// counter above. `(arrived, generation)`: the last arrival resets `arrived`
+/// and bumps `generation`, which releases the others.
+static BARRIER: (Mutex<(usize, u64)>, Condvar) = (Mutex::new((0, 0)), Condvar::new());
+
+/// How long a party waits for the others before the step fails. A proof by
+/// barrier, not by timing: parties either all arrive or the step fails, and
+/// the limit only turns "never" into a failure instead of a hang.
+const BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// `true` once `parties` have arrived, `false` if the others never did.
+fn wait_at_barrier(parties: usize) -> bool {
+    let (state, released) = &BARRIER;
+    let mut guard = state.lock().expect("barrier");
+    guard.0 += 1;
+    if guard.0 >= parties {
+        guard.0 = 0;
+        guard.1 += 1;
+        released.notify_all();
+        return true;
+    }
+    let generation = guard.1;
+    let (mut guard, timeout) = released
+        .wait_timeout_while(guard, BARRIER_TIMEOUT, |s| s.1 == generation)
+        .expect("barrier");
+    if timeout.timed_out() {
+        // Leave, so a later run in this process does not count a ghost.
+        guard.0 -= 1;
+        return false;
+    }
+    true
+}
 
 struct Instance {
     /// The whole point of this fixture. The counter lives on the INSTANCE, not
@@ -98,7 +134,8 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
     guard("envelope", || {
         serde_json::json!([
             { "pattern": r#"^I count in the worker as "([^"]*)"$"#, "group": "worker", "kind": "action" },
-            { "pattern": r#"^I record the worker instance in "([^"]*)"$"#, "group": "worker", "kind": "action" }
+            { "pattern": r#"^I record the worker instance in "([^"]*)"$"#, "group": "worker", "kind": "action" },
+            { "pattern": r#"^I wait at the worker barrier for (\d+) parties$"#, "group": "worker", "kind": "action" }
         ])
         .to_string()
     })
@@ -168,6 +205,24 @@ pub extern "C" fn bddkit_dispatch(
             })
             .unwrap_or_default();
         let name = args.first().cloned().unwrap_or_default();
+
+        // Before `INSTANCES` is locked: the wait must not hold the table, or
+        // the second party could never dispatch its own step to arrive.
+        if step_index == 2 {
+            return match name.parse::<usize>() {
+                Ok(parties) if wait_at_barrier(parties) => {
+                    serde_json::json!({"status": "passed"}).to_string()
+                }
+                Ok(parties) => serde_json::json!({
+                    "status": "fatal",
+                    "error": format!("the other {} parties never reached the barrier", parties - 1)
+                })
+                .to_string(),
+                Err(e) => {
+                    serde_json::json!({"status": "fatal", "error": e.to_string()}).to_string()
+                }
+            };
+        }
 
         let mut guard = INSTANCES.lock().expect("instances");
         let table = guard.get_or_insert_with(HashMap::new);

@@ -17,7 +17,8 @@
 
 mod common;
 
-use common::db::{DB_LOCK, combined};
+use common::combined;
+use common::db::DB_LOCK;
 use sqlx::AnyPool;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,6 +99,7 @@ fn run_feature(dsn: &str, feature_src: &str) -> std::process::Output {
         .expect("failed to run bddkit")
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_increment_pk_is_read_from_the_insert_result() {
     for (env, engine) in ENGINES {
@@ -120,6 +122,7 @@ Feature: insert
     }
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_generated_uuid_pk_lands_in_the_variable() {
     for (env, engine) in ENGINES {
@@ -139,6 +142,7 @@ Feature: insert
     }
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pk_value_given_in_the_step_is_used_as_is() {
     for (env, engine) in ENGINES {
@@ -158,6 +162,7 @@ Feature: insert
     }
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_default_that_is_not_auto_increment_fails_naming_the_column() {
     // MariaDB has RETURNING (`MARIADB.returning == true`, unconditionally on
@@ -193,6 +198,7 @@ Feature: insert
     }
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composite_pk_mixes_auto_increment_and_a_given_value() {
     for (env, engine) in ENGINES {
