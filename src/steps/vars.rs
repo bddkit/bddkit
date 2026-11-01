@@ -1,10 +1,10 @@
 use crate::failure::StepError;
-use crate::json::path;
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
 use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use bddkit_crate_json::path;
 
 use super::assert;
 use super::markup::{self, MarkupError};
@@ -95,7 +95,7 @@ pub fn extract_from_json(
         .last()
         .ok_or_else(|| StepError::input("no request has been sent yet"))?;
     let v = ex.json().map_err(StepError::assertion)?;
-    let value = scalar(path::read(&v, p).map_err(StepError::assertion)?);
+    let value = scalar(path::read(&v, p).map_err(|e| StepError::assertion(e.to_string()))?);
     set_variable(w, name, &value, global)
 }
 
@@ -107,7 +107,7 @@ pub fn extract_json_from_variable(
     global: bool,
 ) -> Result<(), StepError> {
     let v = variable_json(w, source).map_err(AttemptError::into_error)?;
-    let value = scalar(path::read(&v, p).map_err(StepError::input)?);
+    let value = scalar(path::read(&v, p).map_err(|e| StepError::input(e.to_string()))?);
     set_variable(w, name, &value, global)
 }
 

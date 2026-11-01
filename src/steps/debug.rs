@@ -161,7 +161,7 @@ pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
     match kind {
         BodyKind::Json => {
             let root = ex.json()?;
-            let sub = crate::json::path::read(&root, path)?;
+            let sub = bddkit_crate_json::path::read(&root, path).map_err(|e| e.to_string())?;
             let pretty = serde_json::to_string_pretty(sub)
                 .map_err(|e| format!("failed to serialize JSON: {e}"))?;
             debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));

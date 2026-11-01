@@ -29,6 +29,7 @@ name = "bddkit"
 path = "src/main.rs"
 
 [dependencies]
+bddkit-crate-json = "0.1"
 base64 = "0.22"
 aes = "0.9"
 cbc = { version = "0.2", features = ["alloc"] }
