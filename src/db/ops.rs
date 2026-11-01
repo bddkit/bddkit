@@ -2,6 +2,7 @@ use crate::db::plan::{self, InsertPlan, PkSource};
 use crate::db::platform::Platform;
 use crate::db::reference::TableRef;
 use crate::db::{bind_all, db_read, sql_failure, text_col, value};
+use crate::diagnostic::SqlDiagnostic;
 use crate::failure::StepError;
 use crate::world::World;
 use sqlx::AnyPool;
@@ -35,8 +36,14 @@ async fn timed<T, E>(
     if w.debug {
         debug_eprintln!(w, "TIME: {:.2} ms", start.elapsed().as_secs_f64() * 1000.0);
     }
-    w.trace
-        .sql(&stmt.connection, stmt.sql, stmt.binds, start.elapsed());
+    if w.trace.evidence_on() {
+        w.trace.sql(&SqlDiagnostic::new(
+            &stmt.connection,
+            stmt.sql,
+            stmt.binds,
+            start.elapsed(),
+        ));
+    }
     result
 }
 

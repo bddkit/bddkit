@@ -142,8 +142,12 @@ impl World {
     /// innermost step in flight.
     pub fn flush_evidence(&mut self) {
         for stored in self.http.take_evidence() {
-            self.trace
-                .http(&stored.api, &stored.exchange, stored.elapsed);
+            // The diagnostic copies the exchange: build it only for a step
+            // whose evidence is kept.
+            if self.trace.evidence_on() {
+                self.trace
+                    .http(&stored.exchange.diagnostic(Some(stored.elapsed)));
+            }
         }
     }
 

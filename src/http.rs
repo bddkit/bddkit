@@ -1,3 +1,4 @@
+use crate::diagnostic::{BodyForm, HttpDiagnostic, HttpSide, truncate};
 use crate::failure::StepError;
 use crate::hawk;
 use crate::options::Options;
@@ -22,21 +23,11 @@ pub struct Exchange {
     /// Lowercase names of the headers the API that served this exchange calls
     /// sensitive; their values are shown as `***`, whatever their length.
     pub masked_headers: Vec<String>,
-    /// Where the values of sensitive fields stand in `url`, `req_body` and
-    /// `body`. Positions, not values: a short value is hidden too, and the
-    /// text around it stays as it was.
-    pub spans: Spans,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Spans {
-    pub url: Vec<std::ops::Range<usize>>,
-    pub req_body: Vec<std::ops::Range<usize>>,
-    pub body: Vec<std::ops::Range<usize>>,
-}
-
-fn ranges(hits: &[crate::privacy::Hit]) -> Vec<std::ops::Range<usize>> {
-    hits.iter().map(|hit| hit.range.clone()).collect()
+    /// How `req_body` is laid out, which tells the renderer where its
+    /// sensitive fields stand.
+    pub body_form: BodyForm,
+    /// The API resource that served the exchange.
+    pub api: String,
 }
 
 /// One attached file, read into memory when the step ran so a retried
@@ -109,49 +100,28 @@ impl Exchange {
     }
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() > n {
-        format!("{}…", s.chars().take(n).collect::<String>())
-    } else {
-        s.to_string()
-    }
-}
-
 impl Exchange {
-    /// The failure dump. Every string is masked BEFORE a body is cut to 600
-    /// characters, so a secret that straddles the cut cannot show its start.
-    /// A header's value as it may be shown: `***` for a header the API calls
-    /// sensitive, whatever the value's length; otherwise the value, masked.
-    pub fn shown_header(&self, name: &str, value: &str, redactor: &Redactor) -> String {
-        let sensitive = self
-            .masked_headers
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(name));
-        redactor.show(sensitive, value)
-    }
-
-    pub fn render(&self, redactor: &Redactor) -> String {
-        use std::fmt::Write;
-        let header = |name: &str, value: &str| self.shown_header(name, value, redactor);
-        // Positions first, then values, then the cut: see `truncate`.
-        // The spans of a revealed run are empty, so this is then the text itself.
-        let by_position = crate::privacy::mask_ranges;
-        let mut out = format!(
-            "  {} {}\n",
-            self.method,
-            redactor.mask(&by_position(&self.url, &self.spans.url))
-        );
-        for (k, v) in &self.req_headers {
-            let _ = writeln!(out, "    {k}: {}", header(k, v));
+    /// This exchange as the `http` diagnostic the host renders, for the
+    /// console dump and for the evidence alike.
+    pub fn diagnostic(&self, elapsed: Option<Duration>) -> HttpDiagnostic {
+        HttpDiagnostic {
+            method: self.method.clone(),
+            url: self.url.clone(),
+            request: HttpSide {
+                headers: self.req_headers.clone(),
+                body: self.req_body.clone(),
+            },
+            status: self.status,
+            response: HttpSide {
+                headers: self.resp_headers.clone(),
+                body: Some(self.body.clone()),
+            },
+            duration_us: elapsed.map(crate::events::micros),
+            sensitive_headers: self.masked_headers.clone(),
+            request_form: self.body_form,
+            resource: self.api.clone(),
+            in_dump: true,
         }
-        if let Some(b) = &self.req_body {
-            let shown = redactor.mask(&by_position(b, &self.spans.req_body));
-            let _ = writeln!(out, "    {}", truncate(&shown, 600));
-        }
-        let _ = writeln!(out, "  ← {}", self.status);
-        let shown = redactor.mask(&by_position(&self.body, &self.spans.body));
-        let _ = write!(out, "    {}", truncate(&shown, 600));
-        out
     }
 }
 
@@ -295,10 +265,8 @@ pub struct HttpState {
     evidence: Vec<Evidenced>,
 }
 
-/// An exchange waiting to be emitted: the API it went to (`current` may change
-/// before the runner drains it) and how long it took.
+/// An exchange waiting to be emitted, and how long it took.
 pub struct Evidenced {
-    pub api: String,
     pub exchange: Exchange,
     pub elapsed: Duration,
 }
@@ -349,10 +317,9 @@ impl HttpState {
         std::mem::take(&mut self.evidence)
     }
 
-    fn evidence_of(&mut self, api: &str, exchange: &Exchange, started: std::time::Instant) {
+    fn evidence_of(&mut self, exchange: &Exchange, started: std::time::Instant) {
         if self.collect {
             self.evidence.push(Evidenced {
-                api: api.to_string(),
                 exchange: exchange.clone(),
                 elapsed: started.elapsed(),
             });
@@ -504,7 +471,7 @@ impl HttpState {
             .execute(&recipe)
             .await
             .map_err(ReplayError::into_error)?;
-        self.evidence_of(&recipe.api, &exchange, started);
+        self.evidence_of(&exchange, started);
         self.last = Some(exchange);
         self.replay = Some(recipe);
         Ok(())
@@ -518,7 +485,7 @@ impl HttpState {
             .ok_or_else(|| ReplayError::input("request has not been sent"))?;
         let started = std::time::Instant::now();
         let exchange = self.execute(&recipe).await?;
-        self.evidence_of(&recipe.api, &exchange, started);
+        self.evidence_of(&exchange, started);
         self.last = Some(exchange);
         Ok(())
     }
@@ -642,7 +609,8 @@ impl HttpState {
         let resp = api.client.execute(request).await.map_err(|e| {
             // reqwest quotes the URL, query string included: its short
             // sensitive values are hidden by position, as in the dump.
-            let masked_url = crate::privacy::mask_ranges(&url_text, &ranges(&url_hits));
+            let masked_url =
+                crate::privacy::mask_ranges(&url_text, &crate::diagnostic::ranges(&url_hits));
             ReplayError::transport(format!(
                 "request failed: {}",
                 e.to_string().replace(&url_text, &masked_url)
@@ -678,11 +646,14 @@ impl HttpState {
             resp_headers,
             body,
             masked_headers: api.sensitive_headers.clone(),
-            spans: Spans {
-                url: ranges(&url_hits),
-                req_body: ranges(&request_hits),
-                body: ranges(&body_hits),
+            body_form: if multipart {
+                BodyForm::Multipart
+            } else if recipe.form.is_some() {
+                BodyForm::Form
+            } else {
+                BodyForm::Raw
             },
+            api: recipe.api.clone(),
         })
     }
 }
@@ -1144,7 +1115,8 @@ pub(crate) mod tests {
             resp_headers: vec![],
             body: "{}".into(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: BodyForm::Raw,
+            api: String::new(),
         });
         s.use_api("second").expect("resource is declared");
         assert!(
@@ -1387,7 +1359,10 @@ pub(crate) mod tests {
 
         // The stub echoes the upload back, so only the request half is checked.
         let exchange = state.last().expect("exchange");
-        let shown = exchange.render(&Redactor::disabled());
+        let shown = exchange
+            .diagnostic(None)
+            .dump(&Redactor::disabled())
+            .expect("in the dump");
         let sent = shown.split("← ").next().expect("request half of the dump");
         assert!(
             sent.contains("content: id_front.png (image/png, 11 bytes)"),
@@ -1610,7 +1585,8 @@ pub(crate) mod tests {
             ],
             body: String::new(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: BodyForm::Raw,
+            api: String::new(),
         };
         assert_eq!(ex.set_cookie("jwt_token").as_deref(), Some("abc123"));
         assert_eq!(ex.set_cookie("refresh_token").as_deref(), Some("def"));
@@ -1628,9 +1604,13 @@ pub(crate) mod tests {
             resp_headers: vec![],
             body: "{\"error\":\"no\"}".into(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: BodyForm::Raw,
+            api: String::new(),
         };
-        let s = ex.render(&Redactor::disabled());
+        let s = ex
+            .diagnostic(None)
+            .dump(&Redactor::disabled())
+            .expect("in the dump");
         assert!(s.contains("POST http://x/login"));
         assert!(s.contains("Content-Type: application/json"));
         assert!(s.contains("← 422"));

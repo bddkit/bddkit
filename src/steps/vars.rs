@@ -450,7 +450,8 @@ mod tests {
             resp_headers: vec![("content-type".to_string(), "text/html".to_string())],
             body: r#"<html><body><h1 id="title">Hi</h1></body></html>"#.to_string(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: Default::default(),
+            api: String::new(),
         });
 
         extract_from_markup(&mut w, "h1#title", "pageTitle").expect("extraction succeeds");
@@ -469,7 +470,8 @@ mod tests {
             resp_headers: vec![("content-type".to_string(), "text/html".to_string())],
             body: r#"<html><body></body></html>"#.to_string(),
             masked_headers: Vec::new(),
-            spans: Default::default(),
+            body_form: Default::default(),
+            api: String::new(),
         });
 
         let err = extract_from_markup(&mut w, ".missing", "pageTitle").unwrap_err();

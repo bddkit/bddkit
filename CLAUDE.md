@@ -77,7 +77,7 @@ Plugins live in their own repositories (names in `plugin-registry.yaml`, e.g. `b
 
 ## Module map (`src/`), one line per area
 
-`main.rs` CLI and orchestration · `runner.rs` worker pool, chains, `run_file` · `world.rs` per-file state · `steps/` registry, expressions, step functions · `db/` SQL building and engine platforms · `plugin/` third-party `cdylib` step libraries · `http.rs` / `hawk.rs` API resources and signing · `srp/` SRP-6a · `vars.rs` variables and interpolation · `feature.rs` / `macros.rs` / `annotate.rs` / `validate.rs` parsing, macros, static check · `privacy.rs` secrets and the filter · `events.rs` / `report/` event stream and reports · `config.rs` / `dirs.rs` / `settings.rs` / `options.rs` configuration and its layers · `doctor.rs` / `resource.rs` / `init.rs` / `upgrade.rs` / `telemetry*` the other commands · `failure.rs` `FailureKind` and `StepError`.
+`main.rs` CLI and orchestration · `runner.rs` worker pool, chains, `run_file` · `world.rs` per-file state · `steps/` registry, expressions, step functions · `db/` SQL building and engine platforms · `plugin/` third-party `cdylib` step libraries · `http.rs` / `hawk.rs` API resources and signing · `srp/` SRP-6a · `vars.rs` variables and interpolation · `feature.rs` / `macros.rs` / `annotate.rs` / `validate.rs` parsing, macros, static check · `privacy.rs` secrets and the filter · `diagnostic.rs` `http`/`sql` diagnostics as data and their one renderer · `events.rs` / `report/` event stream and reports · `config.rs` / `dirs.rs` / `settings.rs` / `options.rs` configuration and its layers · `doctor.rs` / `resource.rs` / `init.rs` / `upgrade.rs` / `telemetry*` the other commands · `failure.rs` `FailureKind` and `StepError`.
 
 ## Dev workflow
 
