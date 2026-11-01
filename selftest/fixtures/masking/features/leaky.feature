@@ -1,7 +1,7 @@
 Feature: Leaks on purpose
   # Every scenario fails, and every failure would print a known secret if
-  # masking were broken. Nothing here needs a network: the one request goes to a
-  # port nothing listens on, and the failure it raises is part of the point.
+  # masking were broken. Nothing here needs a network: the one command only
+  # echoes two variables, and the failure it raises is part of the point.
 
   Scenario: a variable with a privacy word
     Given set variable "secret_pin" to "pin-secret-value-1"
@@ -14,11 +14,11 @@ Feature: Leaks on purpose
   Scenario: a literal secret parameter
     Given I encrypt "payload" with AES using key "literal-key-value-3" as "c"
 
-  Scenario: a header and a query token that never reach a server
-    Given the "Authorization" request header is "Bearer header-token-value-4"
-    And the query parameter "api_token" is "query-token-value-5"
-    When I request "/ping"
-    Then the response code is 200
+  Scenario: two values that a command prints to its error stream
+    Given set variable "secret_header" to "header-token-value-4"
+    And set variable "secret_query" to "query-token-value-5"
+    When I run the command "echo <<secret_header>> <<secret_query>> >&2; exit 1"
+    Then the command exit code is 0
 
   Scenario: a secret that only the config names
     Its description quotes config-secret-value-6 too.

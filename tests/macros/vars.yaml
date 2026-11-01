@@ -10,9 +10,8 @@
   do:
     - set variable "note" to "<<value>>"
 
-# A typed parameter (#66): `{code:uint}` accepts digits or a whole <<variable>>,
+# A typed parameter (#66): `{n:uint}` accepts digits or a whole <<variable>>,
 # and a variable's value is checked when the step runs.
-- step: 'the "{path:text}" page answers {code:uint}'
+- step: 'waiting "{what:text}" for {n:uint} seconds'
   do:
-    - I request "<<path>>"
-    - the response code is <<code>>
+    - I sleep <<n>> seconds

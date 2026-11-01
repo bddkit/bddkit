@@ -1,3 +1,4 @@
+// moves-to: db — this whole module (engines, DSNs, schema setup) leaves with the databases.
 //! Helpers for DB integration tests: recreating the fixture schema and running
 //! the compiled binary against a temporary config (like the M1 acceptance tests).
 
@@ -235,15 +236,6 @@ pub fn run_feature(feature_src: &str, setup: &Setup) -> Output {
         );
     }
     out
-}
-
-/// stdout+stderr as one string — for checking error messages.
-pub fn combined(out: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    )
 }
 
 #[cfg(test)]

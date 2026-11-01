@@ -2,7 +2,9 @@
 //! summary, the event stream and the JUnit report. The class is set where the
 //! error is born (`src/failure.rs`); these tests drive each birthplace through
 //! the real binary and read the class back out of the output.
-//! Multi-thread runtime: the stub must be polled while `Command::output()` blocks.
+//!
+//! The core classes run over core steps only. `a_refused_connection_is_a_transport_failure`
+//! needs a real HTTP request and is marked to move with the HTTP API.
 
 mod common;
 
@@ -10,30 +12,35 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-/// A project with one API at `base`, one feature file and, optionally, one
-/// macro file.
-fn project(name: &str, base: &str, feature: &str, macros: Option<&str>) -> PathBuf {
+/// A project with one feature file and, optionally, one macro file.
+fn project(name: &str, feature: &str, macros: Option<&str>) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-class-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(dir.join("features/f.feature"), feature).expect("write feature");
-    let mut config = String::from("paths: [features]\n");
+    // `api: {}` until #190: `resources.api` has no serde default yet.
+    let mut config = String::from("paths: [features]\nresources:\n  api: {}\n");
     if let Some(macros) = macros {
         std::fs::create_dir_all(dir.join("macros")).expect("mkdir");
         std::fs::write(dir.join("macros/m.yaml"), macros).expect("write macros");
         config.push_str("macro_paths: [macros]\n");
     }
-    config.push_str(&format!(
-        "resources:\n  api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"
-    ));
     std::fs::write(dir.join("cfg.yaml"), config).expect("write config");
     dir
 }
 
 fn run(dir: &std::path::Path, extra: &[&str]) -> Output {
+    // A project that carries its own plugins never sees the developer's.
+    let own = dir.join(".bddkit");
+    let bddkit_dir: Vec<&std::ffi::OsStr> = if own.is_dir() {
+        vec!["--bddkit-dir".as_ref(), own.as_os_str()]
+    } else {
+        vec![]
+    };
     Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .current_dir(dir)
         .args(["run", "--config", "cfg.yaml"])
+        .args(bddkit_dir)
         .args(extra)
         .output()
         .expect("run bddkit")
@@ -51,100 +58,120 @@ fn summary(dir: &std::path::Path) -> String {
         .to_string()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refused_connection_is_a_transport_failure() {
+/// `project` with an API at `base`, for the one test that needs a real request.
+// moves-to: api
+fn http_project(name: &str, base: &str, feature: &str) -> PathBuf {
+    let dir = project(name, feature, None);
+    let config = std::fs::read_to_string(dir.join("cfg.yaml")).expect("config");
+    let config = config.replace(
+        "api: {}\n",
+        &format!("api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"),
+    );
+    std::fs::write(dir.join("cfg.yaml"), config).expect("write config");
+    dir
+}
+
+// moves-to: api
+#[test]
+fn a_refused_connection_is_a_transport_failure() {
     // Port 1 on loopback: nothing listens, the connection is refused.
-    let dir = project(
+    let dir = http_project(
         "refused",
         "http://127.0.0.1:1",
         "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n",
-        None,
     );
     assert!(summary(&dir).ends_with("failed: 1 (1 transport)"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_status_mismatch_is_an_assertion_failure() {
-    let base = common::spawn().await;
-    let dir = project(
-        "status",
-        &base,
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n    Then the response code is 404\n",
-        None,
-    );
+const MISMATCH: &str = "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n    Then variable \"a\" should be equal to \"2\"\n";
+
+#[test]
+fn a_mismatch_is_an_assertion_failure() {
+    let dir = project("status", MISMATCH, None);
     assert!(summary(&dir).ends_with("failed: 1 (1 assertion)"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn polling_that_runs_out_is_an_assertion_failure() {
-    let base = common::spawn().await;
+/// A step that answers `not_yet` is retried until the time is up, and the
+/// failure keeps the class of its last attempt. Variable assertions are final
+/// at once, so this needs the echo fixture's `not_yet` assertion.
+#[test]
+fn polling_that_runs_out_is_an_assertion_failure() {
     let dir = project(
         "polling",
-        &base,
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n    And I expect the next assertion to pass within \"1\" seconds, checking every \"100\" milliseconds\n    Then the response code is 404\n",
+        "Feature: f\n  Scenario: s\n    Given I expect the next assertion to pass within \"1\" seconds, checking every \"100\" milliseconds\n    Then the echo should not be ready yet declaring \"x\" secret\n",
         None,
     );
+    std::fs::create_dir_all(dir.join(".bddkit")).expect("mkdir .bddkit");
+    std::fs::write(
+        dir.join(".bddkit/plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n",
+            common::build_fixture_plugin().display()
+        ),
+    )
+    .expect("write lock");
+    let mut config = std::fs::read_to_string(dir.join("cfg.yaml")).expect("config");
+    config.push_str("concurrency: 1\n");
+    std::fs::write(dir.join("cfg.yaml"), config).expect("write config");
+    let started = std::time::Instant::now();
     assert!(summary(&dir).ends_with("failed: 1 (1 assertion)"));
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(1),
+        "the assertion was retried until the time was up"
+    );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_undefined_variable_is_an_input_failure() {
-    let base = common::spawn().await;
+#[test]
+fn an_undefined_variable_is_an_input_failure() {
     let dir = project(
         "undefined",
-        &base,
-        "Feature: f\n  Scenario: s\n    When I request \"/<<nowhere>>\"\n",
+        "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"<<nowhere>>\"\n",
         None,
     );
     assert!(summary(&dir).ends_with("failed: 1 (1 input)"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_typed_parameter_that_does_not_fit_is_an_input_failure() {
-    let base = common::spawn().await;
+#[test]
+fn a_typed_parameter_that_does_not_fit_is_an_input_failure() {
     let dir = project(
         "typed",
-        &base,
-        "Feature: f\n  Scenario: s\n    Given set variable \"code\" to \"abc\"\n    When I request \"/ping\"\n    Then the response code is <<code>>\n",
+        "Feature: f\n  Scenario: s\n    Given set variable \"code\" to \"abc\"\n    When I sleep <<code>> seconds\n",
         None,
     );
     assert!(summary(&dir).ends_with("failed: 1 (1 input)"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failure_inside_a_macro_keeps_its_class() {
+#[test]
+fn a_failure_inside_a_macro_keeps_its_class() {
     let dir = project(
         "macro",
-        "http://127.0.0.1:1",
-        "Feature: f\n  Scenario: s\n    When I ping twice\n",
-        Some("- step: I ping twice\n  do:\n    - I request \"/ping\"\n"),
+        "Feature: f\n  Scenario: s\n    When I check twice\n",
+        Some(
+            "- step: I check twice\n  do:\n    - set variable \"a\" to \"1\"\n    - set variable \"b\" to \"<<nowhere>>\"\n",
+        ),
     );
-    assert!(summary(&dir).ends_with("failed: 1 (1 transport)"));
+    // `input`, not the default `assertion`: the class survives the macro wrap.
+    assert!(summary(&dir).ends_with("failed: 1 (1 input)"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_junit_failure_carries_its_type() {
+#[test]
+fn the_junit_failure_carries_its_type() {
+    // `input`, not the default `assertion`, so a writer that hard-codes it fails.
     let dir = project(
         "junit",
-        "http://127.0.0.1:1",
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n",
+        "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"<<nowhere>>\"\n",
         None,
     );
     run(&dir, &["--junit", "junit.xml"]);
     let xml = std::fs::read_to_string(dir.join("junit.xml")).expect("junit written");
-    assert!(
-        xml.contains("<failure type=\"transport\" message="),
-        "{xml}"
-    );
+    assert!(xml.contains("<failure type=\"input\" message="), "{xml}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_stream_names_the_class_of_a_failed_step_and_scenario() {
-    let base = common::spawn().await;
+#[test]
+fn the_stream_names_the_class_of_a_failed_step_and_scenario() {
     let dir = project(
         "stream",
-        &base,
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n    Then the response code is 404\n",
+        "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n    Then variable \"a\" should be equal to \"2\"\n",
         None,
     );
     run(&dir, &["--events", "events.ndjson"]);

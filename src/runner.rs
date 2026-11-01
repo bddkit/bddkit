@@ -1880,6 +1880,7 @@ Feature: eventual assertion
             assert_eq!(Instant::now(), started);
         }
 
+        // moves-to: api
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn a_retrying_assertion_prepares_unique_capture_once() {
             // Real time and a real stub: the built-in path is the one under

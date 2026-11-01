@@ -21,8 +21,8 @@ Feature: Secrets stay out of what bddkit prints and writes
       | secret                | rule                                    |
       | pin-secret-value-1    | a variable with the word secret         |
       | literal-key-value-3   | a secret parameter                      |
-      | header-token-value-4  | a sensitive header                      |
-      | query-token-value-5   | a sensitive query parameter             |
+      | header-token-value-4  | a variable echoed by a command          |
+      | query-token-value-5   | a second variable echoed by a command   |
       | config-secret-value-6 | a config key with a field word          |
 
   Scenario: a value no rule names stays visible
@@ -53,8 +53,8 @@ Feature: Secrets stay out of what bddkit prints and writes
     When I run the masking fixture "bddkit" with options "--privacy-min-length 40"
     # The variable's value is too short to join the set, so it shows ...
     Then the command output contains "pin-secret-value-1"
-    # ... while the query value in the error is hidden where it stands.
-    And the command output does not contain "query-token-value-5"
+    # ... while the literal of a secret parameter is hidden where it stands.
+    And the command output does not contain "literal-key-value-3"
 
   Scenario: a literal in a step's own text reaches the stream, a known limit
     # `step_started` is emitted before the step that would register the value.

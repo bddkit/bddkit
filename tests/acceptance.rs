@@ -8,18 +8,36 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-/// Gate 1: scenarios against the reference stub must be green.
+/// Gate 1: the core's scenarios must be green. No API, no database.
+#[test]
+fn all_feature_files_pass() {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "tests/acceptance.yaml"])
+        .output()
+        .expect("failed to run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "run must be green\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("failed: 0"), "{stdout}");
+}
+
+/// Gate 1 for the HTTP API: its scenarios against the reference stub.
 // Multi-thread: the stub runs inside `tokio::spawn`, and the test blocks on
 // `Command::output()`. On a single-threaded runtime the block prevents polling
 // the server task — the port is bound, but connections aren't accepted, and
 // requests hang until timeout. A separate worker thread fixes this.
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn all_feature_files_pass_against_the_stub() {
+async fn all_api_feature_files_pass_against_the_stub() {
     let base = common::spawn().await;
 
     let exe = env!("CARGO_BIN_EXE_bddkit");
     let out = Command::new(exe)
-        .args(["run", "--config", "tests/acceptance.yaml"])
+        .args(["run", "--config", "tests/api/acceptance.yaml"])
         .env("BDDKIT_STUB_URL", &base)
         .output()
         .expect("failed to run bddkit");
@@ -31,6 +49,80 @@ async fn all_feature_files_pass_against_the_stub() {
         "run must be green\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(stdout.contains("failed: 0"), "{stdout}");
+}
+
+/// The JSON assertions on a variable, over a document a plugin published
+/// (a core step cannot set a variable to text holding quotes).
+#[test]
+fn json_assertions_work_over_a_variable_a_plugin_published() {
+    let dir = std::env::temp_dir().join(format!("bddkit-var-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::create_dir_all(dir.join("macros")).expect("mkdir");
+    std::fs::create_dir_all(dir.join(".bddkit")).expect("mkdir .bddkit");
+    std::fs::write(
+        dir.join(".bddkit/plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n",
+            common::build_fixture_plugin().display()
+        ),
+    )
+    .expect("write lock");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/macros/vars.yaml"),
+        dir.join("macros/vars.yaml"),
+    )
+    .expect("copy macros");
+    std::fs::write(
+        dir.join("features/json.feature"),
+        r#"Feature: JSON over a variable
+  Scenario: JSON assertions over a variable
+    Given I echo the plain doc string:
+      """
+      {"user": {"id": 7, "roles": ["a", "b"]}}
+      """
+    Then variable "echo_doc" should contain JSON:
+      """
+      {"user": {"id": "@variableType(int)", "roles": ["b"]}}
+      """
+    And variable "echo_doc" should equal JSON:
+      """
+      {"user": {"id": 7, "roles": ["a", "b"]}}
+      """
+    And variable "echo_doc" should not contain JSON:
+      """
+      {"user": {"id": 8}}
+      """
+    And extract "user.roles[1]" from variable "echo_doc" as JSON as "role"
+    And variable "role" should be equal to "b"
+    And I pull the user id out of variable "echo_doc"
+    And variable "uid" should be equal to "7"
+    And variable "digits" should be equal to "7"
+"#,
+    )
+    .expect("write feature");
+    let abs = |name: &str| dir.join(name).display().to_string().replace('\\', "/");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!(
+            "concurrency: 1\npaths: [{}]\nmacro_paths: [{}]\nresources:\n  api: {{}}\n",
+            abs("features"),
+            abs("macros")
+        ),
+    )
+    .expect("write config");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml", "--bddkit-dir"])
+        .arg(dir.join(".bddkit"))
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run bddkit");
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 async fn spawn_eventual_post_stub(ready_on: Option<usize>) -> (String, Arc<AtomicUsize>) {
@@ -99,6 +191,7 @@ fn write_eventual_post_project(base: &str, name: &str) -> std::path::PathBuf {
     config
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eventual_post_response_replays_the_saved_method_and_body() {
     let (base, calls) = spawn_eventual_post_stub(Some(2)).await;
@@ -180,6 +273,7 @@ fn write_eventual_absence_project(base: &str, name: &str) -> std::path::PathBuf 
     config
 }
 
+// moves-to: api
 /// Issue #22, item 7: "wait for absence" must be explicitly validated, not just
 /// assumed to work by composition with the existing polling mechanism.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -204,6 +298,7 @@ async fn eventual_absence_polls_until_the_node_disappears() {
     );
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eventual_post_timeout_reports_last_mismatch_and_final_exchange() {
     let (base, _calls) = spawn_eventual_post_stub(None).await;
@@ -238,9 +333,8 @@ async fn eventual_post_timeout_reports_last_mismatch_and_final_exchange() {
 }
 
 /// An unknown step must fail BEFORE the first request, with code 2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_step_fails_before_running() {
-    let base = common::spawn().await;
+#[test]
+fn unknown_step_fails_before_running() {
     let dir = std::env::temp_dir().join("bddkit-validate-test");
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -251,7 +345,7 @@ async fn unknown_step_fails_before_running() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "paths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -279,20 +373,19 @@ async fn unknown_step_fails_before_running() {
 /// A `<<variable>>` in a typed position is checked once its value exists:
 /// after interpolation, before dispatch. The wrong type fails the STEP (exit 1),
 /// never the validation — nothing about the text was wrong.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_variable_of_the_wrong_type_fails_the_step() {
-    let base = common::spawn().await;
+#[test]
+fn a_variable_of_the_wrong_type_fails_the_step() {
     let dir = std::env::temp_dir().join(format!("bddkit-typed-var-test-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
         dir.join("features/typed.feature"),
-        "Feature: f\n  Scenario: s\n    Given set variable \"code\" to \"abc\"\n    When I request \"/ping\"\n    Then the response code is <<code>>\n",
+        "Feature: f\n  Scenario: s\n    Given set variable \"code\" to \"abc\"\n    When I sleep <<code>> seconds\n",
     )
     .expect("write feature");
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "paths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -317,7 +410,7 @@ async fn a_variable_of_the_wrong_type_fails_the_step() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains(r#"parameter <code> expects uint, got "abc""#),
+        stdout.contains(r#"parameter <seconds> expects uint, got "abc""#),
         "{stdout}"
     );
 }
@@ -374,9 +467,8 @@ fn a_number_may_be_written_with_or_without_quotes_and_a_bad_slot_is_refused_up_f
 
 /// The same check guards a macro's typed parameter: the value is refused
 /// before the macro body runs, and it fails the calling step (exit 1).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
-    let base = common::spawn().await;
+#[test]
+fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
     let dir = std::env::temp_dir().join(format!("bddkit-typed-macro-test-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -386,13 +478,13 @@ async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
     .expect("write feature");
     std::fs::write(
         dir.join("macros.yaml"),
-        "- step: 'the \"{path:text}\" page answers {code:uint}'\n  do:\n    - I request \"<<path>>\"\n    - the response code is <<code>>\n",
+        "- step: 'the \"{path:text}\" page answers {code:uint}'\n  do:\n    - I sleep <<code>> seconds\n",
     )
     .expect("write macros");
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("macros.yaml")
                 .display()
                 .to_string()
@@ -405,11 +497,14 @@ async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
     )
     .expect("write config");
 
+    let events = dir.join("events.ndjson");
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args([
             "run",
             "--config",
             dir.join("cfg.yaml").to_str().expect("path is UTF-8"),
+            "--events",
+            events.to_str().expect("path is UTF-8"),
         ])
         .output()
         .expect("failed to run bddkit");
@@ -424,14 +519,34 @@ async fn a_variable_of_the_wrong_type_fails_a_typed_macro_parameter() {
         stdout.contains(r#"parameter <code> expects uint, got "abc""#),
         "{stdout}"
     );
-    // Refused before the body: the macro's request was never sent.
-    assert!(!stdout.contains("GET "), "{stdout}");
+    // Refused before the body: the calling step started and failed, and no
+    // step of the macro's body ever started.
+    let stream = read_stream(&events);
+    assert!(
+        of_type(&stream, "step_started").iter().any(|e| e["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("page answers"))),
+        "{stream:?}"
+    );
+    assert_eq!(
+        of_type(&stream, "step_finished")
+            .iter()
+            .filter(|e| e["status"] == "failed")
+            .count(),
+        1
+    );
+    assert!(
+        of_type(&stream, "step_started")
+            .iter()
+            .all(|e| !e["text"].as_str().is_some_and(|t| t.starts_with("I sleep"))),
+        "{stream:?}"
+    );
 }
 
 /// `resources.api` may be absent entirely — legal for a scenario that makes
 /// no HTTP requests (symmetric to `resources.db`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_config_without_any_api_resource_runs_a_non_http_scenario() {
+#[test]
+fn a_config_without_any_api_resource_runs_a_non_http_scenario() {
     let dir = std::env::temp_dir().join("bddkit-no-api-ok-test");
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -470,6 +585,7 @@ async fn a_config_without_any_api_resource_runs_a_non_http_scenario() {
     );
 }
 
+// moves-to: api
 /// If no APIs are declared but the scenario sends a request anyway — the
 /// failure happens as an ordinary step failure on first use, not a panic
 /// and not a startup rejection.
@@ -512,24 +628,24 @@ async fn a_config_without_any_api_resource_fails_at_first_http_step() {
 
 /// Shared helper: writes two tagged feature files and a config pointing at
 /// the stub into a temp directory, returns the config path.
-fn write_tagged_project(base: &str, name: &str) -> std::path::PathBuf {
+fn write_tagged_project(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
         dir.join("features/smoke.feature"),
-        "Feature: smoke\n  @smoke\n  Scenario: ping\n    When I request \"/ping\"\n    Then the response code is 200\n",
+        "Feature: smoke\n  @smoke\n  Scenario: ping\n    When set variable \"ping\" to \"ok\"\n    Then variable \"ping\" should be equal to \"ok\"\n",
     )
     .expect("write smoke feature");
     std::fs::write(
         dir.join("features/slow.feature"),
-        "Feature: slow\n  @slow\n  Scenario: ping slowly\n    When I request \"/ping\"\n    Then the response code is 200\n",
+        "Feature: slow\n  @slow\n  Scenario: ping slowly\n    When set variable \"ping\" to \"ok\"\n    Then variable \"ping\" should be equal to \"ok\"\n",
     )
     .expect("write slow feature");
     let cfg = dir.join("cfg.yaml");
     std::fs::write(
         &cfg,
         format!(
-            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "paths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -540,10 +656,9 @@ fn write_tagged_project(base: &str, name: &str) -> std::path::PathBuf {
     cfg
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tag_filter_runs_only_the_matching_scenarios() {
-    let base = common::spawn().await;
-    let cfg = write_tagged_project(&base, "tagfilter");
+#[test]
+fn tag_filter_runs_only_the_matching_scenarios() {
+    let cfg = write_tagged_project("tagfilter");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args([
@@ -573,10 +688,9 @@ async fn tag_filter_runs_only_the_matching_scenarios() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_tag_matching_nothing_fails_with_exit_code_two() {
-    let base = common::spawn().await;
-    let cfg = write_tagged_project(&base, "tagempty");
+#[test]
+fn a_tag_matching_nothing_fails_with_exit_code_two() {
+    let cfg = write_tagged_project("tagempty");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args([
@@ -598,10 +712,9 @@ async fn a_tag_matching_nothing_fails_with_exit_code_two() {
     assert!(stderr.contains("no scenario selected"), "{stderr}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_positional_path_overrides_the_config_paths() {
-    let base = common::spawn().await;
-    let cfg = write_tagged_project(&base, "positional");
+#[test]
+fn a_positional_path_overrides_the_config_paths() {
+    let cfg = write_tagged_project("positional");
     let only = cfg
         .parent()
         .expect("parent directory")
@@ -630,6 +743,7 @@ async fn a_positional_path_overrides_the_config_paths() {
     );
 }
 
+// moves-to: api
 /// Gate M4: one scenario reaches two different APIs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_scenario_can_call_two_different_apis() {
@@ -692,6 +806,7 @@ async fn one_scenario_can_call_two_different_apis() {
     );
 }
 
+// moves-to: api
 /// Gate: API switch inside an include persists after the include returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_api_switch_inside_an_include_stays_switched_after_it_returns() {
@@ -783,7 +898,7 @@ fn macro_cycle_fails_validation_with_exit_code_two() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("macros.yaml")
                 .display()
                 .to_string()
@@ -831,9 +946,15 @@ fn a_macro_template_with_literal_parentheses_no_longer_matches_its_old_text() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
-            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
-            dir.join("features").display().to_string().replace('\\', "/")
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api: {{}}\n",
+            dir.join("macros.yaml")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
         ),
     )
     .expect("write config");
@@ -855,9 +976,8 @@ fn a_macro_template_with_literal_parentheses_no_longer_matches_its_old_text() {
 
 /// `Print table:` fills `<<variables>>` in every cell, the header row too,
 /// and aligns the columns on the values after that substitution.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn print_table_aligns_interpolated_cells_on_stderr() {
-    let base = common::spawn().await;
+#[test]
+fn print_table_aligns_interpolated_cells_on_stderr() {
     let dir = std::env::temp_dir().join(format!("bddkit-print-table-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -868,7 +988,7 @@ async fn print_table_aligns_interpolated_cells_on_stderr() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "paths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -894,6 +1014,7 @@ async fn print_table_aligns_interpolated_cells_on_stderr() {
     );
 }
 
+// moves-to: api
 /// `Print response body as "<path>"` cannot work without structure: for
 /// text/plain this is an explicit error, not a silent degradation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -939,6 +1060,7 @@ async fn print_body_as_path_fails_for_plain_content_type() {
     );
 }
 
+// moves-to: api
 /// The bug this fixes: `Print response body as "<selector>"` used to route
 /// HTML through the XML-only XPath engine and fail on anything but strict,
 /// fully-closed, fully-quoted XHTML. It must now succeed on real HTML.
@@ -990,19 +1112,27 @@ async fn print_body_as_path_succeeds_on_real_world_html() {
 /// fail this deterministically, not occasionally.
 fn write_parallel_fixture(
     dir: &std::path::Path,
-    base: &str,
     concurrency: usize,
     tags: &str,
 ) -> std::path::PathBuf {
+    let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::create_dir_all(dir.join(".bddkit")).expect("mkdir .bddkit");
+    std::fs::write(
+        dir.join(".bddkit/plugins.yaml"),
+        format!(
+            "plugin:\n  - name: worker\n    path: {}\n",
+            common::build_worker_plugin().display()
+        ),
+    )
+    .expect("write lock");
     for who in ["a", "b"] {
         std::fs::write(
             dir.join(format!("features/{who}.feature")),
             format!(
                 "{tags}Feature: parallel {who}\n  Scenario: both tasks meet at the barrier\n    \
                  Given set variable \"who\" to \"{who}\"\n    \
-                 When I request \"/barrier\"\n    \
-                 Then the response code is 200\n    \
+                 When I wait at the worker barrier for 2 parties\n    \
                  And variable \"who\" should be equal to \"{who}\"\n"
             ),
         )
@@ -1012,8 +1142,7 @@ fn write_parallel_fixture(
     std::fs::write(
         &cfg,
         format!(
-            "concurrency: {concurrency}\npaths: [{}]\nresources:\n  api:\n    stub:\n      \
-             base_url: {base}\n      timeout_secs: 2\n",
+            "concurrency: {concurrency}\npaths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -1024,17 +1153,22 @@ fn write_parallel_fixture(
     cfg
 }
 
-/// Gate M5: two files must run at the same time, or the barrier never opens.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_feature_files_run_at_the_same_time() {
-    let base = common::spawn_barrier(2).await;
-    let dir = std::env::temp_dir().join(format!("bddkit-parallel-{}", std::process::id()));
-    let cfg = write_parallel_fixture(&dir, &base, 2, "");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
+/// Runs the fixture from its own directory, where the plugin lock lives.
+fn run_parallel_fixture(dir: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "cfg.yaml", "--bddkit-dir"])
+        .arg(dir.join(".bddkit"))
+        .current_dir(dir)
         .output()
-        .expect("failed to run bddkit");
+        .expect("failed to run bddkit")
+}
+
+/// Gate M5: two files must run at the same time, or the barrier never opens.
+#[test]
+fn two_feature_files_run_at_the_same_time() {
+    let dir = std::env::temp_dir().join(format!("bddkit-parallel-{}", std::process::id()));
+    write_parallel_fixture(&dir, 2, "");
+    let out = run_parallel_fixture(&dir);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -1049,37 +1183,27 @@ async fn two_feature_files_run_at_the_same_time() {
 /// Negative control: with `concurrency: 1` the barrier never opens and the
 /// run fails. Without this test, the first one could pass green for any
 /// reason other than real parallelism.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_single_worker_cannot_release_the_barrier() {
-    let base = common::spawn_barrier(2).await;
+#[test]
+fn a_single_worker_cannot_release_the_barrier() {
     let dir = std::env::temp_dir().join(format!("bddkit-sequential-{}", std::process::id()));
-    let cfg = write_parallel_fixture(&dir, &base, 1, "");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
-        .output()
-        .expect("failed to run bddkit");
+    write_parallel_fixture(&dir, 1, "");
+    let out = run_parallel_fixture(&dir);
 
     assert_eq!(
         out.status.code(),
         Some(1),
-        "a single worker must hit the request timeout, not pass"
+        "a single worker must hit the barrier timeout, not pass"
     );
 }
 
 /// Files in one chain must never be in flight at the same time — the
 /// two-party barrier never opens, and the run must fail on timeout. This
 /// mirrors the parallelism test: the same pair of files, just tagged.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_files_in_one_serial_chain_never_run_together() {
-    let base = common::spawn_barrier(2).await;
+#[test]
+fn two_files_in_one_serial_chain_never_run_together() {
     let dir = std::env::temp_dir().join(format!("bddkit-serial-{}", std::process::id()));
-    let cfg = write_parallel_fixture(&dir, &base, 2, "@serial(shared)\n");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
-        .output()
-        .expect("failed to run bddkit");
+    write_parallel_fixture(&dir, 2, "@serial(shared)\n");
+    let out = run_parallel_fixture(&dir);
 
     assert_eq!(
         out.status.code(),
@@ -1090,8 +1214,8 @@ async fn two_files_in_one_serial_chain_never_run_together() {
 }
 
 /// A broken scheduling tag — rejected before the first request, code 2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_file_in_two_chains_fails_the_startup() {
+#[test]
+fn a_file_in_two_chains_fails_the_startup() {
     let dir = std::env::temp_dir().join(format!("bddkit-two-chains-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -1125,6 +1249,7 @@ async fn a_file_in_two_chains_fails_the_startup() {
     assert!(stderr.contains("two chains"), "{stderr}");
 }
 
+// moves-to: db
 /// An unreachable DB — rejected BEFORE the first request, so code 2, not 1.
 /// Invariant 6: 1 is reserved for a failed scenario.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1173,8 +1298,8 @@ async fn an_unreachable_database_fails_the_startup_with_code_two() {
 
 /// The order files print in with one worker is the queue order.
 /// Checking that `@priority` sets it: higher goes earlier.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn higher_priority_files_run_first() {
+#[test]
+fn higher_priority_files_run_first() {
     let dir = std::env::temp_dir().join(format!("bddkit-priority-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     // Names are deliberately alphabetical in the reverse of the desired order:
@@ -1222,8 +1347,8 @@ async fn higher_priority_files_run_first() {
 }
 
 /// A non-numeric priority — rejected before the first request, code 2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_non_numeric_priority_fails_the_startup() {
+#[test]
+fn a_non_numeric_priority_fails_the_startup() {
     let dir = std::env::temp_dir().join(format!("bddkit-bad-priority-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -1263,8 +1388,8 @@ async fn a_non_numeric_priority_fails_the_startup() {
 /// `--fail-fast` stops dispatching NEW work after the first failure.
 /// With one worker this is deterministic: the first file fails, the second
 /// and third never start at all.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fail_fast_stops_starting_new_files() {
+#[test]
+fn fail_fast_stops_starting_new_files() {
     let dir = std::env::temp_dir().join(format!("bddkit-fail-fast-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -1320,8 +1445,8 @@ async fn fail_fast_stops_starting_new_files() {
 /// on one worker, the first fails, the second and third never start. This is
 /// a separate check from `fail_fast_stops_starting_new_files`, which only
 /// exercises the "before the next chain" check — there each file was its own chain.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fail_fast_stops_a_chain_partway_through() {
+#[test]
+fn fail_fast_stops_a_chain_partway_through() {
     let dir = std::env::temp_dir().join(format!("bddkit-fail-fast-chain-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -1376,8 +1501,8 @@ async fn fail_fast_stops_a_chain_partway_through() {
 
 /// Without the flag, one file's failure does not block the rest: the run
 /// must reach the end and show all failures at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_fail_fast_every_file_still_runs() {
+#[test]
+fn without_fail_fast_every_file_still_runs() {
     let dir = std::env::temp_dir().join(format!("bddkit-no-fail-fast-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
@@ -1419,13 +1544,10 @@ async fn without_fail_fast_every_file_still_runs() {
 
 /// `doctor` reaches every check a run makes before its first request, and a
 /// bare invocation opens no socket at all.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_reports_a_healthy_suite_and_exits_zero() {
-    let base = common::spawn().await;
-
+#[test]
+fn doctor_reports_a_healthy_suite_and_exits_zero() {
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config", "tests/acceptance.yaml"])
-        .env("BDDKIT_STUB_URL", &base)
         .output()
         .expect("failed to run bddkit");
 
@@ -1443,13 +1565,19 @@ async fn doctor_reports_a_healthy_suite_and_exits_zero() {
     );
 }
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// Writes a project whose config points at `base`, returning the config path.
 /// An empty `base` declares no API at all, which is how a test makes the exit
 /// code come from somewhere else. `feature` is the whole `.feature` file so a
 /// caller can plant a typo or a tag; an empty one writes no feature file at
 /// all. `extra` is appended after the API block — indented, it adds to
 /// `resources:`; at column 0 it adds a top-level key.
-fn write_doctor_project(name: &str, base: &str, feature: &str, extra: &str) -> std::path::PathBuf {
+fn http_write_doctor_project(
+    name: &str,
+    base: &str,
+    feature: &str,
+    extra: &str,
+) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     let only = dir.join("features/only.feature");
@@ -1479,11 +1607,41 @@ fn write_doctor_project(name: &str, base: &str, feature: &str, extra: &str) -> s
     cfg
 }
 
+/// Writes a project with an empty `api` section, returning the config path.
+/// `feature` is the whole `.feature` file so a
+/// caller can plant a typo or a tag; an empty one writes no feature file at
+/// all. `extra` is appended after the API block — indented, it adds to
+/// `resources:`; at column 0 it adds a top-level key.
+fn write_doctor_project(name: &str, feature: &str, extra: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    let only = dir.join("features/only.feature");
+    if feature.is_empty() {
+        // A previous run of this test binary may have left one behind.
+        let _ = std::fs::remove_file(&only);
+    } else {
+        std::fs::write(&only, feature).expect("write feature");
+    }
+    let api = "  api: {}\n";
+    let cfg = dir.join("cfg.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "paths: [{}]\nresources:\n{api}{extra}",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+    cfg
+}
+
 #[test]
 fn doctor_names_the_file_and_line_of_an_undefined_step() {
     let cfg = write_doctor_project(
         "doctor-step",
-        "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I frobnicate\n",
         "",
     );
@@ -1499,11 +1657,11 @@ fn doctor_names_the_file_and_line_of_an_undefined_step() {
     assert!(stdout.contains("I frobnicate"), "{stdout}");
 }
 
-const THREE_BAD_STEPS: &str = "Feature: only\n  Scenario: one\n    When I frobnicate\n    Then the response status is 200\n    And the response code is abc\n";
+const THREE_BAD_STEPS: &str = "Feature: only\n  Scenario: one\n    When I frobnicate\n    Then I sleep a while\n    And I sleep abc seconds\n";
 
 #[test]
 fn doctor_reports_one_finding_per_bad_step() {
-    let cfg = write_doctor_project("doctor-three", "http://127.0.0.1:1/", THREE_BAD_STEPS, "");
+    let cfg = write_doctor_project("doctor-three", THREE_BAD_STEPS, "");
     let cfg = cfg.to_str().expect("path is UTF-8");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
@@ -1517,11 +1675,11 @@ fn doctor_reports_one_finding_per_bad_step() {
     }
     assert!(stdout.contains("3 problem(s)"), "{stdout}");
     assert!(
-        stdout.contains("did you mean: the response code is <code>"),
+        stdout.contains("did you mean: I sleep <seconds> seconds"),
         "{stdout}"
     );
     assert!(
-        stdout.contains(r#"parameter <code> expects uint, got "abc""#),
+        stdout.contains(r#"parameter <seconds> expects uint, got "abc""#),
         "{stdout}"
     );
 
@@ -1541,7 +1699,7 @@ fn doctor_reports_one_finding_per_bad_step() {
 
 #[test]
 fn run_prints_the_suggestion_for_an_unknown_step() {
-    let cfg = write_doctor_project("run-three", "http://127.0.0.1:1/", THREE_BAD_STEPS, "");
+    let cfg = write_doctor_project("run-three", THREE_BAD_STEPS, "");
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
         .output()
@@ -1549,14 +1707,14 @@ fn run_prints_the_suggestion_for_an_unknown_step() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("did you mean: the response code is <code>"),
+        stderr.contains("did you mean: I sleep <seconds> seconds"),
         "{stderr}"
     );
 }
 
 /// A caller and a helper side by side; returns `doctor`'s exit code and stdout.
 fn doctor_include_pair(name: &str, caller: &str, helper: &str) -> (Option<i32>, String) {
-    let cfg = write_doctor_project(name, "http://127.0.0.1:1/", caller, "");
+    let cfg = write_doctor_project(name, caller, "");
     let features = cfg.parent().expect("config has a parent").join("features");
     std::fs::write(features.join("helper.feature"), helper).expect("write helper");
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
@@ -1571,6 +1729,7 @@ fn doctor_include_pair(name: &str, caller: &str, helper: &str) -> (Option<i32>, 
 
 const TEAM_CALLER: &str = "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n    And extract \"id\" from JSON as \"team_id\"\n";
 
+// moves-to: api
 #[test]
 fn doctor_include_hints_follow_with_prefix_and_ignore_an_outline_placeholder() {
     // `with prefix "a"` renames the export, so the extract is still a hint.
@@ -1592,6 +1751,7 @@ fn doctor_include_hints_follow_with_prefix_and_ignore_an_outline_placeholder() {
     assert!(!stdout.contains("sets it"), "{stdout}");
 }
 
+// moves-to: api
 #[test]
 fn doctor_hints_at_an_extract_that_reads_the_response_an_include_left_behind() {
     let (code, stdout) = doctor_include_pair(
@@ -1616,6 +1776,7 @@ fn doctor_hints_at_an_export_the_helper_never_sets() {
     assert!(stdout.contains("team_idd"), "{stdout}");
 }
 
+// moves-to: api
 #[test]
 fn doctor_stays_quiet_about_a_helper_that_exports_what_it_sets() {
     let (code, stdout) = doctor_include_pair(
@@ -1639,12 +1800,13 @@ fn doctor_stays_quiet_about_a_helper_that_exports_what_it_sets() {
     assert!(!stdout.contains("sets it"), "{stdout}");
 }
 
+// moves-to: api
 /// A step whose resource kind has nothing declared is a guaranteed failure in
 /// the scenario, and `run` does not refuse the config — a `--tag` may keep the
 /// scenario out. `doctor` applies no filter, so it is the one place to say so.
 #[test]
 fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "doctor-unserved",
         "",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n    When I request \"/pong\"\n",
@@ -1666,12 +1828,13 @@ fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
     assert!(stdout.contains("resources.api declares none"), "{stdout}");
 }
 
+// moves-to: api
 /// The promise the command is built on: `doctor` without `--live` must reach a
 /// verdict on a train. The `base_url` here points at a closed port, and the
 /// static run must still come back clean.
 #[test]
 fn doctor_without_live_leaves_an_unreachable_base_url_alone() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "doctor-offline",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -1692,9 +1855,10 @@ fn doctor_without_live_leaves_an_unreachable_base_url_alone() {
     assert!(stdout.contains("live probe skipped"), "{stdout}");
 }
 
+// moves-to: api
 #[test]
 fn doctor_live_reports_an_unreachable_base_url() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "doctor-live",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -1720,6 +1884,7 @@ fn doctor_live_reports_an_unreachable_base_url() {
     );
 }
 
+// moves-to: db
 /// `doctor` probes one connection at a time, so a suite with four of them
 /// learns which one is dead — and, because the full-map `Db::connect` returns
 /// at the first failure, so that a second dead DSN is still probed.
@@ -1729,7 +1894,7 @@ fn doctor_live_reports_an_unreachable_base_url() {
 /// exit code on its own, so a laxer test passes with the live probe deleted.
 #[test]
 fn doctor_live_reports_every_dead_connection_by_name() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "doctor-dsn",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -1766,13 +1931,14 @@ fn doctor_live_reports_every_dead_connection_by_name() {
     }
 }
 
+// moves-to: api
 /// Every declared SRP resource is validated at startup, not just the default
 /// one. Otherwise a broken `variant:` in a second block sits there until
 /// someone points `default_srp` at it — and `doctor`, which reports on every
 /// declared resource, would be stricter than the run it is meant to predict.
 #[test]
 fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "run-srp",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -1797,13 +1963,14 @@ fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
     );
 }
 
+// moves-to: db
 /// A DSN is more than its scheme, and sqlx parses the whole URL before it
 /// opens anything — so a typo past the `://` is a failure `run` reaches
 /// offline. The invariant is the pairing, not either message: whatever `run`
 /// refuses statically, a static `doctor` must refuse too.
 #[test]
 fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "doctor-baddsn",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -1842,8 +2009,7 @@ fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
 fn doctor_reports_a_malformed_scheduling_tag() {
     let cfg = write_doctor_project(
         "doctor-tag",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  @priority(soon)\n  Scenario: one\n    When I request \"/ping\"\n",
+        "Feature: only\n  @priority(soon)\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n",
         "",
     );
 
@@ -1862,7 +2028,7 @@ fn doctor_reports_a_malformed_scheduling_tag() {
 /// could print, because it certifies a suite that cannot run.
 #[test]
 fn doctor_reports_a_suite_with_no_scenario_to_run() {
-    let cfg = write_doctor_project("doctor-empty", "", "", "");
+    let cfg = write_doctor_project("doctor-empty", "", "");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config", cfg.to_str().expect("path is UTF-8")])
@@ -1884,7 +2050,7 @@ fn doctor_reports_an_unparseable_config_as_an_ordinary_finding() {
     let cfg = dir.join("cfg.yaml");
     std::fs::write(
         &cfg,
-        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n",
+        "paths: [features]\nresources:\n  api: {}\nmacro_paths: [${BDDKIT_ABSENT_VAR}]\n",
     )
     .expect("write config");
 
@@ -1903,13 +2069,10 @@ fn doctor_reports_an_unparseable_config_as_an_ordinary_finding() {
 }
 
 /// The primary caller is a script or an agent, which is what `--json` is for.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_json_carries_the_env_the_status_and_every_check() {
-    let base = common::spawn().await;
-
+#[test]
+fn doctor_json_carries_the_env_the_status_and_every_check() {
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config", "tests/acceptance.yaml", "--json"])
-        .env("BDDKIT_STUB_URL", &base)
         .output()
         .expect("failed to run bddkit");
 
@@ -1928,6 +2091,21 @@ async fn doctor_json_carries_the_env_the_status_and_every_check() {
             .any(|c| c["stage"] == "steps" && c["status"] == "ok"),
         "{stdout}"
     );
+}
+
+/// A static run reports the probe of an API resource it did not make.
+// moves-to: api
+#[test]
+fn doctor_json_reports_the_api_probe_a_static_run_did_not_make() {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "tests/api/acceptance.yaml", "--json"])
+        .env("BDDKIT_STUB_URL", "http://127.0.0.1:1/")
+        .output()
+        .expect("failed to run bddkit");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let report: Value = serde_json::from_str(&stdout).expect("--json emits JSON only");
+    let checks = report["checks"].as_array().expect("checks is an array");
     assert!(
         checks
             .iter()
@@ -1965,13 +2143,14 @@ fn the_run_subcommand_is_how_a_suite_is_started() {
     );
 }
 
+// moves-to: api
 /// The whole promise in one assertion: the file after equals the file before
 /// plus exactly the inserted block. Reordered keys, a requoted scalar or a
 /// swallowed final newline all fail here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resource_add_inserts_exactly_the_block_and_probes_the_new_api() {
     let base = common::spawn().await;
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-ok",
         &base,
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2009,11 +2188,12 @@ async fn resource_add_inserts_exactly_the_block_and_probes_the_new_api() {
     );
 }
 
+// moves-to: api
 /// The probe is on by default here — the resource being added is what the
 /// invocation is about — and a resource that cannot answer is not written.
 #[test]
 fn resource_add_writes_nothing_when_the_probe_fails() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-dead",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2050,11 +2230,12 @@ fn resource_add_writes_nothing_when_the_probe_fails() {
     );
 }
 
+// moves-to: api
 /// `--no-check` skips the probe and nothing else: the same closed port, and
 /// the resource is written.
 #[test]
 fn resource_add_no_check_writes_a_resource_that_is_not_up_yet() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-nocheck",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2086,11 +2267,12 @@ fn resource_add_no_check_writes_a_resource_that_is_not_up_yet() {
     );
 }
 
+// moves-to: api
 /// Insert only, and the refusal is what a script reads: exit 1, the block on
 /// stdout, the file untouched.
 #[test]
 fn resource_add_refuses_a_name_that_is_already_taken() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-taken",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2118,11 +2300,12 @@ fn resource_add_refuses_a_name_that_is_already_taken() {
     assert_eq!(std::fs::read_to_string(&cfg).expect("read config"), before);
 }
 
+// moves-to: api
 /// A typo in a field name is an error, not a silently stored key — the whole
 /// reason the flags are checked against a list at all.
 #[test]
 fn resource_add_names_a_field_that_does_not_exist() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-typo",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2161,13 +2344,14 @@ fn resource_add_names_a_field_that_does_not_exist() {
     );
 }
 
+// moves-to: api
 /// A resource name is written to the file literally and read back `${VAR}`-
 /// expanded, so a name carrying a variable that is set is not in the loaded
 /// config under the name being written. That is a refusal like any other —
 /// looking it up by index made the process panic with exit 101.
 #[test]
 fn resource_add_refuses_a_name_that_expands_to_something_else() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-expanding-name",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2205,12 +2389,13 @@ fn resource_add_refuses_a_name_that_expands_to_something_else() {
     );
 }
 
+// moves-to: db
 /// The block is the whole value of the failure path, so it has to be pasteable
 /// where the reader will paste it: under `resources:`, which means carrying the
 /// group key whenever the config does not have that group yet.
 #[test]
 fn resource_add_prints_the_group_key_for_a_group_the_config_lacks() {
-    let cfg = write_doctor_project(
+    let cfg = http_write_doctor_project(
         "resource-add-new-group",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
@@ -2247,8 +2432,7 @@ fn resource_add_prints_the_group_key_for_a_group_the_config_lacks() {
 fn write_default_config_project(name: &str, config_file_name: &str) -> std::path::PathBuf {
     let cfg = write_doctor_project(
         name,
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
+        "Feature: only\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n",
         "",
     );
     let dir = cfg.parent().expect("cfg has a parent").to_path_buf();
@@ -2338,8 +2522,7 @@ fn doctor_reports_no_config_found_as_a_failed_config_row_not_exit_two() {
 fn bddkit_config_env_var_is_honoured_when_no_flag_is_given() {
     let cfg = write_doctor_project(
         "doctor-default-env",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
+        "Feature: only\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n",
         "",
     );
 
@@ -2409,14 +2592,12 @@ fn a_missing_bddkit_config_env_var_is_refused_not_a_fallback_to_the_default() {
 fn explicit_config_flag_wins_over_the_env_var() {
     let winner = write_doctor_project(
         "doctor-precedence-flag",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
+        "Feature: only\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n",
         "",
     );
     let loser = write_doctor_project(
         "doctor-precedence-env",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
+        "Feature: only\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n",
         "",
     );
 
@@ -2506,12 +2687,13 @@ fn steps_list_no_config_ignores_a_present_bddkit_yaml() {
         .expect("failed to run bddkit");
     let stdout = String::from_utf8_lossy(&with_flag.stdout);
     assert_eq!(with_flag.status.code(), Some(0), "{stdout}");
-    assert!(stdout.contains("I request"), "{stdout}");
+    assert!(stdout.contains("I sleep"), "{stdout}");
 }
 
 /// The same escape hatch, for `resource fields` — it shares the resolver but
 /// is a separate command with its own `--no-config` flag, so it needs its own
 /// proof the flag actually skips loading `bddkit.yaml`.
+// moves-to: db
 #[test]
 fn resource_fields_no_config_ignores_a_present_bddkit_yaml() {
     let dir = std::env::temp_dir().join(format!(
@@ -2540,7 +2722,10 @@ fn resource_fields_no_config_ignores_a_present_bddkit_yaml() {
         .expect("failed to run bddkit");
     let stdout = String::from_utf8_lossy(&with_flag.stdout);
     assert_eq!(with_flag.status.code(), Some(0), "{stdout}");
-    assert!(stdout.contains("dsn"), "{stdout}");
+    assert!(
+        !stdout.trim().is_empty(),
+        "the built-in kinds are listed: {stdout}"
+    );
 }
 
 /// clap's `conflicts_with` on the real binary, not just declared in
@@ -2615,21 +2800,21 @@ fn version_answers_to_both_spellings_and_leads_with_the_semver() {
 /// A project with one passing and one failing scenario. The failure text
 /// carries the two things an XML writer gets wrong first: a `]]>` in the
 /// expected value and the NUL bytes of the `<<null>>` sentinel in the actual.
-fn write_report_project(base: &str, name: &str) -> std::path::PathBuf {
+fn write_report_project(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(
         dir.join("features/report.feature"),
         r#"Feature: reported feature
   Scenario: passes
-    When I request "/ping"
-    Then the response code is 200
+    When set variable "ping" to "ok"
+    Then variable "ping" should be equal to "ok"
 
   Scenario: fails
-    When I request "/ping"
+    When set variable "ping" to "ok"
     And set variable "x" to "<<null>>"
     Then variable "x" should be equal to "]]>"
-    And the response code is 200
+    And variable "ping" should be equal to "ok"
 "#,
     )
     .expect("write feature");
@@ -2637,7 +2822,7 @@ fn write_report_project(base: &str, name: &str) -> std::path::PathBuf {
     std::fs::write(
         &config,
         format!(
-            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            "paths: [{}]\nresources:\n  api: {{}}\n",
             dir.join("features")
                 .display()
                 .to_string()
@@ -2648,10 +2833,9 @@ fn write_report_project(base: &str, name: &str) -> std::path::PathBuf {
     config
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
-    let base = common::spawn().await;
-    let config = write_report_project(&base, "junit");
+#[test]
+fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
+    let config = write_report_project("junit");
     let report = config.with_file_name("out/junit.xml");
     let _ = std::fs::remove_dir_all(report.parent().expect("parent"));
 
@@ -2689,10 +2873,6 @@ async fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
     let failure = value("//testcase[@name='fails']/failure");
     assert!(failure.contains("expected: ]]>"), "{failure}");
     assert!(
-        failure.contains("GET http://"),
-        "the HTTP exchange is part of the failure:\n{failure}"
-    );
-    assert!(
         value("//testcase[@name='passes']/@time")
             .parse::<f64>()
             .expect("time is a float")
@@ -2706,10 +2886,62 @@ async fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
     );
 }
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
+fn http_write_report_project(base: &str, name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/report.feature"),
+        r#"Feature: reported feature
+  Scenario: passes
+    When I request "/ping"
+    Then the response code is 200
+
+  Scenario: fails
+    When I request "/ping"
+    And set variable "x" to "<<null>>"
+    Then variable "x" should be equal to "]]>"
+    And the response code is 200
+"#,
+    )
+    .expect("write feature");
+    let config = dir.join("cfg.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+    config
+}
+
+/// The failed request's exchange is part of the failure in the JUnit report.
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_cucumber_json_writes_the_feature_scenario_step_layout() {
+async fn the_junit_failure_holds_the_http_exchange() {
     let base = common::spawn().await;
-    let config = write_report_project(&base, "cucumber-json");
+    let config = http_write_report_project(&base, "junit-http");
+    let junit = config.with_file_name("junit.xml");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&config)
+        .arg("--junit")
+        .arg(&junit)
+        .output()
+        .expect("run bddkit");
+    assert_eq!(out.status.code(), Some(1));
+    let xml = std::fs::read_to_string(&junit).expect("junit");
+    assert!(xml.contains("GET http://"), "{xml}");
+}
+
+#[test]
+fn run_cucumber_json_writes_the_feature_scenario_step_layout() {
+    let config = write_report_project("cucumber-json");
     let report = config.with_file_name("cucumber.json");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
@@ -2742,7 +2974,10 @@ async fn run_cucumber_json_writes_the_feature_scenario_step_layout() {
     let steps = failing["steps"].as_array().expect("steps");
     assert_eq!(steps.len(), 4, "{json}");
     assert_eq!(steps[0]["keyword"], "When ", "{json}");
-    assert_eq!(steps[0]["name"], "I request \"/ping\"", "{json}");
+    assert_eq!(
+        steps[0]["name"], "set variable \"ping\" to \"ok\"",
+        "{json}"
+    );
     assert_eq!(steps[0]["line"], 7, "{json}");
     assert_eq!(steps[0]["result"]["status"], "passed", "{json}");
     assert!(
@@ -2774,7 +3009,7 @@ fn a_report_path_is_truncated_before_the_config_is_read() {
     let cfg = dir.join("cfg.yaml");
     std::fs::write(
         &cfg,
-        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n",
+        "paths: [features]\nresources:\n  api: {}\nmacro_paths: [${BDDKIT_ABSENT_VAR}]\n",
     )
     .expect("write config");
     let report = dir.join("junit.xml");
@@ -2802,6 +3037,43 @@ fn a_report_path_is_truncated_before_the_config_is_read() {
     );
 }
 
+#[test]
+fn an_unwritable_report_path_stops_the_run_before_any_step_and_doctor_reports_it() {
+    let config = write_report_project("unwritable-report-core");
+    // A path under a regular file cannot be created.
+    let report = config.join("cucumber.json");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config"])
+        .arg(&config)
+        .arg("--cucumber-json")
+        .arg(&report)
+        .output()
+        .expect("run bddkit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("cucumber.json"),
+        "the path is named: {stderr}"
+    );
+    assert!(
+        stderr.contains("run not started"),
+        "no step may run before the report is prepared: {stderr}"
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config"])
+        .arg(&config)
+        .arg("--cucumber-json")
+        .arg(&report)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("✗ reports"), "{stdout}");
+}
+
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unwritable_report_path_is_a_startup_failure_and_doctor_reports_it() {
     let (base, calls) = spawn_eventual_post_stub(Some(1)).await;
@@ -2842,8 +3114,8 @@ async fn an_unwritable_report_path_is_a_startup_failure_and_doctor_reports_it() 
 
 /// Builds a temp project for an `I include` acceptance test: copies each
 /// `(dest path under the temp dir, source fixture path)` pair, then writes
-/// the one `cfg.yaml` every one of these tests shares (a single `stub` API,
-/// no live server needed — none of them make an HTTP request). Returns the
+/// the one `cfg.yaml` every one of these tests shares (an empty `api`,
+/// no resource at all — none of them touch a system under test). Returns the
 /// project directory.
 fn build_include_project(dir_slug: &str, fixtures: &[(&str, &str)]) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{dir_slug}-{}", std::process::id()));
@@ -2854,7 +3126,7 @@ fn build_include_project(dir_slug: &str, fixtures: &[(&str, &str)]) -> std::path
     }
     std::fs::write(
         dir.join("cfg.yaml"),
-        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+        "paths: [features]\nresources:\n  api: {}\n",
     )
     .expect("write config");
     dir
@@ -3343,7 +3615,7 @@ fn debug_mode_logs_a_macro_s_exported_variables() {
     .expect("write feature");
     std::fs::write(
         dir.join("cfg.yaml"),
-        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api: {}\n",
     )
     .expect("write config");
 
@@ -3384,7 +3656,7 @@ fn debug_mode_names_the_macro_even_when_its_body_fails() {
     .expect("write feature");
     std::fs::write(
         dir.join("cfg.yaml"),
-        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+        "macro_paths: [macros.yaml]\npaths: [features]\nresources:\n  api: {}\n",
     )
     .expect("write config");
 
@@ -3408,7 +3680,6 @@ fn doctor_reports_a_broken_include_the_same_way_run_does() {
     // per CLAUDE.md) with the missing file's name appearing in stdout.
     let cfg = write_doctor_project(
         "doctor-include",
-        "http://127.0.0.1:1/",
         "Feature: caller\n  Scenario: test\n    Given I include \"nope.feature\"\n",
         "",
     );
@@ -3489,10 +3760,11 @@ fn write_upload_fixture(cfg: &std::path::Path) {
     std::fs::write(fixtures.join("id_front.png"), b"PNGDATA").expect("write fixture");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_is_uploaded_as_multipart_with_its_form_fields() {
     let base = spawn_upload_stub().await;
-    let cfg = write_doctor_project("upload-ok", &base, UPLOAD_FEATURE, "");
+    let cfg = http_write_doctor_project("upload-ok", &base, UPLOAD_FEATURE, "");
     write_upload_fixture(&cfg);
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
@@ -3509,9 +3781,11 @@ async fn a_file_is_uploaded_as_multipart_with_its_form_fields() {
     );
 }
 
+// moves-to: api
 #[test]
 fn a_missing_literal_attachment_stops_the_run_before_any_request_with_exit_two() {
-    let cfg = write_doctor_project("upload-missing", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
+    let cfg =
+        http_write_doctor_project("upload-missing", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
@@ -3523,9 +3797,10 @@ fn a_missing_literal_attachment_stops_the_run_before_any_request_with_exit_two()
     assert!(stderr.contains("fixtures/id_front.png"), "{stderr}");
 }
 
+// moves-to: api
 #[test]
 fn doctor_reports_a_missing_literal_attachment() {
-    let cfg = write_doctor_project("upload-doctor", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
+    let cfg = http_write_doctor_project("upload-doctor", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config", cfg.to_str().expect("path is UTF-8")])
@@ -3537,6 +3812,7 @@ fn doctor_reports_a_missing_literal_attachment() {
     assert!(stdout.contains("no such file"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup() {
     let base = spawn_upload_stub().await;
@@ -3545,7 +3821,7 @@ async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup()
     Given set variable "file" to "fixtures/gone.png"
     And I attach the file "<<file>>" to the request as "content"
 "#;
-    let cfg = write_doctor_project("upload-var-missing", &base, feature, "");
+    let cfg = http_write_doctor_project("upload-var-missing", &base, feature, "");
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["run", "--config", cfg.to_str().expect("path is UTF-8")])
@@ -3561,10 +3837,11 @@ async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup()
 // `run --events`
 // ---------------------------------------------------------------------------
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// A project under a fresh directory, returning the config path. `features`
 /// are `(file name, content)` pairs; `macros` is one YAML file, if any. With a
 /// `base` the config declares one API; without, none.
-fn write_events_project(
+fn http_write_events_project(
     name: &str,
     base: &str,
     features: &[(&str, &str)],
@@ -3597,6 +3874,63 @@ fn write_events_project(
     cfg
 }
 
+/// A project under a fresh directory, returning the config path. `features`
+/// are `(file name, content)` pairs; `macros` is one YAML file, if any. The
+/// config declares an empty `api`.
+fn write_events_project(
+    name: &str,
+    features: &[(&str, &str)],
+    macros: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-events-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    for (file, content) in features {
+        std::fs::write(dir.join("features").join(file), content).expect("write feature");
+    }
+    let mut config = format!("paths: [{}]\n", path_text(&dir.join("features")));
+    if let Some(macros) = macros {
+        std::fs::create_dir_all(dir.join("macros")).expect("mkdir");
+        std::fs::write(dir.join("macros/m.yaml"), macros).expect("write macros");
+        config.push_str(&format!(
+            "macro_paths: [{}]\n",
+            path_text(&dir.join("macros"))
+        ));
+    }
+    config.push_str(
+        "resources:
+  api: {}
+",
+    );
+    let cfg = dir.join("cfg.yaml");
+    std::fs::write(&cfg, config).expect("write config");
+    cfg
+}
+
+/// `write_events_project` plus the echo fixture plugin, whose steps report
+/// evidence. Sequential: the echo plugin is `shared`.
+fn write_evidence_project(
+    name: &str,
+    features: &[(&str, &str)],
+    macros: Option<&str>,
+) -> std::path::PathBuf {
+    let cfg = write_events_project(name, features, macros);
+    let dir = cfg.parent().expect("project dir");
+    std::fs::create_dir_all(dir.join(".bddkit")).expect("mkdir .bddkit");
+    std::fs::write(
+        dir.join(".bddkit/plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n",
+            common::build_fixture_plugin().display()
+        ),
+    )
+    .expect("write lock");
+    let mut config = std::fs::read_to_string(&cfg).expect("read config");
+    config.push_str("concurrency: 1\n");
+    std::fs::write(&cfg, config).expect("write config");
+    cfg
+}
+
 fn path_text(path: &std::path::Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
@@ -3611,6 +3945,17 @@ fn read_stream(path: &std::path::Path) -> Vec<Value> {
 
 /// `bddkit run --config <cfg> --events <dir>/events.ndjson <extra…>`, and the
 /// stream it wrote.
+/// `--bddkit-dir <project>/.bddkit` when the project carries its own plugins,
+/// so a developer's installed plugins never decide what a test sees.
+fn project_bddkit_dir(cfg: &std::path::Path) -> Vec<std::ffi::OsString> {
+    let dir = cfg.with_file_name(".bddkit");
+    if dir.is_dir() {
+        vec!["--bddkit-dir".into(), dir.into()]
+    } else {
+        vec![]
+    }
+}
+
 fn run_with_events(
     cfg: &std::path::Path,
     extra: &[&str],
@@ -3621,6 +3966,7 @@ fn run_with_events(
         .arg(cfg)
         .arg("--events")
         .arg(&events)
+        .args(project_bddkit_dir(cfg))
         .env_remove("BDDKIT_ARTIFACTS_DIR")
         // The developer's own choice must not decide what a test records.
         .env_remove("BDDKIT_EVIDENCE")
@@ -3638,10 +3984,10 @@ fn of_type<'a>(stream: &'a [Value], kind: &str) -> Vec<&'a Value> {
 
 #[test]
 fn an_events_path_is_truncated_before_the_config_is_read() {
-    let cfg = write_events_project("broken", "", &[], None);
+    let cfg = write_events_project("broken", &[], None);
     std::fs::write(
         &cfg,
-        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: ${BDDKIT_ABSENT_VAR}\n",
+        "paths: [features]\nresources:\n  api: {}\nmacro_paths: [${BDDKIT_ABSENT_VAR}]\n",
     )
     .expect("write config");
     std::fs::write(
@@ -3660,7 +4006,6 @@ fn an_events_path_is_truncated_before_the_config_is_read() {
 fn a_refused_run_leaves_an_empty_events_file() {
     let cfg = write_events_project(
         "refused",
-        "",
         &[(
             "a.feature",
             "Feature: a\n  Scenario: s\n    Given a step nobody defined\n",
@@ -3679,10 +4024,9 @@ fn a_refused_run_leaves_an_empty_events_file() {
     assert!(stream.is_empty(), "{stream:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_line_of_the_stream_is_one_json_object_with_a_rising_seq() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-lines");
+#[test]
+fn every_line_of_the_stream_is_one_json_object_with_a_rising_seq() {
+    let cfg = write_report_project("events-lines");
     let (_, stream, _) = run_with_events(&cfg, &[]);
 
     assert!(stream.len() > 6, "{stream:?}");
@@ -3699,10 +4043,9 @@ async fn every_line_of_the_stream_is_one_json_object_with_a_rising_seq() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_started_names_the_artifact_root() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-artifact-root");
+#[test]
+fn run_started_names_the_artifact_root() {
+    let cfg = write_report_project("events-artifact-root");
     let (_, stream, _) = run_with_events(&cfg, &[]);
     let run_id = stream[0]["run_id"].as_str().expect("run_id");
     assert_eq!(
@@ -3724,10 +4067,9 @@ async fn run_started_names_the_artifact_root() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_stream_opens_with_run_started_and_closes_with_run_finished() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-ends");
+#[test]
+fn the_stream_opens_with_run_started_and_closes_with_run_finished() {
+    let cfg = write_report_project("events-ends");
     let (out, stream, _) = run_with_events(&cfg, &[]);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -3751,7 +4093,6 @@ async fn the_stream_opens_with_run_started_and_closes_with_run_finished() {
 fn feature_background_rule_and_examples_descriptions_reach_the_stream() {
     let cfg = write_events_project(
         "descriptions-file",
-        "",
         &[
             (
                 "a.feature",
@@ -3833,7 +4174,6 @@ fn feature_background_rule_and_examples_descriptions_reach_the_stream() {
 fn a_scenario_description_reaches_the_stream_with_its_paragraphs() {
     let cfg = write_events_project(
         "descriptions-scenario",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: Described\n    Why this exists.\n\n      Indented bit.\n\n    Second paragraph.\n    Given set variable \"a\" to \"1\"\n  Scenario: Bare\n    Given set variable \"a\" to \"1\"\n",
@@ -3855,7 +4195,6 @@ fn a_scenario_description_reaches_the_stream_with_its_paragraphs() {
 fn scenario_started_carries_the_tags_the_filter_saw() {
     let cfg = write_events_project(
         "descriptions-tags",
-        "",
         &[
             (
                 "a.feature",
@@ -3893,7 +4232,6 @@ fn scenario_started_carries_the_tags_the_filter_saw() {
 fn a_row_carries_the_tags_of_its_examples_block() {
     let cfg = write_events_project(
         "examples-tags",
-        "",
         &[(
             "a.feature",
             "@f\nFeature: Outline\n  @r\n  Rule: R\n    @s @slow\n    Scenario Outline: Row <n>\n      Given set variable \"a\" to \"<n>\"\n\n      @slow @fast\n      Examples:\n        | n |\n        | 1 |\n        | 2 |\n\n      Examples:\n        | n |\n        | 3 |\n",
@@ -3946,7 +4284,6 @@ fn a_row_carries_the_tags_of_its_examples_block() {
 fn an_examples_tag_alone_selects_its_rows_and_their_rules_background() {
     let cfg = write_events_project(
         "examples-tags-rule-background",
-        "",
         &[(
             "a.feature",
             "Feature: Outline\n  Rule: R\n    Background:\n      Given no such step\n\n    Scenario Outline: Row\n      Given set variable \"a\" to \"<n>\"\n\n      @only\n      Examples:\n        | n |\n        | 1 |\n",
@@ -3965,7 +4302,6 @@ fn an_examples_tag_alone_selects_its_rows_and_their_rules_background() {
 fn validation_skips_the_rows_an_examples_tag_left_out() {
     let cfg = write_events_project(
         "examples-tags-validation",
-        "",
         &[(
             "a.feature",
             "Feature: Outline\n  Scenario Outline: Row\n    Given <step>\n\n    @fast\n    Examples:\n      | step |\n      | set variable \"a\" to \"1\" |\n\n    Examples:\n      | step |\n      | no such step |\n",
@@ -3976,11 +4312,12 @@ fn validation_skips_the_rows_an_examples_tag_left_out() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_secret_in_a_description_is_masked_in_the_stream() {
     let base = common::spawn().await;
     let feature = "Feature: Secrets\n  Bearer cfg-secret-value-77 is in the feature description.\n  Scenario: first\n    Given set variable \"secret_note\" to \"stream-note-4321\"\n  Scenario: second\n    Quotes stream-note-4321 and Bearer cfg-secret-value-77 here.\n    Given set variable \"x\" to \"1\"\n";
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-description",
         &base,
         feature,
@@ -4010,7 +4347,6 @@ async fn a_secret_in_a_description_is_masked_in_the_stream() {
 fn the_cucumber_json_report_carries_descriptions_tags_and_the_feature_line() {
     let cfg = write_events_project(
         "descriptions-json",
-        "",
         &[(
             "a.feature",
             "# language: en\n@ft @dup\nFeature: Reported\n  Feature text.\n  Scenario: Described\n    What it is for.\n    Given set variable \"a\" to \"1\"\n  @own @dup\n  Scenario Outline: Row\n    Outline text.\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 1 |\n      | 2 |\n  Scenario: Bare\n    Given set variable \"a\" to \"1\"\n",
@@ -4067,12 +4403,10 @@ fn the_cucumber_json_report_carries_descriptions_tags_and_the_feature_line() {
     assert_eq!(by("Bare")[0]["description"], "");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_description_is_masked_in_the_json_report_with_the_final_set_but_not_rewritten_in_the_stream()
- {
-    let base = common::spawn().await;
+#[test]
+fn a_description_is_masked_in_the_json_report_with_the_final_set_but_not_rewritten_in_the_stream() {
     let feature = "Feature: Late\n  Scenario: first\n    Quotes late-value-98765 before it is known.\n    Given set variable \"x\" to \"1\"\n  Scenario: second\n    Given set variable \"secret_late\" to \"late-value-98765\"\n";
-    let cfg = masking_project("mask-description-json", &base, feature, "", "");
+    let cfg = masking_project("mask-description-json", feature, "");
     let json = cfg.with_file_name("cucumber.json");
     let events = cfg.with_file_name("events.ndjson");
     let (code, _, stderr) = run_masking(
@@ -4104,7 +4438,6 @@ async fn a_description_is_masked_in_the_json_report_with_the_final_set_but_not_r
 fn run_started_carries_the_config_and_the_selection() {
     let cfg = write_events_project(
         "run-started-selection",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  @smoke\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -4162,26 +4495,26 @@ fn run_started_carries_the_config_and_the_selection() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_files_running_together_interleave_in_the_stream() {
-    // The barrier opens only when both requests are in flight, so both
+#[test]
+fn two_files_running_together_interleave_in_the_stream() {
+    // The barrier opens only when both steps are in flight, so both
     // `step_started` lines must precede both `step_finished` ones — which a
     // stream buffered until its file ends could never show.
-    let base = common::spawn_barrier(2).await;
     let dir = std::env::temp_dir().join(format!("bddkit-events-barrier-{}", std::process::id()));
-    let cfg = write_parallel_fixture(&dir, &base, 2, "");
+    let cfg = write_parallel_fixture(&dir, 2, "");
     let (out, stream, _) = run_with_events(&cfg, &[]);
 
     assert!(
         out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
     let barrier = |kind: &str| -> Vec<u64> {
         of_type(&stream, kind)
             .into_iter()
             .filter(|e| {
-                e["step"] == 1 // the request; step 0 sets a variable
+                e["step"] == 1 // the barrier; step 0 sets a variable
             })
             .map(|e| e["seq"].as_u64().expect("seq"))
             .collect()
@@ -4199,10 +4532,9 @@ async fn two_files_running_together_interleave_in_the_stream() {
     assert_eq!(files.len(), 2);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn steps_after_a_failure_are_reported_as_skipped() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-skipped");
+#[test]
+fn steps_after_a_failure_are_reported_as_skipped() {
+    let cfg = write_report_project("events-skipped");
     let (_, stream, _) = run_with_events(&cfg, &[]);
 
     let second: Vec<_> = stream.iter().filter(|e| e["scenario"] == 1).collect();
@@ -4225,7 +4557,10 @@ async fn steps_after_a_failure_are_reported_as_skipped() {
         ]
     );
     assert_eq!(second[6]["status"], "failed");
-    assert_eq!(second[7]["text"], "the response code is 200");
+    assert_eq!(
+        second[7]["text"],
+        "variable \"ping\" should be equal to \"ok\""
+    );
     assert_eq!(second[8]["status"], "failed");
 }
 
@@ -4233,7 +4568,6 @@ async fn steps_after_a_failure_are_reported_as_skipped() {
 fn outline_rows_get_distinct_example_ordinals() {
     let cfg = write_events_project(
         "outline",
-        "",
         &[(
             "o.feature",
             "Feature: o\n  Scenario: plain\n    Given set variable \"x\" to \"1\"\n\n  Scenario Outline: rows\n    Given set variable \"x\" to \"<n>\"\n\n    Examples:\n      | n |\n      | 1 |\n      | 2 |\n\n    Examples:\n      | n |\n      | 3 |\n",
@@ -4270,7 +4604,6 @@ fn outline_rows_get_distinct_example_ordinals() {
 fn a_macro_body_step_is_an_event_with_its_caller_as_parent() {
     let cfg = write_events_project(
         "macro",
-        "",
         &[(
             "m.feature",
             "Feature: m\n  Scenario: s\n    Given I remember two things\n",
@@ -4366,13 +4699,12 @@ fn an_included_step_is_an_event_with_its_own_source_and_line() {
     assert_eq!(caller[2].get("parent"), None, "back at the top level");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_stream_and_the_junit_report_agree_on_every_total() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-totals");
+#[test]
+fn the_stream_and_the_junit_report_agree_on_every_total() {
+    let cfg = write_report_project("events-totals");
     std::fs::write(
         cfg.with_file_name("features/second.feature"),
-        "Feature: second\n  Scenario: one\n    When I request \"/ping\"\n    Then the response code is 404\n\n  Scenario: two\n    When I request \"/ping\"\n",
+        "Feature: second\n  Scenario: one\n    Given set variable \"ping\" to \"ok\"\n    Then variable \"ping\" should be equal to \"nope\"\n\n  Scenario: two\n    Given set variable \"ping\" to \"ok\"\n",
     )
     .expect("second feature");
     let junit = cfg.with_file_name("junit.xml");
@@ -4410,10 +4742,9 @@ async fn the_stream_and_the_junit_report_agree_on_every_total() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_run_without_events_prints_the_same_console_output() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-console");
+#[test]
+fn a_run_without_events_prints_the_same_console_output() {
+    let cfg = write_report_project("events-console");
     let events = cfg.with_file_name("events.ndjson");
     let normalised = |out: &std::process::Output| {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -4440,10 +4771,9 @@ async fn a_run_without_events_prints_the_same_console_output() {
     assert_eq!(normalised(&plain), normalised(&streamed));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_null_sentinel_in_a_failure_is_written_as_the_null_slot() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-null");
+#[test]
+fn a_null_sentinel_in_a_failure_is_written_as_the_null_slot() {
+    let cfg = write_report_project("events-null");
     let (_, stream, events) = run_with_events(&cfg, &[]);
 
     let failure = of_type(&stream, "scenario_finished")
@@ -4459,10 +4789,9 @@ async fn a_null_sentinel_in_a_failure_is_written_as_the_null_slot() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_events_path_can_come_from_the_environment_and_the_flag_wins() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-env");
+#[test]
+fn the_events_path_can_come_from_the_environment_and_the_flag_wins() {
+    let cfg = write_report_project("events-env");
     let from_env = cfg.with_file_name("from-env.ndjson");
     let from_flag = cfg.with_file_name("from-flag.ndjson");
 
@@ -4507,10 +4836,9 @@ async fn the_events_path_can_come_from_the_environment_and_the_flag_wins() {
 /// The reader opens first and blocks until the run opens its end; end-of-file
 /// would come early if the path were opened, closed and opened again.
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn events_can_be_written_to_a_fifo() {
-    let base = common::spawn().await;
-    let cfg = write_report_project(&base, "events-fifo");
+#[test]
+fn events_can_be_written_to_a_fifo() {
+    let cfg = write_report_project("events-fifo");
     let fifo = cfg.with_file_name("events.fifo");
     mkfifo(&fifo);
 
@@ -4542,7 +4870,6 @@ async fn events_can_be_written_to_a_fifo() {
 fn a_stream_that_cannot_be_written_turns_the_exit_code_to_two() {
     let cfg = write_events_project(
         "full",
-        "",
         &[(
             "a.feature",
             "Feature: a\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
@@ -4580,7 +4907,6 @@ fn an_interrupted_run_ends_its_stream_with_the_signal() {
         let feature = "Feature: held\n  Scenario: s\n    Given I sleep \"10\" seconds\n";
         let cfg = write_events_project(
             &format!("signal-{signal}"),
-            "",
             &[("a.feature", feature), ("b.feature", feature)],
             None,
         );
@@ -4624,12 +4950,10 @@ fn an_interrupted_run_ends_its_stream_with_the_signal() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_reports_the_events_path() {
-    let base = common::spawn().await;
+#[test]
+fn doctor_reports_the_events_path() {
     let cfg = write_doctor_project(
         "doctor-events",
-        &base,
         "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
         "",
     );
@@ -4665,12 +4989,10 @@ async fn doctor_reports_the_events_path() {
 
 /// `run` refuses a malformed evidence variable, and `$BDDKIT_EVIDENCE`
 /// without a stream; `doctor` must not be the more lenient of the two.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_fails_on_an_evidence_variable_run_would_refuse() {
-    let base = common::spawn().await;
+#[test]
+fn doctor_fails_on_an_evidence_variable_run_would_refuse() {
     let cfg = write_doctor_project(
         "doctor-evidence",
-        &base,
         "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
         "",
     );
@@ -4729,12 +5051,10 @@ async fn doctor_fails_on_an_evidence_variable_run_would_refuse() {
 /// Opening a FIFO for writing blocks until a reader shows up, and there is
 /// none: a doctor that opened it would hang here.
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_leaves_an_events_path_that_is_not_a_regular_file_unopened() {
-    let base = common::spawn().await;
+#[test]
+fn doctor_leaves_an_events_path_that_is_not_a_regular_file_unopened() {
     let cfg = write_doctor_project(
         "doctor-events-fifo",
-        &base,
         "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
         "",
     );
@@ -4775,12 +5095,10 @@ fn mkfifo(path: &std::path::Path) {
 }
 
 /// `run` would exit 2 on a directory, so `doctor` must not call it fine.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_refuses_an_events_path_that_is_a_directory() {
-    let base = common::spawn().await;
+#[test]
+fn doctor_refuses_an_events_path_that_is_a_directory() {
     let cfg = write_doctor_project(
         "doctor-events-dir",
-        &base,
         "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
         "",
     );
@@ -4811,7 +5129,6 @@ fn a_second_signal_stops_a_run_whose_stream_reader_has_stalled() {
     let steps = "    Given set variable \"x\" to \"1\"\n".repeat(400);
     let cfg = write_events_project(
         "stalled",
-        "",
         &[("a.feature", &format!("Feature: a\n  Scenario: s\n{steps}"))],
         None,
     );
@@ -4900,7 +5217,6 @@ fn a_signal_right_after_the_run_id_still_terminates_the_stream() {
 
     let cfg = write_events_project(
         "early-signal",
-        "",
         &[(
             "a.feature",
             "Feature: a\n  Scenario: s\n    Given I sleep \"10\" seconds\n",
@@ -4963,7 +5279,7 @@ fn write_load_project(name: &str, features: &[(String, String)]) -> std::path::P
         .iter()
         .map(|(file, text)| (file.as_str(), text.as_str()))
         .collect();
-    let cfg = write_events_project(name, "", &pairs, None);
+    let cfg = write_events_project(name, &pairs, None);
     let mut config = std::fs::read_to_string(&cfg).expect("read config");
     config.push_str("concurrency: 4\n");
     std::fs::write(&cfg, config).expect("write config");
@@ -5132,12 +5448,11 @@ fn interrupting_a_busy_run_leaves_a_terminated_stream() {
 /// with an events stream, `args` and `envs`.
 fn run_privacy(
     name: &str,
-    base: &str,
     privacy_yaml: &str,
     args: &[&str],
     envs: &[(&str, &str)],
 ) -> (std::process::Output, Vec<Value>, std::path::PathBuf) {
-    let cfg = write_report_project(base, name);
+    let cfg = write_report_project(name);
     let mut text = std::fs::read_to_string(&cfg).expect("read config");
     text.push_str(privacy_yaml);
     std::fs::write(&cfg, text).expect("write config");
@@ -5168,10 +5483,9 @@ fn run_privacy(
     (out, stream, cfg)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_started_records_the_privacy_vocabulary_in_force() {
-    let base = common::spawn().await;
-    let (_, stream, _) = run_privacy("privacy-default", &base, "", &[], &[]);
+#[test]
+fn run_started_records_the_privacy_vocabulary_in_force() {
+    let (_, stream, _) = run_privacy("privacy-default", "", &[], &[]);
     assert_eq!(
         stream[0]["privacy"],
         serde_json::json!({
@@ -5183,12 +5497,11 @@ async fn run_started_records_the_privacy_vocabulary_in_force() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_flag_beats_the_environment_beats_the_config_for_min_length() {
-    let base = common::spawn().await;
+#[test]
+fn the_flag_beats_the_environment_beats_the_config_for_min_length() {
     let config = "privacy:\n  min_length: 3\n";
     let min_length = |args: &[&str], envs: &[(&str, &str)]| {
-        let (_, stream, _) = run_privacy("privacy-min", &base, config, args, envs);
+        let (_, stream, _) = run_privacy("privacy-min", config, args, envs);
         stream[0]["privacy"]["min_length"].clone()
     };
     assert_eq!(min_length(&[], &[]), 3);
@@ -5197,12 +5510,10 @@ async fn the_flag_beats_the_environment_beats_the_config_for_min_length() {
     assert_eq!(min_length(&["--privacy-min-length", "9"], &both), 9);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_lists_extend_or_replace_across_the_layers() {
-    let base = common::spawn().await;
+#[test]
+fn the_lists_extend_or_replace_across_the_layers() {
     let (_, stream, _) = run_privacy(
         "privacy-lists",
-        &base,
         "privacy:\n  fields: [otp]\n  words_only: [gdpr]\n",
         &["--privacy-fields", "pin,cvv"],
         &[("BDDKIT_PRIVACY_FIELDS_ONLY", "iban")],
@@ -5215,10 +5526,9 @@ async fn the_lists_extend_or_replace_across_the_layers() {
     assert_eq!(stream[0]["privacy"]["words"], serde_json::json!(["gdpr"]));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reveal_is_announced_on_stderr_and_recorded_in_the_stream() {
-    let base = common::spawn().await;
-    let (out, stream, _) = run_privacy("privacy-reveal", &base, "", &["--reveal"], &[]);
+#[test]
+fn reveal_is_announced_on_stderr_and_recorded_in_the_stream() {
+    let (out, stream, _) = run_privacy("privacy-reveal", "", &["--reveal"], &[]);
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("masking is off"),
         "{}",
@@ -5227,25 +5537,23 @@ async fn reveal_is_announced_on_stderr_and_recorded_in_the_stream() {
     assert_eq!(stream[0]["privacy"]["masking"], false);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_environment_overrides_a_reveal_committed_in_the_config() {
-    let base = common::spawn().await;
+#[test]
+fn the_environment_overrides_a_reveal_committed_in_the_config() {
     let config = "privacy:\n  reveal: true\n";
-    let (out, stream, _) = run_privacy("privacy-committed", &base, config, &[], &[]);
+    let (out, stream, _) = run_privacy("privacy-committed", config, &[], &[]);
     assert_eq!(stream[0]["privacy"]["masking"], false);
     assert!(String::from_utf8_lossy(&out.stderr).contains("masking is off"));
 
     let ci = [("BDDKIT_PRIVACY_REVEAL", "false")];
-    let (out, stream, _) = run_privacy("privacy-ci", &base, config, &[], &ci);
+    let (out, stream, _) = run_privacy("privacy-ci", config, &[], &ci);
     assert_eq!(stream[0]["privacy"]["masking"], true);
     assert!(!String::from_utf8_lossy(&out.stderr).contains("masking is off"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bad_privacy_value_is_exit_two_in_run_and_a_failed_row_in_doctor() {
-    let base = common::spawn().await;
+#[test]
+fn a_bad_privacy_value_is_exit_two_in_run_and_a_failed_row_in_doctor() {
     let bad = [("BDDKIT_PRIVACY_REVEAL", "yes")];
-    let (out, _, cfg) = run_privacy("privacy-bad", &base, "", &[], &bad);
+    let (out, _, cfg) = run_privacy("privacy-bad", "", &[], &bad);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("BDDKIT_PRIVACY_REVEAL"));
 
@@ -5260,11 +5568,10 @@ async fn a_bad_privacy_value_is_exit_two_in_run_and_a_failed_row_in_doctor() {
     assert!(stdout.contains("BDDKIT_PRIVACY_REVEAL"), "{stdout}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unknown_key_under_privacy_is_refused() {
-    let base = common::spawn().await;
+#[test]
+fn an_unknown_key_under_privacy_is_refused() {
     let typo = "privacy:\n  wrods: [x]\n";
-    let (out, _, cfg) = run_privacy("privacy-typo", &base, typo, &[], &[]);
+    let (out, _, cfg) = run_privacy("privacy-typo", typo, &[], &[]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("wrods"));
 
@@ -5280,9 +5587,10 @@ async fn an_unknown_key_under_privacy_is_refused() {
 
 // ---- privacy: what the failure text shows (spec §7.8) ----
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// A one-file project against the stub. `api_extra` is appended to the `stub`
 /// API resource (indented to sit inside it) and `top_extra` to the config.
-fn masking_project(
+fn http_masking_project(
     name: &str,
     base: &str,
     feature: &str,
@@ -5297,6 +5605,26 @@ fn masking_project(
         &config,
         format!(
             "paths: [{}]\nresources:\n  api:\n    stub:\n      base_url: {base}\n{api_extra}{top_extra}",
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        ),
+    )
+    .expect("write config");
+    config
+}
+
+/// A one-file project; `top_extra` is appended to the config.
+fn masking_project(name: &str, feature: &str, top_extra: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(dir.join("features/mask.feature"), feature).expect("write feature");
+    let config = dir.join("cfg.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "paths: [{}]\nresources:\n  api: {{}}\n{top_extra}",
             dir.join("features")
                 .display()
                 .to_string()
@@ -5344,10 +5672,11 @@ const FAILING_WITH_AUTH: &str = r#"Feature: masking
     Then the response code is 500
 "#;
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_authorization_header_is_masked_in_the_failure_dump() {
     let base = common::spawn().await;
-    let cfg = masking_project("mask-auth", &base, FAILING_WITH_AUTH, "", "");
+    let cfg = http_masking_project("mask-auth", &base, FAILING_WITH_AUTH, "", "");
     let (code, stdout, _) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 1, "{stdout}");
     assert!(stdout.contains("Authorization: ***"), "{stdout}");
@@ -5356,10 +5685,11 @@ async fn an_authorization_header_is_masked_in_the_failure_dump() {
     assert!(stdout.contains("key-value-12345"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_junit_report_carries_the_masked_failure_text() {
     let base = common::spawn().await;
-    let cfg = masking_project("mask-junit", &base, FAILING_WITH_AUTH, "", "");
+    let cfg = http_masking_project("mask-junit", &base, FAILING_WITH_AUTH, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1);
@@ -5368,10 +5698,38 @@ async fn the_junit_report_carries_the_masked_failure_text() {
     assert!(!xml.contains("s3cr3t-token-value"), "{xml}");
 }
 
+#[test]
+fn the_junit_report_carries_the_masked_variable_text() {
+    let feature = variable_feature(
+        &[("access_secret", "junit-secret-value-3")],
+        "access_secret",
+    );
+    let cfg = masking_project("mask-junit-var", &feature, "");
+    let junit = cfg.with_file_name("junit.xml");
+    let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 1);
+    let xml = std::fs::read_to_string(&junit).expect("junit report");
+    assert!(xml.contains("actual:   ***"), "{xml}");
+    assert!(!xml.contains("junit-secret-value-3"), "{xml}");
+}
+
+#[test]
+fn reveal_on_a_variable_turns_masking_off_and_says_so() {
+    let feature = variable_feature(
+        &[("access_secret", "reveal-secret-value-9")],
+        "access_secret",
+    );
+    let cfg = masking_project("mask-reveal-var", &feature, "");
+    let (_, stdout, stderr) = run_masking(&cfg, &["--reveal"], &[]);
+    assert!(stdout.contains("reveal-secret-value-9"), "{stdout}");
+    assert!(stderr.contains("masking is off"), "{stderr}");
+}
+
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sensitive_headers_extend_the_default_list() {
     let base = common::spawn().await;
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-hdr-extend",
         &base,
         FAILING_WITH_AUTH,
@@ -5384,10 +5742,11 @@ async fn sensitive_headers_extend_the_default_list() {
     assert!(stdout.contains("X-Api-Key: ***"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sensitive_headers_only_replaces_the_default_list() {
     let base = common::spawn().await;
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-hdr-only",
         &base,
         FAILING_WITH_AUTH,
@@ -5399,11 +5758,12 @@ async fn sensitive_headers_only_replaces_the_default_list() {
     assert!(stdout.contains("Bearer s3cr3t-token-value"), "{stdout}");
 }
 
+// moves-to: api
 /// The request never gets an answer, so only what was registered before it left
 /// can hide the token that an earlier step's text carries into the report.
 #[test]
 fn a_header_is_masked_in_the_report_even_when_the_request_never_connects() {
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-refused",
         "http://127.0.0.1:1/",
         FAILING_WITH_AUTH,
@@ -5418,10 +5778,11 @@ fn a_header_is_masked_in_the_report_even_when_the_request_never_connects() {
     assert!(!xml.contains("s3cr3t-token-value"), "{xml}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reveal_turns_masking_off_and_says_so() {
     let base = common::spawn().await;
-    let cfg = masking_project("mask-reveal", &base, FAILING_WITH_AUTH, "", "");
+    let cfg = http_masking_project("mask-reveal", &base, FAILING_WITH_AUTH, "", "");
     let (_, stdout, stderr) = run_masking(&cfg, &["--reveal"], &[]);
     assert!(stdout.contains("Bearer s3cr3t-token-value"), "{stdout}");
     assert!(stderr.contains("masking is off"), "{stderr}");
@@ -5440,12 +5801,11 @@ fn variable_feature(set: &[(&str, &str)], check: &str) -> String {
     text
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_variable_with_a_privacy_word_is_masked_wherever_its_value_appears() {
-    let base = common::spawn().await;
+#[test]
+fn a_variable_with_a_privacy_word_is_masked_wherever_its_value_appears() {
     for name in ["access_token_secret", "secret_reg_verifier"] {
         let feature = variable_feature(&[(name, "verifier-value-77")], name);
-        let cfg = masking_project("mask-var", &base, &feature, "", "");
+        let cfg = masking_project("mask-var", &feature, "");
         let (code, stdout, _) = run_masking(&cfg, &[], &[]);
         assert_eq!(code, 1, "{stdout}");
         assert!(!stdout.contains("verifier-value-77"), "{name}: {stdout}");
@@ -5454,32 +5814,29 @@ async fn a_variable_with_a_privacy_word_is_masked_wherever_its_value_appears() {
 }
 
 /// `as "reg_secret"` plus an exported `verifier` is what makes this shape.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_privacy_word_in_the_middle_of_a_name_still_masks() {
-    let base = common::spawn().await;
+#[test]
+fn a_privacy_word_in_the_middle_of_a_name_still_masks() {
     let name = "reg_secret_verifier";
     let feature = variable_feature(&[(name, "middle-value-4321")], name);
-    let cfg = masking_project("mask-var-middle", &base, &feature, "", "");
+    let cfg = masking_project("mask-var-middle", &feature, "");
     let (code, stdout, _) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 1, "{stdout}");
     assert!(!stdout.contains("middle-value-4321"), "{stdout}");
     assert!(stdout.contains("***"), "{stdout}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_name_that_only_contains_a_privacy_word_does_not_mask() {
-    let base = common::spawn().await;
+#[test]
+fn a_name_that_only_contains_a_privacy_word_does_not_mask() {
     for name in ["secretary_id", "sessionSecret"] {
         let feature = variable_feature(&[(name, "plain-value-88")], name);
-        let cfg = masking_project("mask-var-no", &base, &feature, "", "");
+        let cfg = masking_project("mask-var-no", &feature, "");
         let (_, stdout, _) = run_masking(&cfg, &[], &[]);
         assert!(stdout.contains("plain-value-88"), "{name}: {stdout}");
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn privacy_words_only_replaces_the_default_word() {
-    let base = common::spawn().await;
+#[test]
+fn privacy_words_only_replaces_the_default_word() {
     let feature = "Feature: masking
   Scenario: the new word
     Given set variable \"gdpr_note\" to \"gdpr-value-12345\"
@@ -5491,26 +5848,23 @@ async fn privacy_words_only_replaces_the_default_word() {
 ";
     let cfg = masking_project(
         "mask-words-only",
-        &base,
         feature,
-        "",
         "privacy:\n  words_only: [gdpr]\n",
     );
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(!stdout.contains("gdpr-value-12345"), "{stdout}");
     assert!(stdout.contains("secret-value-1234"), "{stdout}");
     // Without the key the default word applies: `secret_` masks, `gdpr_` does not.
-    let cfg = masking_project("mask-words-default", &base, feature, "", "");
+    let cfg = masking_project("mask-words-default", feature, "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(stdout.contains("gdpr-value-12345"), "{stdout}");
     assert!(!stdout.contains("secret-value-1234"), "{stdout}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_short_secret_is_not_added_to_the_value_filter() {
-    let base = common::spawn().await;
+#[test]
+fn a_short_secret_is_not_added_to_the_value_filter() {
     let feature = variable_feature(&[("secret_pin", "tiny")], "secret_pin");
-    let cfg = masking_project("mask-short", &base, &feature, "", "");
+    let cfg = masking_project("mask-short", &feature, "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(stdout.contains("tiny"), "{stdout}");
     // The same value is masked once the minimum length allows it.
@@ -5518,9 +5872,8 @@ async fn a_short_secret_is_not_added_to_the_value_filter() {
     assert!(!stdout.contains("tiny"), "{stdout}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_longer_secret_is_masked_before_one_it_contains() {
-    let base = common::spawn().await;
+#[test]
+fn a_longer_secret_is_masked_before_one_it_contains() {
     let feature = variable_feature(
         &[
             ("secret_short", "abcdefgh"),
@@ -5528,17 +5881,18 @@ async fn a_longer_secret_is_masked_before_one_it_contains() {
         ],
         "secret_long",
     );
-    let cfg = masking_project("mask-longer", &base, &feature, "", "");
+    let cfg = masking_project("mask-longer", &feature, "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(!stdout.contains("and-more"), "{stdout}");
     assert!(!stdout.contains("abcdefgh"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_config_key_with_a_field_word_is_masked_wherever_its_value_appears() {
     let base = common::spawn().await;
     let feature = variable_feature(&[("note", "cfg-secret-value-1")], "note");
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-config",
         &base,
         &feature,
@@ -5549,11 +5903,12 @@ async fn a_config_key_with_a_field_word_is_masked_wherever_its_value_appears() {
     assert!(!stdout.contains("cfg-secret-value-1"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_secret_from_an_env_reference_is_masked_like_one_written_in_the_file() {
     let base = common::spawn().await;
     let feature = variable_feature(&[("note", "env-secret-value-2")], "note");
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-config-env",
         &base,
         &feature,
@@ -5583,7 +5938,7 @@ fn a_secret_saved_inside_an_include_is_masked_in_the_callers_failure() {
     .expect("write caller");
     std::fs::write(
         dir.join("cfg.yaml"),
-        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
+        "paths: [features]\nresources:\n  api: {}\n",
     )
     .expect("write config");
     let (code, stdout, _) = run_bddkit_in("run", &dir);
@@ -5618,6 +5973,7 @@ fn dsn_project(name: &str) -> std::path::PathBuf {
     config
 }
 
+// moves-to: db
 #[test]
 fn a_dsn_password_never_appears_in_a_connection_error() {
     let cfg = dsn_project("mask-dsn-run");
@@ -5632,6 +5988,7 @@ fn a_dsn_password_never_appears_in_a_connection_error() {
     assert!(!text.contains("dsn-pass-1234"), "{text}");
 }
 
+// moves-to: db
 #[test]
 fn doctor_masks_a_dsn_password_in_its_report_and_its_json() {
     let cfg = dsn_project("mask-dsn-doctor");
@@ -5652,12 +6009,7 @@ fn doctor_masks_a_dsn_password_in_its_report_and_its_json() {
 
 #[test]
 fn doctor_says_so_on_stderr_when_masking_is_off() {
-    let cfg = dsn_project("mask-doctor-reveal");
-    std::fs::write(
-        &cfg,
-        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n",
-    )
-    .expect("a config that parses");
+    let cfg = write_doctor_project("mask-doctor-reveal", "", "");
     for (args, envs) in [
         (&["--reveal"][..], &[][..]),
         (&[][..], &[("BDDKIT_PRIVACY_REVEAL", "1")][..]),
@@ -5674,6 +6026,7 @@ fn doctor_says_so_on_stderr_when_masking_is_off() {
     }
 }
 
+// moves-to: api
 #[test]
 fn resource_add_masks_the_block_it_prints() {
     let cfg = dsn_project("mask-resource-add");
@@ -5698,11 +6051,10 @@ fn resource_add_masks_the_block_it_prints() {
     assert!(!stdout.contains("add-pass-5678"), "{stdout}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_event_stream_carries_the_masked_failure_text() {
-    let base = common::spawn().await;
+#[test]
+fn the_event_stream_carries_the_masked_failure_text() {
     let feature = variable_feature(&[("secret_note", "stream-value-1234")], "secret_note");
-    let cfg = masking_project("mask-stream", &base, &feature, "", "");
+    let cfg = masking_project("mask-stream", &feature, "");
     let events = cfg.with_file_name("events.ndjson");
     let (code, _, _) = run_masking(&cfg, &["--events", events.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1);
@@ -5714,6 +6066,7 @@ async fn the_event_stream_carries_the_masked_failure_text() {
     assert!(!failure.contains("stream-value-1234"), "{failure}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn debug_output_on_stderr_is_masked() {
     let base = common::spawn().await;
@@ -5728,7 +6081,7 @@ async fn debug_output_on_stderr_is_masked() {
     When I request "/echo" using HTTP POST
     Then Print response body
 "#;
-    let cfg = masking_project("mask-debug", &base, feature, "", "");
+    let cfg = http_masking_project("mask-debug", &base, feature, "", "");
     let (code, _, stderr) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stderr.contains("***"), "{stderr}");
@@ -5737,21 +6090,15 @@ async fn debug_output_on_stderr_is_masked() {
 
 // ---- privacy: the `secret` parameter type (spec §7.2) ----
 
-const HAWK_LITERAL: &str = r#"Feature: masking
-  Scenario: signed with a literal key
-    Given I sign the next request with Hawk id "session-1" and key "hawk-literal-key-1"
-    And the request body is:
-      """
-      {"code": "555555"}
-      """
-    When I request "/hawk" using HTTP POST
-    Then the response code is 500
+const AES_LITERAL: &str = r#"Feature: masking
+  Scenario: encrypted with a literal key
+    Given I encrypt "555555" with AES using key "aes-literal-key-1" as "c"
+    Then variable "c" should be equal to "nothing"
 "#;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_literal_secret_is_masked_in_the_step_text_of_a_report() {
-    let base = common::spawn().await;
-    let cfg = masking_project("mask-literal", &base, HAWK_LITERAL, "", "");
+#[test]
+fn a_literal_secret_is_masked_in_the_step_text_of_a_report() {
+    let cfg = masking_project("mask-literal", AES_LITERAL, "");
     let junit = cfg.with_file_name("junit.xml");
     let events = cfg.with_file_name("events.ndjson");
     let args = [
@@ -5763,28 +6110,28 @@ async fn a_literal_secret_is_masked_in_the_step_text_of_a_report() {
     let (code, stdout, _) = run_masking(&cfg, &args, &[]);
     assert_eq!(code, 1, "{stdout}");
     let xml = std::fs::read_to_string(&junit).expect("junit report");
-    assert!(xml.contains("and key &quot;***&quot;"), "{xml}");
-    assert!(!xml.contains("hawk-literal-key-1"), "{xml}");
+    assert!(xml.contains("using key &quot;***&quot;"), "{xml}");
+    assert!(!xml.contains("aes-literal-key-1"), "{xml}");
     let stream = std::fs::read_to_string(&events).expect("stream");
-    assert!(!stream.contains("hawk-literal-key-1"), "{stream}");
-    assert!(stream.contains(r#"and key \"***\""#), "{stream}");
+    assert!(!stream.contains("aes-literal-key-1"), "{stream}");
+    assert!(stream.contains(r#"using key \"***\""#), "{stream}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_secret_parameter_is_masked_in_the_failure_dump() {
-    let base = common::spawn().await;
+#[test]
+fn a_secret_parameter_is_masked_in_the_failure_dump() {
     // The failing step is the one that takes the secret.
     let feature = r#"Feature: masking
   Scenario: a key of the wrong size
     Given I encrypt "payload" with AES using key "short-literal-key" as "c"
 "#;
-    let cfg = masking_project("mask-aes", &base, feature, "", "");
+    let cfg = masking_project("mask-aes", feature, "");
     let (code, stdout, _) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 1, "{stdout}");
     assert!(stdout.contains(r#"using key "***" as "c""#), "{stdout}");
     assert!(!stdout.contains("short-literal-key"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_slot_in_a_secret_parameter_stays_as_written_and_its_value_is_masked() {
     let base = common::spawn().await;
@@ -5799,7 +6146,7 @@ async fn a_slot_in_a_secret_parameter_stays_as_written_and_its_value_is_masked()
     When I request "/hawk" using HTTP POST
     Then the response code is 500
 "#;
-    let cfg = masking_project("mask-slot", &base, feature, "", "");
+    let cfg = http_masking_project("mask-slot", &base, feature, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (_, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     let xml = std::fs::read_to_string(&junit).expect("junit report");
@@ -5826,9 +6173,15 @@ fn a_macro_template_can_declare_a_secret_parameter() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
-            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
-            dir.join("features").display().to_string().replace('\\', "/"),
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api: {{}}\n",
+            dir.join("macros.yaml")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
         ),
     )
     .expect("write config");
@@ -5841,14 +6194,13 @@ fn a_macro_template_can_declare_a_secret_parameter() {
 /// A literal shorter than `min_length` never joins the set, so only the
 /// step text itself can hide it: the console, the report and the stream must
 /// each show `***`, and never the value.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_short_literal_secret_is_hidden_by_position_everywhere() {
-    let base = common::spawn().await;
+#[test]
+fn a_short_literal_secret_is_hidden_by_position_everywhere() {
     let feature = r#"Feature: masking
   Scenario: a short key
     Given I encrypt "payload" with AES using key "q7z" as "c"
 "#;
-    let cfg = masking_project("mask-short-literal", &base, feature, "", "");
+    let cfg = masking_project("mask-short-literal", feature, "");
     let junit = cfg.with_file_name("junit.xml");
     let events = cfg.with_file_name("events.ndjson");
     let args = [
@@ -5884,9 +6236,15 @@ fn the_debug_line_of_a_macro_call_hides_a_short_literal_secret() {
     std::fs::write(
         dir.join("cfg.yaml"),
         format!(
-            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api:\n    stub:\n      base_url: http://example.test\n",
-            dir.join("macros.yaml").display().to_string().replace('\\', "/"),
-            dir.join("features").display().to_string().replace('\\', "/"),
+            "macro_paths: [{}]\npaths: [{}]\nresources:\n  api: {{}}\n",
+            dir.join("macros.yaml")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
+            dir.join("features")
+                .display()
+                .to_string()
+                .replace('\\', "/"),
         ),
     )
     .expect("write config");
@@ -5906,6 +6264,7 @@ fn echo_feature(body: &str, extra_steps: &str) -> String {
     )
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() {
     let base = common::spawn().await;
@@ -5914,7 +6273,7 @@ async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() 
         r#"{"user": "ann", "access_token": "tok-from-the-server-1"}"#,
         "",
     );
-    let cfg = masking_project("mask-token", &base, &feature, "", "");
+    let cfg = http_masking_project("mask-token", &base, &feature, "", "");
     let (code, stdout, _) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 1, "{stdout}");
     assert!(!stdout.contains("tok-from-the-server-1"), "{stdout}");
@@ -5922,33 +6281,36 @@ async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() 
     assert!(stdout.contains("ann"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sensitive_field_is_found_at_any_depth_and_in_any_naming_style() {
     let base = common::spawn().await;
     let body = r#"{"data": {"list": [{"refreshToken": "tok-camel-case-1"}, {"client-secret": "tok-kebab-case-2"}]}, "password": 12345678}"#;
-    let cfg = masking_project("mask-depth", &base, &echo_feature(body, ""), "", "");
+    let cfg = http_masking_project("mask-depth", &base, &echo_feature(body, ""), "", "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     for leaked in ["tok-camel-case-1", "tok-kebab-case-2", "12345678"] {
         assert!(!stdout.contains(leaked), "{leaked}: {stdout}");
     }
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_field_that_only_contains_a_field_word_is_not_masked() {
     let base = common::spawn().await;
     let body = r#"{"tokenizer": "plain-tokenizer-value", "key": "plain-key-value"}"#;
-    let cfg = masking_project("mask-contains", &base, &echo_feature(body, ""), "", "");
+    let cfg = http_masking_project("mask-contains", &base, &echo_feature(body, ""), "", "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(stdout.contains("plain-tokenizer-value"), "{stdout}");
     assert!(stdout.contains("plain-key-value"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_body_keeps_its_exact_text_around_a_masked_field() {
     let base = common::spawn().await;
     // Shorter than `min_length`: only the position can hide it.
     let body = "{ \"a\" :1,   \"token\"  :  \"Zq9\" ,\"z\":2 }";
-    let cfg = masking_project("mask-exact", &base, &echo_feature(body, ""), "", "");
+    let cfg = http_masking_project("mask-exact", &base, &echo_feature(body, ""), "", "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(
         stdout.contains("{ \"a\" :1,   \"token\"  :  \"***\" ,\"z\":2 }"),
@@ -5959,6 +6321,7 @@ async fn a_body_keeps_its_exact_text_around_a_masked_field() {
     assert!(!stdout.contains("Zq9"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sensitive_form_field_and_query_parameter_are_masked() {
     let base = common::spawn().await;
@@ -5975,7 +6338,7 @@ async fn a_sensitive_form_field_and_query_parameter_are_masked() {
     When I request "/echo" using HTTP POST
     Then the response code is 200
 "#;
-    let cfg = masking_project("mask-form", &base, feature, "", "");
+    let cfg = http_masking_project("mask-form", &base, feature, "", "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(!stdout.contains("query-token-value-1"), "{stdout}");
     assert!(!stdout.contains("form-secret-value-2"), "{stdout}");
@@ -5992,6 +6355,7 @@ async fn a_sensitive_form_field_and_query_parameter_are_masked() {
     assert!(stdout.contains("name=ann"), "{stdout}");
 }
 
+// moves-to: api
 /// A refused connection puts the whole URL into reqwest's message.
 #[test]
 fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
@@ -6002,7 +6366,7 @@ fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
     When I request "/echo"
     Then the response code is 200
 "#;
-    let cfg = masking_project("mask-refused-query", "http://127.0.0.1:1/", feature, "", "");
+    let cfg = http_masking_project("mask-refused-query", "http://127.0.0.1:1/", feature, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1, "{stdout}");
@@ -6015,6 +6379,7 @@ fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
     assert!(!stdout.contains("Zr7"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
     let base = common::spawn().await;
@@ -6027,7 +6392,7 @@ async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
         &body,
         &format!("    And set variable \"secret_cut\" to \"{secret}\"\n"),
     );
-    let cfg = masking_project("mask-cut", &base, &feature, "", "");
+    let cfg = http_masking_project("mask-cut", &base, &feature, "", "");
     let (_, stdout, _) = run_masking(&cfg, &[], &[]);
     assert!(stdout.contains(&pad), "the body is shown: {stdout}");
     assert!(
@@ -6036,11 +6401,12 @@ async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
     );
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_fields_only_list_switches_the_field_rule_off() {
     let base = common::spawn().await;
     let body = r#"{"access_token": "tok-visible-value-1"}"#;
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-fields-off",
         &base,
         &echo_feature(body, ""),
@@ -6051,6 +6417,7 @@ async fn an_empty_fields_only_list_switches_the_field_rule_off() {
     assert!(stdout.contains("tok-visible-value-1"), "{stdout}");
 }
 
+// moves-to: api
 /// The token exists only in the answer: nothing sent registered it, and the
 /// cookie header that also carries it is off the list, so only the scan of the
 /// response body can hide it, here in the dump of the very step that received it.
@@ -6067,7 +6434,7 @@ async fn a_token_only_the_response_carries_is_masked_by_the_response_scan() {
     And extract "jwt" from JSON as "session"
     Then variable "session" should be equal to "nothing"
 "#;
-    let cfg = masking_project(
+    let cfg = http_masking_project(
         "mask-response-only",
         &base,
         feature,
@@ -6080,6 +6447,7 @@ async fn a_token_only_the_response_carries_is_masked_by_the_response_scan() {
     assert!(!stdout.contains("tok-abc"), "{stdout}");
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn print_response_body_hides_a_short_sensitive_value_by_position() {
     let base = common::spawn().await;
@@ -6092,13 +6460,14 @@ async fn print_response_body_hides_a_short_sensitive_value_by_position() {
     When I request "/echo" using HTTP POST
     Then Print response body
 "#;
-    let cfg = masking_project("mask-print-short", &base, feature, "", "");
+    let cfg = http_masking_project("mask-print-short", &base, feature, "", "");
     let (code, _, stderr) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stderr.contains("kept-visible"), "{stderr}");
     assert!(!stderr.contains("Zp4"), "{stderr}");
 }
 
+// moves-to: api
 /// A value the request carried under a sensitive name is secret everywhere
 /// afterwards, not only in that request's dump: here in the text of a later,
 /// passed step that happens to repeat it. The answer does not echo it.
@@ -6115,7 +6484,7 @@ async fn a_json_value_sent_under_a_sensitive_name_is_secret_everywhere_afterward
     And set variable "note" to "tok-json-value-1"
     Then variable "note" should be equal to "nothing"
 "#;
-    let cfg = masking_project("mask-json-request", &base, feature, "", "");
+    let cfg = http_masking_project("mask-json-request", &base, feature, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1, "{stdout}");
@@ -6137,7 +6506,7 @@ fn doctor_lists_sensitive_looking_names_without_failing() {
     And variable "primary_key" should be equal to "<<primary_key>>"
     And variable "monkey" should be equal to "<<monkey>>"
 "#;
-    let cfg = masking_project("mask-doctor-hint", "http://127.0.0.1:1/", feature, "", "");
+    let cfg = masking_project("mask-doctor-hint", feature, "");
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config"])
         .arg(&cfg)
@@ -6163,7 +6532,7 @@ fn doctor_lists_sensitive_looking_names_without_failing() {
 #[test]
 fn doctor_hint_skips_a_secret_macro_parameter_and_says_where_it_found_the_rest() {
     let feature = "Feature: f\n  Scenario: s\n    Given I log in as \"ann\" with password \"x\"\n    And I log in plain as \"ann\" with password \"x\"\n";
-    let cfg = masking_project("mask-doctor-macro", "http://127.0.0.1:1/", feature, "", "");
+    let cfg = masking_project("mask-doctor-macro", feature, "");
     let dir = cfg.parent().expect("project dir").to_path_buf();
     let macros = dir.join("macros.yaml");
     std::fs::write(
@@ -6196,9 +6565,8 @@ fn doctor_hint_skips_a_secret_macro_parameter_and_says_where_it_found_the_rest()
 
 /// `Show all variables` prints a name and a value, so the name decides: a value
 /// too short to join the set is still hidden by the privacy word in its name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn show_variables_hides_a_short_value_by_its_variables_name() {
-    let base = common::spawn().await;
+#[test]
+fn show_variables_hides_a_short_value_by_its_variables_name() {
     let feature = r#"Feature: masking
   Scenario: show
     Given set variable "secret_pin" to "q8z"
@@ -6207,7 +6575,7 @@ async fn show_variables_hides_a_short_value_by_its_variables_name() {
     Then Show all variables
     And Show "secret_pin" variable
 "#;
-    let cfg = masking_project("mask-show", &base, feature, "", "");
+    let cfg = masking_project("mask-show", feature, "");
     let (code, _, stderr) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stderr.contains("secret_pin: ***"), "{stderr}");
@@ -6217,6 +6585,7 @@ async fn show_variables_hides_a_short_value_by_its_variables_name() {
 
 // ---- privacy: leaks found in review ----
 
+// moves-to: api
 /// The value is written in the path, and nothing else names it: only
 /// registering what the URL's query carries can hide it when a later, passed
 /// step repeats it.
@@ -6229,7 +6598,7 @@ async fn a_literal_query_value_in_the_path_joins_the_set() {
     And set variable "note" to "path-token-value-1"
     Then variable "note" should be equal to "nothing"
 "#;
-    let cfg = masking_project("mask-path-query", &base, feature, "", "");
+    let cfg = http_masking_project("mask-path-query", &base, feature, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (code, stdout, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1, "{stdout}");
@@ -6238,6 +6607,7 @@ async fn a_literal_query_value_in_the_path_joins_the_set() {
     assert!(!stdout.contains("path-token-value-1"), "{stdout}");
 }
 
+// moves-to: api
 /// Nothing is ever sent, so only registering at the step can hide the header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
@@ -6248,7 +6618,7 @@ async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
     And the "X-Trace" request header is "plain-trace-value"
     Then the response code is 200
 "#;
-    let cfg = masking_project("mask-unsent", &base, feature, "", "");
+    let cfg = http_masking_project("mask-unsent", &base, feature, "", "");
     let junit = cfg.with_file_name("junit.xml");
     let (code, _, _) = run_masking(&cfg, &["--junit", junit.to_str().expect("utf-8")], &[]);
     assert_eq!(code, 1);
@@ -6257,6 +6627,7 @@ async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
     assert!(xml.contains("plain-trace-value"), "{xml}");
 }
 
+// moves-to: api
 /// Decided (spec 7.5): a number under a sensitive name is hidden where it
 /// stands and never joins the set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6272,7 +6643,7 @@ async fn a_number_under_a_sensitive_name_is_hidden_in_place_and_never_joins_the_
     And set variable "note" to "87654321"
     Then variable "note" should be equal to "nothing"
 "#;
-    let cfg = masking_project("mask-number", &base, feature, "", "");
+    let cfg = http_masking_project("mask-number", &base, feature, "", "");
     let (code, stdout, _) = run_masking(&cfg, &[], &[]);
     assert_eq!(code, 1, "{stdout}");
     assert!(stdout.contains(r#""token":***"#), "{stdout}");
@@ -6281,14 +6652,13 @@ async fn a_number_under_a_sensitive_name_is_hidden_in_place_and_never_joins_the_
 }
 
 /// `--reveal` turns masking off, the step text of a `secret` parameter included.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
-    let base = common::spawn().await;
+#[test]
+fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
     let feature = r#"Feature: masking
   Scenario: a key of the wrong size
     Given I encrypt "payload" with AES using key "short-literal-key" as "c"
 "#;
-    let cfg = masking_project("mask-reveal-literal", &base, feature, "", "");
+    let cfg = masking_project("mask-reveal-literal", feature, "");
     let (_, stdout, _) = run_masking(&cfg, &["--reveal"], &[]);
     assert!(
         stdout.contains(r#"using key "short-literal-key""#),
@@ -6300,11 +6670,24 @@ async fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
 // `run --events --evidence`
 // ---------------------------------------------------------------------------
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// One scenario of `steps`, run with the evidence on; the stream it wrote.
-fn evidence_run(name: &str, base: &str, steps: &str, extra: &[&str]) -> Vec<Value> {
-    let cfg = write_events_project(
+fn http_evidence_run(name: &str, base: &str, steps: &str, extra: &[&str]) -> Vec<Value> {
+    let cfg = http_write_events_project(
         name,
         base,
+        &[("e.feature", &format!("Feature: e\n  Scenario: s\n{steps}"))],
+        None,
+    );
+    let mut args = vec!["--evidence"];
+    args.extend_from_slice(extra);
+    run_with_events(&cfg, &args).1
+}
+
+/// One scenario of `steps`, run with the evidence on; the stream it wrote.
+fn evidence_run(name: &str, steps: &str, extra: &[&str]) -> Vec<Value> {
+    let cfg = write_evidence_project(
+        name,
         &[("e.feature", &format!("Feature: e\n  Scenario: s\n{steps}"))],
         None,
     );
@@ -6322,7 +6705,7 @@ fn step_text<'a>(stream: &'a [Value], text: &str) -> &'a Value {
 
 #[test]
 fn evidence_requires_events() {
-    let cfg = write_events_project("evidence-alone", "", &[], None);
+    let cfg = write_events_project("evidence-alone", &[], None);
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["run", "--evidence", "--config"])
         .arg(&cfg)
@@ -6349,15 +6732,13 @@ fn evidence_requires_events() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_evidence_the_stream_holds_only_lifecycle_events() {
-    let base = common::spawn().await;
-    let cfg = write_events_project(
+#[test]
+fn without_evidence_the_stream_holds_only_lifecycle_events() {
+    let cfg = write_evidence_project(
         "no-evidence",
-        &base,
         &[(
             "e.feature",
-            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"<<unique(token)>>\"\n    When I request \"/ping\"\n    Then the response code is 200\n",
+            "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"<<unique(token)>>\"\n    Given I echo one piece of evidence\n    Then variable \"a\" should not be equal to \"\"\n",
         )],
         None,
     );
@@ -6388,7 +6769,6 @@ async fn without_evidence_the_stream_holds_only_lifecycle_events() {
 fn a_step_reports_its_resolved_slots_beside_the_raw_text() {
     let stream = evidence_run(
         "evidence-vars",
-        "",
         "    Given set variable \"who\" to \"ann\"\n    And set variable \"greeting\" to \"hi <<who>>\"\n",
         &[],
     );
@@ -6406,7 +6786,6 @@ fn a_step_reports_its_resolved_slots_beside_the_raw_text() {
 fn a_repeated_slot_appears_once_per_occurrence() {
     let stream = evidence_run(
         "evidence-repeated",
-        "",
         "    Given set variable \"pair\" to \"<<unique(token)>>|<<unique(token)>>\"\n    Then variable \"pair\" should not be equal to \"x\"\n",
         &[],
     );
@@ -6424,7 +6803,6 @@ fn a_repeated_slot_appears_once_per_occurrence() {
 fn a_null_slot_is_reported_as_json_null() {
     let stream = evidence_run(
         "evidence-null",
-        "",
         "    Given set variable \"n\" to \"<<null>>\"\n",
         &[],
     );
@@ -6435,9 +6813,8 @@ fn a_null_slot_is_reported_as_json_null() {
 fn a_secret_slot_is_masked_in_vars() {
     let stream = evidence_run(
         "evidence-secret-slot",
-        "",
         // `ab` is shorter than `min_length`: only position can hide it.
-        "    Given set variable \"my_secret\" to \"ab\"\n    And set variable \"copy\" to \"<<my_secret>>\"\n    And set variable \"k\" to \"long-key-value-1\"\n    And I sign the next request with Hawk id \"<<k>>\" and key \"<<k>>\"\n",
+        "    Given set variable \"my_secret\" to \"ab\"\n    And set variable \"copy\" to \"<<my_secret>>\"\n    And set variable \"k\" to \"long-key-value-1\"\n    And I encrypt \"<<k>>\" with AES using key \"<<k>>\" as \"c\"\n",
         &[],
     );
     assert_eq!(
@@ -6446,16 +6823,17 @@ fn a_secret_slot_is_masked_in_vars() {
         "a sensitive name"
     );
     assert_eq!(
-        step_text(&stream, "Hawk")["vars"],
+        step_text(&stream, "AES")["vars"],
         json!([["k", "***"], ["k", "***"]]),
         "a secret parameter, and a value another parameter also quotes"
     );
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_http_exchange_is_evidence_of_the_step_that_sent_it() {
     let base = common::spawn().await;
-    let stream = evidence_run(
+    let stream = http_evidence_run(
         "evidence-http",
         &base,
         "    Given set variable \"a\" to \"1\"\n    When I request \"/ping\"\n    Then the response code is 200\n",
@@ -6495,10 +6873,11 @@ async fn an_http_exchange_is_evidence_of_the_step_that_sent_it() {
     assert!(at("step_started", 1) < position && position < at("step_finished", 1));
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_masked_header_keeps_its_name_in_the_evidence() {
     let base = common::spawn().await;
-    let stream = evidence_run(
+    let stream = http_evidence_run(
         "evidence-header",
         &base,
         "    Given the \"Authorization\" request header is \"Bearer s3cret-credential\"\n    When I request \"/ping\"\n",
@@ -6521,10 +6900,11 @@ async fn a_masked_header_keeps_its_name_in_the_evidence() {
     );
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sensitive_field_is_masked_in_the_evidence_of_the_step_that_received_it() {
     let base = common::spawn().await;
-    let stream = evidence_run(
+    let stream = http_evidence_run(
         "evidence-field",
         &base,
         // `pw` is shorter than `min_length`: only its position hides it.
@@ -6539,10 +6919,11 @@ async fn a_sensitive_field_is_masked_in_the_evidence_of_the_step_that_received_i
     }
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_polling_replay_is_a_new_exchange_and_an_attempt() {
     let (base, calls) = spawn_eventual_post_stub(Some(2)).await;
-    let stream = evidence_run(
+    let stream = http_evidence_run(
         "evidence-polling",
         &base,
         "    Given the request body is:\n      \"\"\"\n      {\"request\": \"saved\"}\n      \"\"\"\n    When I request \"/eventual\" using HTTP POST\n    And I expect the next assertion to pass within \"2\" seconds, checking every \"25\" milliseconds\n    Then the response body equals JSON:\n      \"\"\"\n      {\"state\": \"ready\", \"payload\": {\"request\": \"saved\"}}\n      \"\"\"\n",
@@ -6574,17 +6955,15 @@ async fn a_polling_replay_is_a_new_exchange_and_an_attempt() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn evidence_inside_a_macro_attaches_to_the_innermost_step() {
-    let base = common::spawn().await;
-    let cfg = write_events_project(
+#[test]
+fn evidence_inside_a_macro_attaches_to_the_innermost_step() {
+    let cfg = write_evidence_project(
         "evidence-macro",
-        &base,
         &[(
             "m.feature",
             "Feature: m\n  Scenario: s\n    Given I ping the service\n",
         )],
-        Some("- step: 'I ping the service'\n  do:\n    - I request \"/ping\"\n"),
+        Some("- step: 'I ping the service'\n  do:\n    - I echo one piece of evidence\n"),
     );
     let (_, stream, _) = run_with_events(&cfg, &["--evidence"]);
 
@@ -6596,7 +6975,7 @@ async fn evidence_inside_a_macro_attaches_to_the_innermost_step() {
 /// A POST of `size` bytes to the stub, which echoes it, with the artifact root
 /// inside the project. The evidence event of the request, and the root.
 fn long_body_run(name: &str, base: &str, size: usize) -> (Value, std::path::PathBuf) {
-    let cfg = write_events_project(name, base, &[], None);
+    let cfg = http_write_events_project(name, base, &[], None);
     std::fs::write(
         cfg.with_file_name("features/e.feature"),
         format!(
@@ -6617,6 +6996,7 @@ fn long_body_run(name: &str, base: &str, size: usize) -> (Value, std::path::Path
     (of_type(&stream, "evidence")[0].clone(), root)
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_body_over_the_limit_is_written_to_a_file_and_referenced() {
     let base = common::spawn().await;
@@ -6640,6 +7020,7 @@ async fn a_body_over_the_limit_is_written_to_a_file_and_referenced() {
     );
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_referenced_file_is_complete_when_its_event_is_read() {
     let base = common::spawn().await;
@@ -6657,15 +7038,27 @@ async fn a_referenced_file_is_complete_when_its_event_is_read() {
 // `--evidence <sources>`: marked steps and failed scenarios
 // ---------------------------------------------------------------------------
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// `features` against the stub, run with `--events` and then `args`.
-fn modes_run(
+fn http_modes_run(
     name: &str,
     base: &str,
     features: &[(&str, &str)],
     macros: Option<&str>,
     args: &[&str],
 ) -> Vec<Value> {
-    let cfg = write_events_project(name, base, features, macros);
+    let cfg = http_write_events_project(name, base, features, macros);
+    run_with_events(&cfg, args).1
+}
+
+/// `features` run with `--events` and then `args`.
+fn modes_run(
+    name: &str,
+    features: &[(&str, &str)],
+    macros: Option<&str>,
+    args: &[&str],
+) -> Vec<Value> {
+    let cfg = write_evidence_project(name, features, macros);
     run_with_events(&cfg, args).1
 }
 
@@ -6681,22 +7074,20 @@ fn evidence_steps(stream: &[Value], scenario: u64) -> Vec<u64> {
 const PASS_AND_FAIL: &str = "Feature: e
   Scenario: passes
     Given set variable \"who\" to \"ann\"
-    When I request \"/ping?who=<<who>>\"
+    When I echo one piece of evidence for \"<<who>>\"
   Scenario: fails
     Given set variable \"who\" to \"bob\"
-    When I request \"/ping?who=<<who>>\"
-    Then the response code is 500
+    When I echo one piece of evidence for \"<<who>>\"
+    Then variable \"who\" should be equal to \"zed\"
 ";
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn marked_records_only_the_steps_between_the_two_steps() {
-    let base = common::spawn().await;
+#[test]
+fn marked_records_only_the_steps_between_the_two_steps() {
     let stream = modes_run(
         "marked-between",
-        &base,
         &[(
             "e.feature",
-            "Feature: e\n  Scenario: s\n    Given I request \"/ping\"\n    And I am collecting evidence\n    When I request \"/ping\"\n    And I am not collecting evidence\n    Then I request \"/ping\"\n",
+            "Feature: e\n  Scenario: s\n    Given I echo one piece of evidence\n    And I am collecting evidence\n    Given I echo one piece of evidence\n    And I am not collecting evidence\n    Then I echo one piece of evidence\n",
         )],
         None,
         &["--evidence=marked"],
@@ -6708,20 +7099,18 @@ async fn marked_records_only_the_steps_between_the_two_steps() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_evidence_tag_marks_a_whole_scenario_and_is_inherited_from_feature_and_rule() {
-    let base = common::spawn().await;
+#[test]
+fn the_evidence_tag_marks_a_whole_scenario_and_is_inherited_from_feature_and_rule() {
     let stream = modes_run(
         "marked-tag",
-        &base,
         &[
             (
                 "a.feature",
-                "Feature: a\n  Background:\n    Given I request \"/ping\"\n\n  @evidence\n  Scenario: tagged\n    When I request \"/ping\"\n    And I am not collecting evidence\n    Then I request \"/ping\"\n\n  Scenario: plain\n    When I request \"/ping\"\n\n  @evidence\n  Rule: r\n    Scenario: in the rule\n      When I request \"/ping\"\n",
+                "Feature: a\n  Background:\n    Given I echo one piece of evidence\n\n  @evidence\n  Scenario: tagged\n    Given I echo one piece of evidence\n    And I am not collecting evidence\n    Then I echo one piece of evidence\n\n  Scenario: plain\n    Given I echo one piece of evidence\n\n  @evidence\n  Rule: r\n    Scenario: in the rule\n      Given I echo one piece of evidence\n",
             ),
             (
                 "b.feature",
-                "@evidence\nFeature: b\n  Scenario: s\n    When I request \"/ping\"\n",
+                "@evidence\nFeature: b\n  Scenario: s\n    Given I echo one piece of evidence\n",
             ),
         ],
         None,
@@ -6745,15 +7134,13 @@ async fn the_evidence_tag_marks_a_whole_scenario_and_is_inherited_from_feature_a
     assert_eq!(of("b.feature", 0), [0], "inherited from the feature");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_mark_ends_with_the_scenario() {
-    let base = common::spawn().await;
+#[test]
+fn a_mark_ends_with_the_scenario() {
     let stream = modes_run(
         "marked-reset",
-        &base,
         &[(
             "e.feature",
-            "Feature: e\n  Scenario: marks\n    Given I am collecting evidence\n    When I request \"/ping\"\n  Scenario: next\n    When I request \"/ping\"\n",
+            "Feature: e\n  Scenario: marks\n    Given I am collecting evidence\n    Given I echo one piece of evidence\n  Scenario: next\n    Given I echo one piece of evidence\n",
         )],
         None,
         &["--evidence=marked"],
@@ -6762,22 +7149,20 @@ async fn a_mark_ends_with_the_scenario() {
     assert_eq!(evidence_steps(&stream, 1), Vec::<u64>::new());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_mark_covers_macro_and_include_bodies_called_inside_it() {
-    let base = common::spawn().await;
-    let cfg = write_events_project(
+#[test]
+fn a_mark_covers_macro_and_include_bodies_called_inside_it() {
+    let cfg = write_evidence_project(
         "marked-nested",
-        &base,
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given I am collecting evidence\n    When I ping the service\n    And I include \"../lib/inc.feature\"\n",
         )],
-        Some("- step: 'I ping the service'\n  do:\n    - I request \"/ping\"\n"),
+        Some("- step: 'I ping the service'\n  do:\n    - I echo one piece of evidence\n"),
     );
     std::fs::create_dir_all(cfg.with_file_name("lib")).expect("mkdir");
     std::fs::write(
         cfg.with_file_name("lib/inc.feature"),
-        "Feature: inc\n  Scenario: i\n    When I request \"/ping\"\n",
+        "Feature: inc\n  Scenario: i\n    Given I echo one piece of evidence\n",
     )
     .expect("include");
     let (_, stream, _) = run_with_events(&cfg, &["--evidence=marked"]);
@@ -6785,15 +7170,13 @@ async fn a_mark_covers_macro_and_include_bodies_called_inside_it() {
     assert_eq!(evidence_steps(&stream, 0), [2, 4], "{stream:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn marks_record_nothing_without_the_marked_source() {
-    let base = common::spawn().await;
+#[test]
+fn marks_record_nothing_without_the_marked_source() {
     let stream = modes_run(
         "marked-unused",
-        &base,
         &[(
             "e.feature",
-            "Feature: e\n  @evidence\n  Scenario: s\n    Given I am collecting evidence\n    When I request \"/ping\"\n",
+            "Feature: e\n  @evidence\n  Scenario: s\n    Given I am collecting evidence\n    Given I echo one piece of evidence\n",
         )],
         None,
         &["--evidence=failures"],
@@ -6801,12 +7184,10 @@ async fn marks_record_nothing_without_the_marked_source() {
     assert!(of_type(&stream, "evidence").is_empty(), "{stream:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failures_records_every_step_of_a_failed_scenario_and_nothing_of_a_passing_one() {
-    let base = common::spawn().await;
+#[test]
+fn failures_records_every_step_of_a_failed_scenario_and_nothing_of_a_passing_one() {
     let stream = modes_run(
         "failures",
-        &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
         &["--evidence=failures"],
@@ -6821,12 +7202,10 @@ async fn failures_records_every_step_of_a_failed_scenario_and_nothing_of_a_passi
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_events_carry_their_step_and_arrive_before_scenario_finished() {
-    let base = common::spawn().await;
+#[test]
+fn deferred_events_carry_their_step_and_arrive_before_scenario_finished() {
     let stream = modes_run(
         "failures-order",
-        &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
         &["--evidence=failures"],
@@ -6846,12 +7225,10 @@ async fn deferred_events_carry_their_step_and_arrive_before_scenario_finished() 
     assert!(last_step < seq(evidence[0]) && seq(evidence[0]) < seq(finished));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_vars_arrive_as_a_vars_event() {
-    let base = common::spawn().await;
+#[test]
+fn deferred_vars_arrive_as_a_vars_event() {
     let stream = modes_run(
         "failures-vars",
-        &base,
         &[("e.feature", PASS_AND_FAIL)],
         None,
         &["--evidence=failures"],
@@ -6864,14 +7241,15 @@ async fn deferred_vars_arrive_as_a_vars_event() {
     assert_eq!(vars[0]["deferred"], true);
 }
 
+// moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// A scenario that POSTs a body over the inline limit, then passes or fails.
-fn long_deferred_run(
+fn http_long_deferred_run(
     name: &str,
     base: &str,
     fail: bool,
     env: &[(&str, &str)],
 ) -> std::path::PathBuf {
-    let cfg = write_events_project(name, base, &[], None);
+    let cfg = http_write_events_project(name, base, &[], None);
     std::fs::write(
         cfg.with_file_name("features/e.feature"),
         format!(
@@ -6905,13 +7283,14 @@ fn files_under(root: &std::path::Path) -> usize {
     })
 }
 
+// moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_body_of_a_passing_scenario_never_reaches_the_disk_under_the_buffer_cap() {
     let base = common::spawn().await;
-    let root = long_deferred_run("deferred-long-pass", &base, false, &[]);
+    let root = http_long_deferred_run("deferred-long-pass", &base, false, &[]);
     assert_eq!(files_under(&root), 0, "held in memory, then dropped");
 
-    let root = long_deferred_run("deferred-long-fail", &base, true, &[]);
+    let root = http_long_deferred_run("deferred-long-fail", &base, true, &[]);
     assert_eq!(
         files_under(&root),
         2,
@@ -6924,7 +7303,7 @@ async fn a_long_body_of_a_passing_scenario_never_reaches_the_disk_under_the_buff
         .len();
     assert_eq!(body["size"], on_disk);
 
-    let root = long_deferred_run(
+    let root = http_long_deferred_run(
         "deferred-long-cap",
         &base,
         false,
@@ -6933,12 +7312,10 @@ async fn a_long_body_of_a_passing_scenario_never_reaches_the_disk_under_the_buff
     assert_eq!(files_under(&root), 2, "past the cap it is written at once");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn marked_and_failures_combine() {
-    let base = common::spawn().await;
+#[test]
+fn marked_and_failures_combine() {
     let stream = modes_run(
         "marked-failures",
-        &base,
         &[(
             "e.feature",
             &PASS_AND_FAIL.replace(
@@ -6962,7 +7339,6 @@ async fn marked_and_failures_combine() {
 fn bare_evidence_means_all() {
     let stream = evidence_run(
         "bare-evidence",
-        "",
         "    Given set variable \"who\" to \"ann\"\n    And set variable \"hi\" to \"<<who>>\"\n",
         &[],
     );
@@ -6979,7 +7355,6 @@ fn bare_evidence_means_all() {
 fn a_bare_evidence_before_a_path_keeps_its_meaning() {
     let cfg = write_events_project(
         "bare-before-path",
-        "",
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -7005,7 +7380,6 @@ fn a_bare_evidence_before_a_path_keeps_its_meaning() {
 fn an_unknown_source_is_refused() {
     let cfg = write_events_project(
         "unknown-source",
-        "",
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -7049,7 +7423,6 @@ fn an_unknown_source_is_refused() {
 fn the_config_key_without_a_stream_is_ignored_and_the_flag_without_a_stream_is_refused() {
     let cfg = write_events_project(
         "config-evidence",
-        "",
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -7113,7 +7486,6 @@ fn the_config_key_without_a_stream_is_ignored_and_the_flag_without_a_stream_is_r
 fn an_interrupted_scenario_writes_no_deferred_evidence() {
     let cfg = write_events_project(
         "deferred-interrupt",
-        "",
         &[(
             "a.feature",
             "Feature: held\n  Scenario: s\n    Given set variable \"who\" to \"ann\"\n    And set variable \"hi\" to \"<<who>>\"\n    And I sleep \"10\" seconds\n",
@@ -7151,15 +7523,14 @@ fn an_interrupted_scenario_writes_no_deferred_evidence() {
     assert!(of_type(&stream, "vars").is_empty(), "{stream:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scenario_finished_reports_evidence_coverage() {
-    let base = common::spawn().await;
+#[test]
+fn scenario_finished_reports_evidence_coverage() {
     let feature = PASS_AND_FAIL.replace(
         "  Scenario: passes\n",
         "  Scenario: passes\n    Given I am collecting evidence\n",
     );
     let coverage = |args: &[&str]| -> Vec<Value> {
-        let stream = modes_run("coverage", &base, &[("e.feature", &feature)], None, args);
+        let stream = modes_run("coverage", &[("e.feature", &feature)], None, args);
         of_type(&stream, "scenario_finished")
             .into_iter()
             .map(|e| e["evidence"].clone())
@@ -7184,7 +7555,6 @@ async fn scenario_finished_reports_evidence_coverage() {
 fn an_evidence_variable_refusal_empties_the_stream_and_an_unused_buffer_is_ignored() {
     let cfg = write_events_project(
         "evidence-refused",
-        "",
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -7222,12 +7592,13 @@ fn an_evidence_variable_refusal_empties_the_stream_and_an_unused_buffer_is_ignor
     assert_eq!(code, Some(0), "no evidence, no buffer to read");
 }
 
+// moves-to: api
 /// Held evidence is emitted at the end of the scenario, so a value that
 /// became a secret after the step that sent it is masked there too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_evidence_is_masked_with_the_secrets_known_when_it_is_written() {
     let base = common::spawn().await;
-    let stream = modes_run(
+    let stream = http_modes_run(
         "deferred-late-secret",
         &base,
         &[(
@@ -7248,7 +7619,6 @@ async fn deferred_evidence_is_masked_with_the_secrets_known_when_it_is_written()
 fn run_started_keeps_the_evidence_boolean_and_adds_the_sources() {
     let cfg = write_events_project(
         "run-started-sources",
-        "",
         &[(
             "e.feature",
             "Feature: e\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
@@ -7591,7 +7961,7 @@ fn a_scenario_outline_inside_a_rule_runs_every_example_row() {
 
 // Issue #109: source annotations must survive the parser without changing execution.
 fn annotation_stream(name: &str, feature: &str) -> Vec<Value> {
-    let cfg = write_events_project(name, "", &[("a.feature", feature)], None);
+    let cfg = write_events_project(name, &[("a.feature", feature)], None);
     let (out, stream, _) = run_with_events(&cfg, &[]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     stream
@@ -7666,7 +8036,6 @@ fn annotations_a_block_followed_by_a_blank_line_starts_a_section_with_a_title_an
 fn annotations_sections_and_disabled_steps_after_a_failure_are_still_emitted_in_order() {
     let cfg = write_events_project(
         "annotation-failure",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    # Later\n\n    # a skipped step's note\n    And set variable \"y\" to \"2\"\n    # Then variable \"undefined\" should be equal to \"1\"\n    # Closing\n",
@@ -7727,26 +8096,32 @@ fn annotations_element_comments_attach_above_tags_and_never_include_the_language
 fn annotations_a_disabled_outline_step_is_matched_after_placeholder_substitution() {
     let stream = annotation_stream(
         "annotation-outline",
-        "Feature: f\n  Scenario Outline: row\n    # Then the response code is <n>\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 200 |\n      | 201 |\n",
+        "Feature: f\n  Scenario Outline: row\n    # Then variable \"x\" should be equal to \"<n>\"\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 200 |\n      | 201 |\n",
     );
     let disabled = of_type(&stream, "step_disabled");
     assert_eq!(disabled.len(), 2, "{stream:?}");
-    assert_eq!(disabled[0]["text"], "the response code is 200");
-    assert_eq!(disabled[1]["text"], "the response code is 201");
+    assert_eq!(
+        disabled[0]["text"],
+        "variable \"x\" should be equal to \"200\""
+    );
+    assert_eq!(
+        disabled[1]["text"],
+        "variable \"x\" should be equal to \"201\""
+    );
 }
 
 #[test]
 fn annotations_a_russian_feature_file_recognises_its_own_keywords() {
     let stream = annotation_stream(
         "annotation-ru",
-        "# language: ru\nФункционал: f\n  Сценарий: s\n    # Тогда the response code is 200\n    # Then the response code is 201\n    Допустим set variable \"x\" to \"1\"\n",
+        "# language: ru\nФункционал: f\n  Сценарий: s\n    # Тогда variable \"x\" should be equal to \"200\"\n    # Then variable \"x\" should be equal to \"201\"\n    Допустим set variable \"x\" to \"1\"\n",
     );
     let disabled = of_type(&stream, "step_disabled");
     assert_eq!(disabled.len(), 1, "{stream:?}");
     assert_eq!(disabled[0]["keyword"], "Тогда ");
     assert_eq!(
         of_type(&stream, "step_started")[0]["comment"],
-        "Then the response code is 201"
+        "Then variable \"x\" should be equal to \"201\""
     );
     assert!(of_type(&stream, "file_started")[0].get("comment").is_none());
 }
@@ -7779,7 +8154,6 @@ fn annotations_background_sections_repeat_before_every_scenario() {
 fn annotations_sections_inside_an_included_scenario_carry_parent_and_source() {
     let cfg = write_events_project(
         "annotation-include",
-        "",
         &[
             (
                 "caller.feature",
@@ -7822,7 +8196,6 @@ fn annotations_sections_inside_an_included_scenario_carry_parent_and_source() {
 fn annotations_a_secret_in_a_comment_is_masked() {
     let cfg = write_events_project(
         "annotation-secrets",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: s\n    Given set variable \"secret_value\" to \"annotation-secret-9876\"\n    # annotation-secret-9876\n\n    # annotation-secret-9876\n    # Then variable \"x\" should be equal to \"annotation-secret-9876\"\n    # annotation-secret-9876\n    Given set variable \"y\" to \"1\"\n",
@@ -7840,13 +8213,12 @@ fn annotations_a_secret_in_a_comment_is_masked() {
 
 #[test]
 fn annotations_doctor_counts_disabled_steps_and_lists_lines_that_look_like_steps() {
-    let cfg = write_events_project(
+    let cfg = write_evidence_project(
         "annotation-doctor",
-        "",
         &[
             (
                 "a.feature",
-                "Feature: f\n  Background:\n    # Given set variable \"disabled\" to \"1\"\n    Given set variable \"x\" to \"1\"\n  Scenario Outline: rows\n    # Then the response code is <n>\n    # Then we wait for the queue\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 200 |\n      | 201 |\n",
+                "Feature: f\n  Background:\n    # Given set variable \"disabled\" to \"1\"\n    Given set variable \"x\" to \"1\"\n  Scenario Outline: rows\n    # Then variable \"x\" should be equal to \"<n>\"\n    # Then we wait for the queue\n    Given set variable \"n\" to \"<n>\"\n    Examples:\n      | n |\n      | 200 |\n      | 201 |\n",
             ),
             (
                 "b.feature",
@@ -7886,14 +8258,13 @@ fn annotations_doctor_counts_disabled_steps_and_lists_lines_that_look_like_steps
 fn annotations_a_hash_inside_a_docstring_or_a_table_is_content() {
     for fence in ["\"\"\"", "```"] {
         let feature = format!(
-            "Feature: f\n  Scenario: s\n    Given the request body is:\n      {fence}\n      # Then the response code is 200\n      # A false section\n\n      # Another false section\n      {fence}\n    And the request form parameters are:\n      | name | value |\n      | field | # Then the response code is 201 |\n    # a real note\n    Given set variable \"x\" to \"1\"\n"
+            "Feature: f\n  Scenario: s\n    Given I echo the plain doc string:\n      {fence}\n      # Then variable \"x\" should be equal to \"200\"\n      # A false section\n\n      # Another false section\n      {fence}\n    And Print table:\n      | name | value |\n      | field | # Then variable \"x\" should be equal to \"201\" |\n    # a real note\n    Given set variable \"x\" to \"1\"\n"
         );
-        let cfg = write_events_project(
+        let cfg = write_evidence_project(
             &format!(
                 "annotation-content-{}",
                 if fence == "```" { "backtick" } else { "quote" }
             ),
-            "http://127.0.0.1:1/",
             &[("a.feature", &feature)],
             None,
         );
@@ -7913,7 +8284,6 @@ fn annotations_a_hash_inside_a_docstring_or_a_table_is_content() {
 fn annotations_disabled_macro_calls_match_without_executing_or_validating_them() {
     let cfg = write_events_project(
         "annotation-macro",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: s\n    # Given my disabled action\n    Given set variable \"x\" to \"1\"\n",
@@ -7933,16 +8303,15 @@ fn annotations_disabled_macro_calls_match_without_executing_or_validating_them()
 
 #[test]
 fn annotations_include_failures_still_emit_nested_sections_disabled_and_skipped_steps() {
-    let cfg = write_events_project(
+    let cfg = write_evidence_project(
         "annotation-include-failure",
-        "",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: caller\n    Given I include \"child.feature\"\n",
         )],
         None,
     );
-    std::fs::write(cfg.parent().unwrap().join("features/child.feature"), "Feature: child\n  Scenario: child\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    # Later\n\n    # Then the response code is 200\n    # skipped note\n    Given set variable \"y\" to \"1\"\n    # Closing\n").unwrap();
+    std::fs::write(cfg.parent().unwrap().join("features/child.feature"), "Feature: child\n  Scenario: child\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    # Later\n\n    # Then variable \"x\" should be equal to \"200\"\n    # skipped note\n    Given set variable \"y\" to \"1\"\n    # Closing\n").unwrap();
     let (out, stream, _) = run_with_events(&cfg, &[]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let nested: Vec<_> = stream
@@ -7972,12 +8341,7 @@ fn annotations_include_failures_still_emit_nested_sections_disabled_and_skipped_
 #[test]
 fn annotations_the_junit_and_cucumber_reports_do_not_change() {
     let feature = "# File note\nFeature: f\n  Description\n  Background:\n    # Setup\n\n    Given set variable \"x\" to \"1\"\n  # Scenario note\n  Scenario: s\n    # step note\n    Given set variable \"y\" to \"1\"\n    # Disabled reason\n    # Then variable \"missing\" should be equal to \"<<undefined>>\"\n\n    # Checks\n\n    Then variable \"y\" should be equal to \"1\"\n    # Closing\n";
-    let cfg = write_events_project(
-        "annotation-report-compat",
-        "",
-        &[("a.feature", feature)],
-        None,
-    );
+    let cfg = write_events_project("annotation-report-compat", &[("a.feature", feature)], None);
     let dir = cfg.parent().unwrap();
     let junit = dir.join("junit.xml");
     let cucumber = dir.join("cucumber.json");
@@ -8039,7 +8403,7 @@ fn annotations_the_junit_and_cucumber_reports_do_not_change() {
 fn annotations_a_disabled_step_masks_short_secret_parameters_by_position() {
     let stream = annotation_stream(
         "annotation-short-secret",
-        "Feature: f\n  Scenario: s\n    # Given I generate an SRP verifier for \"user\" with password \"x\" as \"reg\"\n    Given set variable \"x\" to \"1\"\n",
+        "Feature: f\n  Scenario: s\n    # Given I encrypt \"payload\" with AES using key \"x\" as \"reg\"\n    Given set variable \"x\" to \"1\"\n",
     );
     let disabled = of_type(&stream, "step_disabled");
     assert_eq!(disabled.len(), 1, "{stream:?}");
@@ -8047,7 +8411,7 @@ fn annotations_a_disabled_step_masks_short_secret_parameters_by_position() {
         disabled[0]["text"]
             .as_str()
             .unwrap()
-            .contains("password \"***\"")
+            .contains("key \"***\"")
     );
 }
 
@@ -8066,11 +8430,10 @@ fn annotations_docstring_fences_never_hide_executable_assertions() {
         ),
     ] {
         let feature = format!(
-            "Feature: f\n  Scenario: s\n    Given the request body is:\n{body}    # A real section\n\n    # A real assertion's comment\n    Then variable \"missing\" should be equal to \"wrong\"\n"
+            "Feature: f\n  Scenario: s\n    Given I echo the plain doc string:\n{body}    # A real section\n\n    # A real assertion's comment\n    Then variable \"missing\" should be equal to \"wrong\"\n"
         );
-        let cfg = write_events_project(
+        let cfg = write_evidence_project(
             &format!("annotation-fence-{name}"),
-            "http://127.0.0.1:1/",
             &[("a.feature", &feature)],
             None,
         );
@@ -8093,13 +8456,19 @@ fn annotations_docstring_fences_never_hide_executable_assertions() {
 fn annotations_closing_outline_blocks_after_examples_repeat_for_every_row_of_that_block() {
     let stream = annotation_stream(
         "annotation-outline-closing",
-        "Feature: f\n  Scenario Outline: rows\n    Given set variable \"n\" to \"<n>\"\n    Examples: first\n      | n |\n      | 200 |\n      | 201 |\n    # Then the response code is <n>\n    # Closing <n>\n",
+        "Feature: f\n  Scenario Outline: rows\n    Given set variable \"n\" to \"<n>\"\n    Examples: first\n      | n |\n      | 200 |\n      | 201 |\n    # Then variable \"x\" should be equal to \"<n>\"\n    # Closing <n>\n",
     );
     let disabled = of_type(&stream, "step_disabled");
     let sections = of_type(&stream, "section");
     assert_eq!(disabled.len(), 2, "{stream:?}");
-    assert_eq!(disabled[0]["text"], "the response code is 200");
-    assert_eq!(disabled[1]["text"], "the response code is 201");
+    assert_eq!(
+        disabled[0]["text"],
+        "variable \"x\" should be equal to \"200\""
+    );
+    assert_eq!(
+        disabled[1]["text"],
+        "variable \"x\" should be equal to \"201\""
+    );
     assert_eq!(sections.len(), 2, "{stream:?}");
     assert_eq!(sections[0]["title"], "Closing <n>");
     assert_eq!(sections[1]["title"], "Closing <n>");
@@ -8118,14 +8487,13 @@ fn annotations_closing_outline_blocks_after_examples_repeat_for_every_row_of_tha
 fn annotations_a_docstring_comment_containing_a_fence_never_hides_a_failure() {
     for fence in ["\"\"\"", "```"] {
         let feature = format!(
-            "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    Given the request body is:\n      {fence}\n      # A literal {fence} in a body comment\n      # Then the response code is 200\n      ordinary body content\n      {fence}\n    Given set variable \"y\" to \"1\"\n"
+            "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    Given I echo the plain doc string:\n      {fence}\n      # A literal {fence} in a body comment\n      # Then variable \"x\" should be equal to \"200\"\n      ordinary body content\n      {fence}\n    Given set variable \"y\" to \"1\"\n"
         );
-        let cfg = write_events_project(
+        let cfg = write_evidence_project(
             &format!(
                 "annotation-comment-fence-{}",
                 if fence == "```" { "backtick" } else { "quote" }
             ),
-            "http://127.0.0.1:1/",
             &[("a.feature", &feature)],
             None,
         );
@@ -8140,13 +8508,8 @@ fn annotations_a_docstring_comment_containing_a_fence_never_hides_a_failure() {
 
 #[test]
 fn annotations_comments_between_table_rows_are_not_step_annotations() {
-    let feature = "Feature: f\n  Scenario: s\n    Given the request form parameters are:\n      | name | value |\n      | a | 1 |\n      # Then the response code is 200\n      # note about the next row\n      | b | 2 |\n    Given set variable \"x\" to \"1\"\n";
-    let cfg = write_events_project(
-        "annotation-table-comments",
-        "http://127.0.0.1:1/",
-        &[("a.feature", feature)],
-        None,
-    );
+    let feature = "Feature: f\n  Scenario: s\n    Given Print table:\n      | name | value |\n      | a | 1 |\n      # Then variable \"x\" should be equal to \"200\"\n      # note about the next row\n      | b | 2 |\n    Given set variable \"x\" to \"1\"\n";
+    let cfg = write_evidence_project("annotation-table-comments", &[("a.feature", feature)], None);
     let (out, stream, _) = run_with_events(&cfg, &[]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(of_type(&stream, "step_disabled").is_empty(), "{stream:?}");
@@ -8161,7 +8524,7 @@ fn annotations_comments_between_table_rows_are_not_step_annotations() {
 fn annotations_outline_substitution_changes_disabled_steps_and_preserves_prose() {
     let stream = annotation_stream(
         "annotation-outline-prose",
-        "Feature: f\n  Scenario Outline: rows\n    # Section <email>\n    # Note <email>\n\n    # the service sends <email> a link\n    Given set variable \"email\" to \"<email>\"\n    # Then the service sends <email> a link\n    # Then the response code is <code>\n\n    Examples:\n      | email | code |\n      | a@b.c | 200 |\n",
+        "Feature: f\n  Scenario Outline: rows\n    # Section <email>\n    # Note <email>\n\n    # the service sends <email> a link\n    Given set variable \"email\" to \"<email>\"\n    # Then the service sends <email> a link\n    # Then variable \"x\" should be equal to \"<code>\"\n\n    Examples:\n      | email | code |\n      | a@b.c | 200 |\n",
     );
     let section = of_type(&stream, "section")[0];
     assert_eq!(section["title"], "Section <email>");
@@ -8171,7 +8534,10 @@ fn annotations_outline_substitution_changes_disabled_steps_and_preserves_prose()
         "the service sends <email> a link"
     );
     let disabled = of_type(&stream, "step_disabled")[0];
-    assert_eq!(disabled["text"], "the response code is 200");
+    assert_eq!(
+        disabled["text"],
+        "variable \"x\" should be equal to \"200\""
+    );
     assert_eq!(disabled["comment"], "Then the service sends <email> a link");
 }
 
@@ -8203,12 +8569,11 @@ fn annotations_comments_outside_step_regions_are_ignored_and_scenario_closing_no
 
 #[test]
 fn annotations_a_note_after_a_table_belongs_to_the_next_step() {
-    let cfg = write_events_project(
+    let cfg = write_evidence_project(
         "annotation-after-table",
-        "http://127.0.0.1:1/",
         &[(
             "a.feature",
-            "Feature: f\n  Scenario: s\n    Given the request form parameters are:\n      | name | value |\n      | a | 1 |\n      # table-only note\n      | b | 2 |\n    # real step note\n    Given set variable \"x\" to \"1\"\n",
+            "Feature: f\n  Scenario: s\n    Given Print table:\n      | name | value |\n      | a | 1 |\n      # table-only note\n      | b | 2 |\n    # real step note\n    Given set variable \"x\" to \"1\"\n",
         )],
         None,
     );
@@ -8222,12 +8587,11 @@ fn annotations_a_note_after_a_table_belongs_to_the_next_step() {
 
 #[test]
 fn annotations_doctor_reports_a_disabled_step_that_fails_to_match_in_one_outline_row() {
-    let cfg = write_events_project(
+    let cfg = write_evidence_project(
         "annotation-partial-match",
-        "",
         &[(
             "a.feature",
-            "Feature: f\n  Scenario Outline: rows\n    # Then the response code is <code>\n    Given set variable \"code\" to \"<code>\"\n    Examples:\n      | code |\n      | 200 |\n      | nope |\n",
+            "Feature: f\n  Scenario Outline: rows\n    # Then I sleep <code> seconds\n    Given set variable \"code\" to \"<code>\"\n    Examples:\n      | code |\n      | 200 |\n      | nope |\n",
         )],
         None,
     );
@@ -8258,16 +8622,15 @@ fn annotations_doctor_reports_a_disabled_step_that_fails_to_match_in_one_outline
 
 #[test]
 fn annotations_an_included_docstring_comment_never_hides_a_failure() {
-    let cfg = write_events_project(
+    let cfg = write_evidence_project(
         "annotation-include-fence",
-        "http://127.0.0.1:1/",
         &[(
             "a.feature",
             "Feature: f\n  Scenario: caller\n    Given I include \"../child.feature\"\n",
         )],
         None,
     );
-    std::fs::write(cfg.parent().unwrap().join("child.feature"), "Feature: child\n  Scenario: child\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    Given the request body is:\n      \"\"\"\n      # A literal \"\"\" in a body comment\n      # Then the response code is 200\n      ordinary body content\n      \"\"\"\n    Given set variable \"y\" to \"1\"\n").unwrap();
+    std::fs::write(cfg.parent().unwrap().join("child.feature"), "Feature: child\n  Scenario: child\n    Given set variable \"x\" to \"1\"\n    Then variable \"x\" should be equal to \"2\"\n    Given I echo the plain doc string:\n      \"\"\"\n      # A literal \"\"\" in a body comment\n      # Then variable \"x\" should be equal to \"200\"\n      ordinary body content\n      \"\"\"\n    Given set variable \"y\" to \"1\"\n").unwrap();
     let (out, stream, _) = run_with_events(&cfg, &[]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let skipped = of_type(&stream, "step_skipped");

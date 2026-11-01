@@ -1,6 +1,7 @@
 mod common;
 
-use common::db::{Engine, combined, engine, feature_command, run_feature, setup, test_dsn};
+use common::combined;
+use common::db::{Engine, engine, feature_command, run_feature, setup, test_dsn};
 use regex::Regex;
 use sqlx::AnyPool;
 use std::{
@@ -12,6 +13,7 @@ use tokio::sync::oneshot;
 
 // The fixture schema is shared, so DB tests run in a single thread (--test-threads=1).
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn insert_identity_and_uuid_pk() {
     let _g = setup().await;
@@ -31,6 +33,7 @@ Feature: insert
     assert!(combined(&out).contains("failed: 0"), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_not_null_without_default_fails_naming_column() {
     let _g = setup().await;
@@ -45,6 +48,7 @@ Feature: insert
     assert!(combined(&out).contains("slug"), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_constraint_violation_is_a_db_statement_failure() {
     let _g = setup().await;
@@ -62,6 +66,7 @@ Feature: insert
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wide_table_insert_sets_indexed_vars() {
     let _g = setup().await;
@@ -79,6 +84,7 @@ Feature: insert
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_sets_updated_counter() {
     let _g = setup().await;
@@ -101,6 +107,7 @@ Feature: mutate
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_all_empties_table() {
     let _g = setup().await;
@@ -121,6 +128,7 @@ Feature: mutate
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_not_have_passes_for_absent_row() {
     let _g = setup().await;
@@ -135,6 +143,7 @@ Feature: absence
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_not_have_fails_for_present_row() {
     let _g = setup().await;
@@ -153,6 +162,7 @@ Feature: absence
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn null_sentinel_insert_matches_is_null() {
     let _g = setup().await;
@@ -167,6 +177,7 @@ Feature: null
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composite_pk_insert_reads_back_via_last_insert_vars() {
     let _g = setup().await;
@@ -183,6 +194,7 @@ Feature: composite pk
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_all_sets_deleted_counter() {
     let _g = setup().await;
@@ -199,6 +211,7 @@ Feature: mutate
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extract_from_table_binds_variable() {
     let _g = setup().await;
@@ -217,6 +230,7 @@ Feature: extract
 
 /// Issue #39: text that reaches a variable from a column — here a multi-line
 /// JSON document — gets the response body's JSON matcher, not only equality.
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_multi_line_extract_is_checked_as_json() {
     let _g = setup().await;
@@ -244,6 +258,7 @@ Feature: extract
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sequence_and_builtin_function() {
     let _g = setup().await;
@@ -279,6 +294,7 @@ Feature: routines
     assert!(out.status.success(), "{}", combined(&out));
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eventual_database_assertion_observes_delayed_row() {
     let _g = setup().await;
@@ -376,6 +392,7 @@ Feature: eventual database assertion
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn debug_mode_shows_query_duration_after_success_and_after_failure() {
     let _g = setup().await;
@@ -418,6 +435,7 @@ Feature: query timing
     );
 }
 
+// moves-to: db
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_statement_is_evidence_of_the_step_that_ran_it() {
     let _g = setup().await;

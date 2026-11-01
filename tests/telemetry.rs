@@ -25,9 +25,7 @@ fn suite(name: &str, config: &str, features: &[(&str, &str)]) -> Suite {
     std::fs::create_dir_all(dir.join("state")).expect("mkdir");
     std::fs::write(
         dir.join("bddkit.yaml"),
-        format!(
-            "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n{config}"
-        ),
+        format!("paths: [features]\nresources:\n  api: {{}}\n{config}"),
     )
     .expect("config");
     for (file, text) in features {
@@ -132,9 +130,23 @@ fn a_run_records_one_payload_with_only_schema_fields() {
     assert_eq!(payload["files"], 1);
     assert_eq!(payload["scenarios"], 1);
     assert_eq!(payload["failed"], 0);
-    assert_eq!(payload["resources"]["api"], 1);
+    assert_eq!(payload["resources"]["api"], 0);
     assert_eq!(payload["usage"]["vars"]["steps"], 1);
     assert!(payload["ci"].is_null() && payload["stage"].is_null());
+}
+
+// moves-to: api
+#[test]
+fn a_run_counts_the_api_resources_of_the_suite() {
+    let suite = suite("api-count", "", &[("a.feature", PLAIN)]);
+    std::fs::write(
+        suite.dir.join("bddkit.yaml"),
+        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n",
+    )
+    .unwrap();
+    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert_eq!(suite.only_payload()["resources"]["api"], 1);
 }
 
 #[test]
@@ -144,7 +156,15 @@ fn nothing_from_the_suite_reaches_the_payload() {
     let suite = suite("marker", "", &[("marker_file.feature", feature)]);
     std::fs::write(
         suite.dir.join("bddkit.yaml"),
-        "paths: [features]\nresources:\n  api:\n    marker_resource:\n      base_url: http://marker.invalid:9\n",
+        "paths: [features]\nconcurrency: 1\nresources:\n  api: {}\n  echo:\n    marker_resource:\n      prefix: marker_prefix\n",
+    )
+    .unwrap();
+    std::fs::write(
+        suite.state().join("plugins.yaml"),
+        format!(
+            "plugin:\n  - name: echo\n    path: {}\n",
+            common::build_fixture_plugin().display()
+        ),
     )
     .unwrap();
     let out = suite.bddkit(
@@ -254,7 +274,7 @@ fn a_refusal_after_the_config_reports_the_stage_it_stopped_in() {
         &'a [&'a str],
         &'a str,
     );
-    let cases: [Case; 5] = [
+    let cases: [Case; 4] = [
         (
             "validation",
             "",
@@ -290,14 +310,6 @@ fn a_refusal_after_the_config_reports_the_stage_it_stopped_in() {
             &[],
             "steps",
         ),
-        (
-            "resources",
-            "      timeout_secs: 0\n",
-            "resources",
-            &[("a.feature", PLAIN)],
-            &[],
-            "resources",
-        ),
     ];
     for (name, extra, _, features, flags, stage) in cases {
         let suite = suite(name, extra, features);
@@ -310,6 +322,20 @@ fn a_refusal_after_the_config_reports_the_stage_it_stopped_in() {
         assert_eq!(payload["stage"], stage, "{name}: {payload}");
         assert_eq!(payload["exit"], 2, "{name}");
     }
+}
+
+// moves-to: api
+#[test]
+fn a_resource_the_host_cannot_build_reports_the_resources_stage() {
+    let suite = suite("resources-stage", "", &[("a.feature", PLAIN)]);
+    std::fs::write(
+        suite.dir.join("bddkit.yaml"),
+        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n      timeout_secs: 0\n",
+    )
+    .unwrap();
+    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert_eq!(suite.only_payload()["stage"], "resources");
 }
 
 /// `/dev/full` opens for writing and fails every write with ENOSPC.
@@ -632,10 +658,23 @@ fn doctor_records_its_own_payload_with_the_stages_that_failed() {
         payload["doctor"]["stages_failed"],
         serde_json::json!(["steps"])
     );
-    assert_eq!(payload["resources"]["api"], 1);
+    assert_eq!(payload["resources"]["api"], 0);
     for run_only in ["files", "scenarios", "usage", "scenario_ms"] {
         assert!(payload.get(run_only).is_none(), "{run_only}");
     }
+}
+
+// moves-to: api
+#[test]
+fn doctor_counts_the_api_resources_of_the_suite() {
+    let suite = suite("doctor-api-count", "", &[("a.feature", PLAIN)]);
+    std::fs::write(
+        suite.dir.join("bddkit.yaml"),
+        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n",
+    )
+    .unwrap();
+    doctor_rows(&suite, &["--telemetry", "true"], &[]);
+    assert_eq!(suite.only_payload()["resources"]["api"], 1);
 }
 
 #[test]
@@ -656,6 +695,7 @@ fn a_doctor_that_cannot_read_its_config_follows_the_broken_config_rule() {
     assert!(suite.payloads().is_empty());
 }
 
+// moves-to: db
 #[test]
 fn a_dsn_and_a_connection_name_never_reach_the_payload() {
     let config = |dsn: &str| {
