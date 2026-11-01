@@ -206,6 +206,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "bddkit-crate-json",
  "cbc",
  "clap",
  "cucumber-expressions",
@@ -240,6 +241,16 @@ dependencies = [
  "uuid",
  "webp",
  "zip",
+]
+
+[[package]]
+name = "bddkit-crate-json"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c855e4714b28cfd519d93c2b0c78d3ea0c37e83ef19ce4aa5cb90cecd6d06"
+dependencies = [
+ "regex",
+ "serde_json",
 ]
 
 [[package]]

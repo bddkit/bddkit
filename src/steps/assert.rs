@@ -1,8 +1,8 @@
 use super::markup::{self, MarkupError};
 use crate::http::ReplayError;
-use crate::json::{matcher, path};
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
+use bddkit_crate_json::{matcher, path};
 use regex::Regex;
 
 pub(super) async fn replay_response(w: &mut World, attempt: u64) -> AttemptResult {
@@ -141,8 +141,7 @@ pub fn response_header_matches(
 pub(super) fn expected_json(docstring: Option<&String>) -> Result<serde_json::Value, AttemptError> {
     let expected_src = docstring
         .ok_or_else(|| AttemptError::input("step requires a doc string with JSON".to_string()))?;
-    serde_json::from_str(expected_src)
-        .map_err(|e| AttemptError::input(format!("expected JSON is invalid: {e}")))
+    bddkit_crate_json::parse_expected(expected_src).map_err(|e| AttemptError::input(e.to_string()))
 }
 
 fn body_json(w: &World) -> Result<serde_json::Value, AttemptError> {
@@ -205,16 +204,18 @@ fn check_array_length(v: &serde_json::Value, want: usize) -> AttemptResult {
 }
 
 pub fn json_node_exists(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::input)?;
+    path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
         .map_err(AttemptError::input)?
         .json()
         .map_err(AttemptError::not_yet)?;
-    path::read(&v, p).map(|_| ()).map_err(AttemptError::not_yet)
+    path::read(&v, p)
+        .map(|_| ())
+        .map_err(|e| AttemptError::not_yet(e.to_string()))
 }
 
 pub fn json_node_not_exists(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::input)?;
+    path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
         .map_err(AttemptError::input)?
         .json()
@@ -233,7 +234,7 @@ fn check_not_exists(v: &serde_json::Value, p: &str) -> AttemptResult {
 }
 
 pub fn json_node_is_null(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::input)?;
+    path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
         .map_err(AttemptError::input)?
         .json()
@@ -242,7 +243,7 @@ pub fn json_node_is_null(w: &World, p: &str) -> AttemptResult {
 }
 
 pub fn json_node_not_null(w: &World, p: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::input)?;
+    path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
         .map_err(AttemptError::input)?
         .json()
@@ -282,17 +283,12 @@ pub(super) fn check_not_contains_json(
     actual: &serde_json::Value,
     expected: &serde_json::Value,
 ) -> AttemptResult {
-    match matcher::contains(actual, expected) {
-        Ok(()) => Err(AttemptError::not_yet(format!(
-            "    expected: {subject} to NOT contain JSON matching:\n{}\n    actual:   it does",
-            serde_json::to_string_pretty(expected).unwrap_or_default()
-        ))),
-        Err(_) => Ok(()),
-    }
+    matcher::not_contains(actual, expected)
+        .map_err(|unexpected| AttemptError::not_yet(unexpected.describe(subject)))
 }
 
 pub fn json_node_not_contains(w: &World, p: &str, needle: &str) -> AttemptResult {
-    path::validate(p).map_err(AttemptError::input)?;
+    path::validate(p).map_err(|e| AttemptError::input(e.to_string()))?;
     let v = last(w)
         .map_err(AttemptError::input)?
         .json()

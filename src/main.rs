@@ -19,7 +19,6 @@ mod hawk;
 mod http;
 mod include;
 mod init;
-mod json;
 mod macros;
 mod options;
 mod plugin;
