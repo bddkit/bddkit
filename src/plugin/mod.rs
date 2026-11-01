@@ -903,7 +903,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 18);
+        assert_eq!(plugins.step_count(), 19);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
