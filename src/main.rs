@@ -1358,7 +1358,8 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
     let config_path = resolved.path;
     let mut cfg = config::load(&config_path, cli.env.as_deref())?;
-    let mut overrides = settings::resolve(&cli.settings, &privacy::process_env)?;
+    let mut overrides =
+        settings::resolve(&cli.settings, &cfg.all_group_names(), &privacy::process_env)?;
     // `run`'s own two flags sit on top of the environment.
     overrides.fail_fast = cli.fail_fast.or(overrides.fail_fast);
     if !cli.tags.is_empty() {

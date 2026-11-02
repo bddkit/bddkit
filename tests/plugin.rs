@@ -256,6 +256,66 @@ fn a_group_switch_selects_another_instance_and_resets_per_scenario() {
     assert!(stdout.contains("failed: 0"), "{stdout}");
 }
 
+/// The instance a scenario starts on, read back through the echo prefix.
+const WHICH_INSTANCE: &str = r#"Feature: default
+  Scenario: s
+    When I echo "x" as "greeting"
+    Then variable "greeting" should be equal to "o-x"
+"#;
+const TWO_INSTANCES: &str = "  echo:\n    main:\n      prefix: \"p-\"\n    other:\n      prefix: \"o-\"\ndefault_echo: main\n";
+
+#[test]
+fn a_default_flag_beats_the_variable_and_the_variable_beats_the_config() {
+    let dir = project("default-flag", WHICH_INSTANCE, TWO_INSTANCES);
+    // The config says `main`, so the scenario fails until something else decides.
+    assert_eq!(run(&dir).status.code(), Some(1));
+    let out = run_with(&dir, &[], &[("BDDKIT_DEFAULT_ECHO", "other")]);
+    assert_green(&out);
+    let out = run_with(
+        &dir,
+        &["--default", "echo=other"],
+        &[("BDDKIT_DEFAULT_ECHO", "main")],
+    );
+    assert_green(&out);
+}
+
+#[test]
+fn a_default_for_a_group_or_an_instance_nothing_declares_exits_2() {
+    let dir = project("default-flag-unknown", WHICH_INSTANCE, TWO_INSTANCES);
+    for (args, named) in [
+        (["--default", "mail=inbox"], "mail"),
+        (["--default", "echo=third"], "third"),
+    ] {
+        let out = run_with(&dir, &args, &[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains(named), "{stderr}");
+    }
+}
+
+#[test]
+fn doctor_reads_the_default_flag_and_variable_as_run_does() {
+    let dir = project("default-doctor", WHICH_INSTANCE, TWO_INSTANCES);
+    let doctor = |args: &[&str], envs: &[(&str, &str)]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["doctor", "--config", "cfg.yaml"])
+            .args(args)
+            .envs(envs.iter().copied())
+            .current_dir(&dir)
+            .output()
+            .expect("run bddkit");
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            out.status.code(),
+        )
+    };
+    let (text, code) = doctor(&["--default", "echo=other"], &[]);
+    assert_eq!(code, Some(0), "{text}");
+    let (text, code) = doctor(&[], &[("BDDKIT_DEFAULT_ECHO", "third")]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("third"), "{text}");
+}
+
 #[test]
 fn a_config_group_no_plugin_serves_exits_2() {
     let dir = project(

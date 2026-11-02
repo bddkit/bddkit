@@ -271,8 +271,12 @@ pub async fn check(
     // bad one is a failed row, but the file itself was readable, so its own
     // telemetry key still decides.
     let mut cfg = cfg;
-    let applied = crate::settings::resolve(settings, &crate::privacy::process_env)
-        .and_then(|overrides| cfg.apply(&overrides));
+    let applied = crate::settings::resolve(
+        settings,
+        &cfg.all_group_names(),
+        &crate::privacy::process_env,
+    )
+    .and_then(|overrides| cfg.apply(&overrides));
     if let Err(error) = applied {
         report.push("config", None, Status::Failed, &format!("{error:#}"));
         report.note_telemetry(
