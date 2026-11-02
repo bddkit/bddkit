@@ -1542,8 +1542,6 @@ fn without_fail_fast_every_file_still_runs() {
     assert!(stdout.contains("files: 2"), "{stdout}");
 }
 
-/// `doctor` reaches every check a run makes before its first request, and a
-/// bare invocation opens no socket at all.
 /// A project with a core-only feature and the given `resources:` body.
 fn empty_group_project(name: &str, resources: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
@@ -1617,6 +1615,8 @@ fn a_group_with_an_instance_no_plugin_serves_still_exits_two() {
     );
 }
 
+/// `doctor` reaches every check a run makes before its first request, and a
+/// bare invocation opens no socket at all.
 #[test]
 fn doctor_reports_a_healthy_suite_and_exits_zero() {
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))

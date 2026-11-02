@@ -488,7 +488,7 @@ default_s3: backups
 
 `options` is the one reserved key inside an instance body; the host takes it out, cascades it over the global `options`, and passes the rest through as `config`. `default_<group>` is inferred when the group declares exactly one instance, must be explicit when it declares several, and a `default_<group>` naming a group the config does not declare is a startup error (it is how `default_s4` for `default_s3` gets caught).
 
-A `resources.<group>` block with no plugin serving that group exits 2 with "no installed plugin serves the group". A loaded plugin whose group the config never mentions is fine — it is simply never used.
+A `resources.<group>` block that declares an instance, with no plugin serving that group, exits 2 with "no installed plugin serves the group". An empty `resources.<group>: {}` needs no plugin: `run` accepts it and `doctor` hints that the key can be removed. A loaded plugin whose group the config never mentions is fine — it is simply never used.
 
 Testers then select an instance with `I use "archive" s3`, which the host builds from the loaded group names. The selection resets to `default_<group>` at every scenario boundary, and macros may call plugin steps like any other step.
 

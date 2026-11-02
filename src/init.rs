@@ -409,7 +409,8 @@ fn config_text(answers: &Answers) -> Result<String> {
             json!(1),
         )?;
     }
-    // `api` is a required key of `resources`, empty when the suite has none.
+    // `api` is optional since #190; the empty key stays so a fresh config reads
+    // the same on every release.
     let mut resources = json!({"api": {}});
     if let Some(url) = &answers.api_url {
         resources["api"]["main"] = json!({"base_url": literal(url)});

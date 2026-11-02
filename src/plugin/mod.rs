@@ -72,8 +72,8 @@ const _: fn() = || {
 impl Plugins {
     /// `groups_in_config` is every `resources.<group>` key the host does not
     /// serve itself. A group nothing claims is a startup error, unless it
-    /// declares no instance; a loaded plugin
-    /// whose group is absent from the config is not — it is simply never used.
+    /// declares no instance; a loaded plugin whose group is absent from the
+    /// config is not — it is simply never used.
     ///
     /// `concurrency` is the run's worker count, needed here because a `shared`
     /// plugin that keeps per-scenario state is only loadable sequentially —
