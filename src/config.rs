@@ -423,6 +423,40 @@ impl Config {
         self.resources.groups.keys()
     }
 
+    /// The groups a default can be set for: the built-in three, declared or not,
+    /// then the plugin groups the config declares.
+    pub fn all_group_names(&self) -> Vec<String> {
+        ["api", "db", "srp"]
+            .into_iter()
+            .map(String::from)
+            .chain(self.group_names().cloned())
+            .collect()
+    }
+
+    /// Sets a group's default as `default_<group>` would, from a flag or a
+    /// variable. A group nothing declares is refused, and a plugin group's name
+    /// is checked here (a built-in's is checked by the `resolve_default_*` that
+    /// `apply` runs next).
+    pub fn set_default(&mut self, group: &str, name: &str) -> Result<()> {
+        match group {
+            "api" => self.default_api = Some(name.to_string()),
+            "db" => self.default_db = Some(name.to_string()),
+            "srp" => self.default_srp = Some(name.to_string()),
+            _ if self.resources.groups.contains_key(group) => {
+                self.extra.insert(
+                    format!("default_{group}"),
+                    serde_yaml_ng::Value::String(name.to_string()),
+                );
+                self.resolve_default_group(group)?;
+            }
+            _ => bail!(
+                "a default was given for the resource group {group:?}, but this config declares no resources.{group} (groups declared here: {})",
+                self.all_group_names().join(", ")
+            ),
+        }
+        Ok(())
+    }
+
     /// The plugin groups with at least one instance: an empty
     /// `resources.<group>: {}` asks nothing of a plugin, so nothing is
     /// installed for it.
