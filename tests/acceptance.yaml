@@ -1,6 +1,4 @@
 macro_paths: [tests/macros]
 paths: [tests/features]
 
-resources:
-  # Empty until #190: `resources.api` has no serde default yet.
-  api: {}
+resources: {}

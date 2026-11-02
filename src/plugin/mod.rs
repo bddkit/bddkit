@@ -71,8 +71,11 @@ const _: fn() = || {
 
 impl Plugins {
     /// `groups_in_config` is every `resources.<group>` key the host does not
-    /// serve itself. A group nothing claims is a startup error; a loaded plugin
-    /// whose group is absent from the config is not — it is simply never used.
+    /// serve itself. An instance in a group nothing claims is a startup error
+    /// (the validation loop below); a group with no instance asks nothing of a
+    /// plugin, so an unserved one is only redundant and `doctor` hints at it. A
+    /// loaded plugin whose group is absent from the config is not an error
+    /// either — it is simply never used.
     ///
     /// `concurrency` is the run's worker count, needed here because a `shared`
     /// plugin that keeps per-scenario state is only loadable sequentially —
@@ -126,14 +129,6 @@ impl Plugins {
                 }
             }
             libs.push(lib);
-        }
-
-        for group in groups_in_config {
-            if !groups.contains_key(group) {
-                bail!(
-                    "the config declares resources.{group}, but no installed plugin serves the group {group:?}"
-                );
-            }
         }
 
         let mut declared = BTreeMap::new();
@@ -917,6 +912,28 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect_err("nothing claims the group");
+        assert!(format!("{error:#}").contains("echo"), "{error:#}");
+    }
+
+    #[test]
+    fn an_empty_config_group_with_no_plugin_is_accepted() {
+        // `resources.echo: {}` declares no instance, so there is nothing the
+        // missing plugin would have to serve: the key is merely redundant.
+        let plugins = Plugins::load(Vec::new(), &[], &["echo".into()], 1, &Options::default())
+            .expect("an empty group needs no plugin");
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn an_empty_group_does_not_excuse_an_instance_in_another_unserved_group() {
+        let error = Plugins::load(
+            Vec::new(),
+            &[instance("a", Some("p-"))],
+            &["echo".into(), "mail".into()],
+            1,
+            &Options::default(),
+        )
+        .expect_err("echo has an instance and nobody serves it");
         assert!(format!("{error:#}").contains("echo"), "{error:#}");
     }
 

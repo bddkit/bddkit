@@ -1,7 +1,6 @@
 paths: [selftest/fixtures/masking/features]
 
 resources:
-  api: {}
   exec:
     main:
       env:

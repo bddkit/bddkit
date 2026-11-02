@@ -18,8 +18,7 @@ fn project(name: &str, feature: &str, macros: Option<&str>) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
     std::fs::write(dir.join("features/f.feature"), feature).expect("write feature");
-    // `api: {}` until #190: `resources.api` has no serde default yet.
-    let mut config = String::from("paths: [features]\nresources:\n  api: {}\n");
+    let mut config = String::from("paths: [features]\nresources: {}\n");
     if let Some(macros) = macros {
         std::fs::create_dir_all(dir.join("macros")).expect("mkdir");
         std::fs::write(dir.join("macros/m.yaml"), macros).expect("write macros");
@@ -64,8 +63,8 @@ fn http_project(name: &str, base: &str, feature: &str) -> PathBuf {
     let dir = project(name, feature, None);
     let config = std::fs::read_to_string(dir.join("cfg.yaml")).expect("config");
     let config = config.replace(
-        "api: {}\n",
-        &format!("api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"),
+        "resources: {}\n",
+        &format!("resources:\n  api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"),
     );
     std::fs::write(dir.join("cfg.yaml"), config).expect("write config");
     dir
