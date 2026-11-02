@@ -475,7 +475,6 @@ Then declare instances in the ordinary config, under the group name:
 ```yaml
 paths: [features/]
 resources:
-  api: {}
   s3:
     backups:
       bucket: acme-backups

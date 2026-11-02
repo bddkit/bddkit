@@ -361,11 +361,17 @@ pub async fn check(
                 plugins.steps().len(),
                 plugins.group_names().len()
             );
-            report.push("plugins", None, Status::Ok, &detail);
+            report.push(
+                "plugins",
+                None,
+                Status::Ok,
+                &with_empty_group_hints(detail, &cfg, Some(&plugins)),
+            );
             Some(plugins)
         }
         Ok(None) => {
-            report.push("plugins", None, Status::Ok, "none installed");
+            let detail = with_empty_group_hints("none installed".into(), &cfg, None);
+            report.push("plugins", None, Status::Ok, &detail);
             None
         }
         Err(error) => {
@@ -463,6 +469,24 @@ fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins,
             ),
         }
     }
+}
+
+/// A hint, never a refusal: `run` accepts a `resources.<group>: {}` that no
+/// plugin serves, and says nothing. `doctor` points out the key is redundant.
+fn with_empty_group_hints(
+    mut detail: String,
+    cfg: &config::Config,
+    plugins: Option<&crate::plugin::Plugins>,
+) -> String {
+    let served = plugins.map(|p| p.group_names()).unwrap_or_default();
+    for (group, instances) in &cfg.resources.groups {
+        if instances.is_empty() && !served.contains(group) {
+            detail.push_str(&format!(
+                "; resources.{group} is empty and no installed plugin serves it, the key can be removed"
+            ));
+        }
+    }
+    detail
 }
 
 /// Hint names and the `file:line` places they were found (spec §7.10).

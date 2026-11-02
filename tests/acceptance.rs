@@ -1544,6 +1544,79 @@ fn without_fail_fast_every_file_still_runs() {
 
 /// `doctor` reaches every check a run makes before its first request, and a
 /// bare invocation opens no socket at all.
+/// A project with a core-only feature and the given `resources:` body.
+fn empty_group_project(name: &str, resources: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
+    std::fs::write(
+        dir.join("features/f.feature"),
+        "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n",
+    )
+    .expect("write feature");
+    std::fs::write(
+        dir.join("cfg.yaml"),
+        format!("paths: [features]\nresources:\n{resources}"),
+    )
+    .expect("write config");
+    // An empty bddkit dir: a developer's installed plugins never decide this.
+    std::fs::create_dir_all(dir.join(".bddkit")).expect("mkdir");
+    dir
+}
+
+fn run_empty_group_project(
+    subcommand: &str,
+    dir: &std::path::Path,
+) -> (Option<i32>, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .current_dir(dir)
+        .args([subcommand, "--config", "cfg.yaml", "--bddkit-dir"])
+        .arg(dir.join(".bddkit"))
+        .output()
+        .expect("run bddkit");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_config_with_no_resources_api_runs() {
+    let dir = empty_group_project("no-api-key", "  db: {}\n");
+    let (code, stdout, stderr) = run_empty_group_project("run", &dir);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+}
+
+#[test]
+fn an_empty_group_no_plugin_serves_runs_quietly_and_doctor_hints_at_it() {
+    let dir = empty_group_project("empty-group", "  foo: {}\n");
+    let (code, stdout, stderr) = run_empty_group_project("run", &dir);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(
+        !stdout.contains("foo") && !stderr.contains("foo"),
+        "{stdout}{stderr}"
+    );
+
+    let (code, stdout, stderr) = run_empty_group_project("doctor", &dir);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("resources.foo is empty") && stdout.contains("can be removed"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_group_with_an_instance_no_plugin_serves_still_exits_two() {
+    let dir = empty_group_project("unserved-group", "  foo:\n    main:\n      x: 1\n");
+    let (code, stdout, stderr) = run_empty_group_project("run", &dir);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        format!("{stdout}{stderr}").contains("no installed plugin serves the group"),
+        "{stdout}{stderr}"
+    );
+}
+
 #[test]
 fn doctor_reports_a_healthy_suite_and_exits_zero() {
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))

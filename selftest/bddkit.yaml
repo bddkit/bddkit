@@ -9,7 +9,6 @@ paths: [selftest/features]
 macro_paths: [selftest/macros.yaml]
 
 resources:
-  api: {}
   exec:
     main:
       # The repository root, so the scenarios use the same relative paths the

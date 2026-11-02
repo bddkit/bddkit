@@ -62,6 +62,7 @@ pub struct Config {
 /// of them by name.
 #[derive(Debug, Deserialize)]
 pub struct Resources {
+    #[serde(default)]
     pub api: BTreeMap<String, ApiConfig>,
     #[serde(default)]
     pub db: BTreeMap<String, Connection>,
@@ -1014,6 +1015,12 @@ resources:
                 ("options", "{ polling: { timeout_secs: 3 } }"),
             ],
         );
+    }
+
+    #[test]
+    fn resources_api_is_optional() {
+        let cfg = parse("paths: [f]\nresources: {}\n").expect("no api key is fine");
+        assert!(cfg.resources.api.is_empty());
     }
 
     fn parse(src: &str) -> Result<Config> {

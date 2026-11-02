@@ -71,7 +71,8 @@ const _: fn() = || {
 
 impl Plugins {
     /// `groups_in_config` is every `resources.<group>` key the host does not
-    /// serve itself. A group nothing claims is a startup error; a loaded plugin
+    /// serve itself. A group nothing claims is a startup error, unless it
+    /// declares no instance; a loaded plugin
     /// whose group is absent from the config is not — it is simply never used.
     ///
     /// `concurrency` is the run's worker count, needed here because a `shared`
@@ -128,8 +129,11 @@ impl Plugins {
             libs.push(lib);
         }
 
+        // A group with no instance asks nothing of a plugin, so an unserved one
+        // is only redundant (`doctor` hints at it); one with an instance has
+        // nobody to run it.
         for group in groups_in_config {
-            if !groups.contains_key(group) {
+            if !groups.contains_key(group) && instances.iter().any(|spec| spec.group == *group) {
                 bail!(
                     "the config declares resources.{group}, but no installed plugin serves the group {group:?}"
                 );
@@ -918,6 +922,15 @@ pub(crate) mod tests {
         )
         .expect_err("nothing claims the group");
         assert!(format!("{error:#}").contains("echo"), "{error:#}");
+    }
+
+    #[test]
+    fn an_empty_config_group_with_no_plugin_is_accepted() {
+        // `resources.echo: {}` declares no instance, so there is nothing the
+        // missing plugin would have to serve: the key is merely redundant.
+        let plugins = Plugins::load(Vec::new(), &[], &["echo".into()], 1, &Options::default())
+            .expect("an empty group needs no plugin");
+        assert!(plugins.is_empty());
     }
 
     #[test]

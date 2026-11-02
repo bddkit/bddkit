@@ -1,4 +1,3 @@
 paths: [selftest/fixtures/examples_tags/features]
 
-resources:
-  api: {}
+resources: {}
