@@ -128,7 +128,7 @@ pub(crate) fn check_repo(repo: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct IndexEntry {
     pub name: String,
     pub repo: String,
@@ -138,6 +138,10 @@ pub struct IndexEntry {
     /// does not say, which is not the same as "no release for this ABI".
     #[serde(default)]
     pub abi: BTreeMap<String, String>,
+    /// The `resources.<group>` keys the plugin serves, so a config can be
+    /// mapped to the plugins it needs without loading any library.
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -150,6 +154,63 @@ pub fn parse_index(raw: &str) -> Result<Vec<IndexEntry>> {
     Ok(serde_yaml_ng::from_str::<Index>(raw)
         .context("malformed plugin index")?
         .plugin)
+}
+
+/// What a config's groups ask of the index.
+#[derive(Debug)]
+pub struct Needs<'a> {
+    /// Entries to install: they claim a wanted group and are not installed.
+    pub missing: Vec<&'a IndexEntry>,
+    /// Wanted groups no index entry claims. They may be served by a plugin
+    /// installed from a repository, which the index cannot know.
+    pub unclaimed: Vec<String>,
+}
+
+/// No group may be claimed by two entries: the mapping would have to guess.
+pub fn check_unique_groups(index: &[IndexEntry]) -> Result<()> {
+    let mut claimed: BTreeMap<&str, &str> = BTreeMap::new();
+    for entry in index {
+        for group in &entry.groups {
+            if let Some(other) = claimed.insert(group, &entry.name)
+                && other != entry.name
+            {
+                bail!(
+                    "the plugin index lets {other:?} and {:?} both claim the group {group:?}",
+                    entry.name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Maps `groups` (the config's non-empty plugin groups) to the index entries
+/// that claim them and are not in `installed` (lock entry names). Decided from
+/// names alone: no library is loaded, so a plugin built for another ABI is
+/// still counted as installed.
+pub fn needs<'a>(
+    groups: &[String],
+    installed: &[String],
+    index: &'a [IndexEntry],
+) -> Result<Needs<'a>> {
+    check_unique_groups(index)?;
+    let mut out = Needs {
+        missing: Vec::new(),
+        unclaimed: Vec::new(),
+    };
+    for group in groups {
+        match index.iter().find(|entry| entry.groups.contains(group)) {
+            None => out.unclaimed.push(group.clone()),
+            Some(entry) => {
+                if !installed.contains(&entry.name)
+                    && !out.missing.iter().any(|m| m.name == entry.name)
+                {
+                    out.missing.push(entry);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Case-insensitive substring over name and description; `None` is everything.
@@ -805,5 +866,63 @@ mod tests {
                 outside.display()
             );
         }
+    }
+
+    fn entry(name: &str, groups: &[&str]) -> IndexEntry {
+        IndexEntry {
+            name: name.into(),
+            repo: format!("bddkit/bddkit-{name}"),
+            description: String::new(),
+            abi: BTreeMap::new(),
+            groups: groups.iter().map(|g| g.to_string()).collect(),
+        }
+    }
+
+    fn names(groups: &[&str]) -> Vec<String> {
+        groups.iter().map(|g| g.to_string()).collect()
+    }
+
+    #[test]
+    fn a_group_maps_to_the_entry_that_claims_it_unless_that_one_is_installed() {
+        let index = [entry("s3", &["s3"]), entry("api", &["api", "srp"])];
+        let wanted = needs(&names(&["srp", "s3", "api"]), &names(&["s3"]), &index).unwrap();
+        assert_eq!(
+            wanted.missing.len(),
+            1,
+            "api once, though two groups name it"
+        );
+        assert_eq!(wanted.missing[0].name, "api");
+        assert!(wanted.unclaimed.is_empty());
+        let again = needs(&names(&["s3"]), &names(&["s3"]), &index).unwrap();
+        assert!(again.missing.is_empty() && again.unclaimed.is_empty());
+    }
+
+    #[test]
+    fn a_group_nothing_in_the_index_claims_is_reported_not_guessed() {
+        let index = [entry("s3", &["s3"])];
+        let wanted = needs(&names(&["widget"]), &[], &index).unwrap();
+        assert!(wanted.missing.is_empty());
+        assert_eq!(wanted.unclaimed, ["widget"]);
+    }
+
+    #[test]
+    fn a_group_claimed_twice_is_refused() {
+        let index = [entry("a", &["x"]), entry("b", &["x"])];
+        let error = needs(&names(&["x"]), &[], &index).unwrap_err();
+        assert!(
+            format!("{error}").contains("both claim the group \"x\""),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn one_entry_listing_a_group_twice_is_not_a_duplicate_claim() {
+        check_unique_groups(&[entry("a", &["x", "x"])]).unwrap();
+    }
+
+    #[test]
+    fn the_shipped_index_claims_no_group_twice() {
+        let index = parse_index(include_str!("../../plugin-registry.yaml")).unwrap();
+        check_unique_groups(&index).unwrap();
     }
 }

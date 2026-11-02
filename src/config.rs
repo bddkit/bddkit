@@ -423,6 +423,18 @@ impl Config {
         self.resources.groups.keys()
     }
 
+    /// The plugin groups with at least one instance: an empty
+    /// `resources.<group>: {}` asks nothing of a plugin, so nothing is
+    /// installed for it.
+    pub fn groups_in_use(&self) -> Vec<String> {
+        self.resources
+            .groups
+            .iter()
+            .filter(|(_, instances)| !instances.is_empty())
+            .map(|(group, _)| group.clone())
+            .collect()
+    }
+
     /// Same rule as `default_api`: an explicit name must be declared, a lone
     /// instance is the default on its own, several without an explicit choice
     /// is a startup error.

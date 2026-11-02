@@ -69,9 +69,20 @@ impl Stub {
     /// whose `plugin check` exits with `check_exit`. Never the real binary:
     /// `upgrade` replaces what it is given, and tests share the built one.
     fn publish_bddkit(&self, version: &str, abi: u32, check_exit: i32) {
+        self.publish_bddkit_needing(version, abi, check_exit, "");
+    }
+
+    /// The same release whose `plugin needs` prints `needs` (a shell command);
+    /// empty means a bddkit that does not know the subcommand.
+    fn publish_bddkit_needing(&self, version: &str, abi: u32, check_exit: i32, needs: &str) {
+        let needs = if needs.is_empty() {
+            "echo \"error: unrecognized subcommand 'needs'\" >&2; exit 2".to_string()
+        } else {
+            needs.to_string()
+        };
         let name = format!("bddkit-v{version}-{}", host_target());
         let script = format!(
-            "#!/bin/sh\ncase \"$1 $2\" in\n\"version --json\") echo '{{\"version\":\"{version}\",\"target\":\"{}\",\"plugin_abi\":{abi}}}' ;;\n\"plugin check\") if [ {check_exit} -ne 0 ]; then echo refused >&2; exit {check_exit}; fi; echo echo ;;\n*) echo staged-bddkit-{version} ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1 $2\" in\n\"version --json\") echo '{{\"version\":\"{version}\",\"target\":\"{}\",\"plugin_abi\":{abi}}}' ;;\n\"plugin check\") if [ {check_exit} -ne 0 ]; then echo refused >&2; exit {check_exit}; fi; echo echo ;;\n\"plugin needs\") {needs} ;;\n*) echo staged-bddkit-{version} ;;\nesac\n",
             host_target()
         );
         let archive = pack_files(&name, &[("bddkit", script.as_bytes())]);
@@ -328,6 +339,114 @@ async fn an_index_install_is_registered_and_runs() {
         .output()
         .expect("run");
     assert!(run.status.success(), "{}", text(&run));
+}
+
+const GROUP_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n  - name: mail\n    repo: bddkit/bddkit-mail\n    groups: [mail]\n    abi:\n      \"4\": 0.2.0\n";
+
+/// A suite using `echo`, with an empty `mail` group that needs no plugin.
+fn suite_config(dir: &Path, extra: &str) {
+    std::fs::write(
+        dir.join("bddkit.yaml"),
+        format!("paths: [features]\nresources:\n  api: {{}}\n  echo:\n    main:\n      prefix: \"p-\"\n{extra}"),
+    )
+    .expect("config");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_with_no_name_installs_what_the_config_needs_once() {
+    let (stub, github) = spawn().await;
+    stub.index(GROUP_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("install-needed");
+    suite_config(&dir, "  mail: {}\n");
+
+    let before = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["run", "--config", "bddkit.yaml", "--bddkit-dir"])
+        .arg(&*dir)
+        .current_dir(&*dir)
+        .output()
+        .expect("run");
+    assert_eq!(before.status.code(), Some(2), "{}", text(&before));
+    let before = text(&before);
+    assert!(
+        before.contains("\"echo\"") && before.contains("bddkit plugin install"),
+        "{before}"
+    );
+    assert!(
+        !before.contains("bddkit/echo-plugin"),
+        "the plugin is not named: {before}"
+    );
+
+    let out = plugin(&dir, &github, &["install"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        !text(&out).contains("mail"),
+        "an empty group installs nothing: {}",
+        text(&out)
+    );
+
+    let again = plugin(&dir, &github, &["install"]);
+    assert!(again.status.success(), "{}", text(&again));
+    assert!(
+        text(&again).contains("nothing to install"),
+        "{}",
+        text(&again)
+    );
+    assert!(!text(&again).contains("installed echo"), "{}", text(&again));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_needs_prints_the_json_upgrade_reads() {
+    let (stub, github) = spawn().await;
+    stub.index(GROUP_INDEX);
+    let dir = temp("needs-json");
+    suite_config(&dir, "");
+    let out = plugin(
+        &dir,
+        &github,
+        &["needs", "--json", "--config", "bddkit.yaml"],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let answer: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON value");
+    assert_eq!(
+        answer,
+        serde_json::json!({"plugins": [{"name": "echo", "repo": "bddkit/echo-plugin"}]})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_needed_plugin_without_a_release_for_this_abi_is_a_warning() {
+    let (stub, github) = spawn().await;
+    stub.index(GROUP_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("install-no-build");
+    suite_config(&dir, "  mail:\n    inbox:\n      host: localhost\n");
+
+    let out = plugin(&dir, &github, &["install"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("warning: mail"), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_with_no_name_and_no_config_says_so() {
+    let (_stub, github) = spawn().await;
+    let dir = temp("install-no-config");
+    let out = plugin(&dir, &github, &["install"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("no config found"), "{}", text(&out));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1423,6 +1542,113 @@ async fn an_abi_upgrade_switches_every_installed_plugin_with_the_binary() {
     assert!(backup.contains("version: 0.1.0"), "{backup}");
     assert_eq!(sandbox.receipt_version(), "99.0.0");
     assert_ne!(sandbox.bin_text(), sandbox.original);
+}
+
+const NEEDS_ECHO: &str = "echo '{\"plugins\":[{\"name\":\"echo\",\"repo\":\"bddkit/echo-plugin\",\"later\":1}],\"x\":2}'";
+const GROUPED_ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n    abi:\n      \"3\": 0.1.0\n      \"4\": 0.2.0\n";
+
+/// A suite in the sandbox's working directory that uses `echo`, found the way `run` finds it.
+fn sandbox_suite(sandbox: &Sandbox) {
+    suite_config(&sandbox.root, "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upgrade_installs_a_plugin_the_suite_needs_and_rollback_takes_it_back() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-needs");
+    sandbox_suite(&sandbox);
+    stub.index(GROUPED_ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit_needing("99.0.0", 4, 0, NEEDS_ECHO);
+
+    let checked = sandbox.upgrade(&github, &["--check"]);
+    assert!(checked.status.success(), "{}", text(&checked));
+    assert!(
+        text(&checked).contains("echo not installed → 0.2.0"),
+        "{}",
+        text(&checked)
+    );
+    assert_eq!(sandbox.lock(), "", "--check writes nothing");
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        sandbox.lock().contains("name: echo") && sandbox.lock().contains("version: 0.2.0"),
+        "{}",
+        sandbox.lock()
+    );
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+
+    // The binary was replaced by a script: roll back with the kept real one.
+    let kept = sandbox.data().join("previous/bddkit");
+    let out = sandbox.upgrade_as(&kept, &github, &["--rollback"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        !sandbox.lock().contains("echo"),
+        "the new entry is gone: {}",
+        sandbox.lock()
+    );
+    assert_eq!(sandbox.receipt_version(), CURRENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_needed_plugin_already_moving_is_planned_once() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-needs-moving");
+    sandbox_suite(&sandbox);
+    sandbox.install_echo(&github, &stub);
+    stub.index(GROUPED_ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit_needing("99.0.0", 4, 0, NEEDS_ECHO);
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        sandbox.lock().matches("name: echo").count(),
+        1,
+        "{}",
+        sandbox.lock()
+    );
+    assert!(
+        sandbox.lock().contains("version: 0.2.0"),
+        "{}",
+        sandbox.lock()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_needed_plugin_with_no_release_for_the_new_abi_blocks_the_upgrade() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-needs-blocked");
+    sandbox_suite(&sandbox);
+    stub.index("plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n    abi:\n      \"3\": 0.1.0\n");
+    stub.publish_bddkit_needing("99.0.0", 4, 0, NEEDS_ECHO);
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("nothing was changed"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_staged_bddkit_that_cannot_say_what_is_needed_means_nothing_with_a_warning() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-needs-unknown");
+    sandbox_suite(&sandbox);
+    stub.index(GROUPED_ABI_INDEX);
+    // An older release: `plugin needs` is an unrecognized subcommand.
+    stub.publish_bddkit("99.0.0", 4, 0);
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("warning: could not ask the new bddkit"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+    assert_eq!(sandbox.lock(), "");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

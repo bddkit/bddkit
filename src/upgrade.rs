@@ -36,6 +36,10 @@ pub struct Options {
     pub rollback: bool,
     pub force: bool,
     pub yes: bool,
+    /// The suite's config, found as `run` finds it; `None` means no suite.
+    pub config: Option<PathBuf>,
+    /// `--bddkit-dir`, forwarded so the staged binary reads the same locks.
+    pub bddkit_dir: Option<PathBuf>,
 }
 
 /// `install.json`, written by the install scripts in the user layer's data
@@ -287,11 +291,12 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     note.to = Some(info.version.clone());
     let abi_changes = info.plugin_abi != crate::plugin::abi::ABI_VERSION;
     note.abi_changed = abi_changes;
-    let plan = if abi_changes {
+    let mut plan = if abi_changes {
         plan_plugins(ctx, info.plugin_abi).await?
     } else {
         Plan::default()
     };
+    plan_needed(ctx, opts, &staged, info.plugin_abi, &mut plan).await?;
     note.plugins_left = plan.left.len() as u64;
     note.plugins_refused = plan.blocked.len() as u64;
     print_plan(&version, &info, abi_changes, &plan);
@@ -435,6 +440,15 @@ fn preflight(ctx: &Context, plan: &Plan, previous: &Path, receipt_path: &Path) -
         }
     }
     for planned in &plan.moves {
+        // A plugin the suite needs may be the user layer's first: an empty lock
+        // file now, so the backup has something to keep and a rollback puts
+        // the layer back as it was.
+        if !planned.target.lock.exists() {
+            let dir = planned.target.lock.parent().unwrap_or(Path::new("."));
+            std::fs::create_dir_all(dir)
+                .and_then(|()| std::fs::write(&planned.target.lock, "plugin: []\n"))
+                .with_context(|| format!("cannot write {}", planned.target.lock.display()))?;
+        }
         writable(&planned.target.lock)?;
         let plugins = planned.target.data.join("plugins");
         std::fs::create_dir_all(&plugins)
@@ -563,6 +577,106 @@ async fn plan_plugins(ctx: &Context, abi: u32) -> Result<Plan> {
     Ok(plan)
 }
 
+/// The answer of `plugin needs --json`. Unknown fields are ignored: a later
+/// bddkit may add some, and this reader must keep working with it.
+#[derive(Deserialize)]
+struct Needs {
+    plugins: Vec<NeededPlugin>,
+}
+
+#[derive(Deserialize)]
+struct NeededPlugin {
+    name: String,
+    repo: String,
+}
+
+/// What the staged binary says the suite needs and the lock files lack. Any
+/// failure — a config that does not load, a binary that does not know
+/// `plugin needs`, an answer that does not parse — means nothing is needed,
+/// with a warning: the upgrade then goes on as it did before this existed.
+fn staged_needs(staged: &Path, opts: &Options) -> Vec<NeededPlugin> {
+    let Some(config) = &opts.config else {
+        return Vec::new();
+    };
+    let mut command = Command::new(staged);
+    command
+        .args(["plugin", "needs", "--json", "--config"])
+        .arg(config);
+    if let Some(dir) = &opts.bddkit_dir {
+        command.arg("--bddkit-dir").arg(dir);
+    }
+    let answer = command
+        .output()
+        .map_err(|error| error.to_string())
+        .and_then(|out| {
+            if out.status.success() {
+                serde_json::from_slice::<Needs>(&out.stdout).map_err(|error| error.to_string())
+            } else {
+                // Not its stderr: this process cannot mask a secret the staged
+                // binary's config load quoted, and an older one may not mask it.
+                Err(format!("it exited with {}", out.status))
+            }
+        });
+    match answer {
+        Ok(needs) => needs.plugins,
+        Err(why) => {
+            eprintln!(
+                "warning: could not ask the new bddkit which plugins {} needs, so none are added: {}",
+                config.display(),
+                why
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Adds the plugins the suite needs and no lock file has to the plan, next to
+/// the ones that move. One with no release for the new ABI blocks the upgrade
+/// like an installed one in that state (`--force` leaves it out).
+async fn plan_needed(
+    ctx: &Context,
+    opts: &Options,
+    staged: &Path,
+    abi: u32,
+    plan: &mut Plan,
+) -> Result<()> {
+    let needed = staged_needs(staged, opts);
+    if needed.is_empty() {
+        return Ok(());
+    }
+    let target = match ctx.install_target(ctx.config_install_layer()) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("warning: the plugins the suite needs are not installed: {error:#}");
+            return Ok(());
+        }
+    };
+    let index = install::fetch_index(&ctx.client, &ctx.sources)
+        .await
+        .unwrap_or_default();
+    for plugin in needed {
+        if plan.moves.iter().any(|m| m.name == plugin.name) {
+            continue;
+        }
+        let row = format!("{} ({}, needed by the config)", plugin.name, target.label);
+        let indexed = index.iter().find(|e| e.repo == plugin.repo);
+        match install::host_release(&ctx.client, &ctx.sources.github, &plugin.repo, indexed, abi)
+            .await
+        {
+            Ok(Ok(to)) => plan.moves.push(Move {
+                target: target.clone(),
+                name: plugin.name,
+                repo: plugin.repo,
+                from: "not installed".to_string(),
+                to,
+            }),
+            Ok(Err(why)) => plan.blocked.push(format!("{row}: {why}")),
+            Err(error) => plan.blocked.push(format!("{row}: {error:#}")),
+        }
+    }
+    Ok(())
+}
+
 fn print_plan(version: &str, info: &Info, abi_changes: bool, plan: &Plan) {
     println!(
         "bddkit {CURRENT} → {version} (plugin ABI {})",
@@ -570,9 +684,8 @@ fn print_plan(version: &str, info: &Info, abi_changes: bool, plan: &Plan) {
     );
     if !abi_changes {
         println!(
-            "the plugin ABI is unchanged: plugins are left alone (`bddkit plugin update` moves them)"
+            "the plugin ABI is unchanged: installed plugins are left alone (`bddkit plugin update` moves them)"
         );
-        return;
     }
     for planned in &plan.moves {
         println!(

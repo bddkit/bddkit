@@ -133,7 +133,7 @@ impl Context {
         Ok(())
     }
 
-    fn install_target(&self, layer: Option<&str>) -> Result<Target> {
+    pub(crate) fn install_target(&self, layer: Option<&str>) -> Result<Target> {
         self.check_layer_flag(layer)?;
         let Some(label) = layer else {
             let layer = dirs::install_layer(&self.layers).context(
@@ -309,6 +309,75 @@ impl Context {
         Ok(winner
             .map(|entry| entry.layer)
             .filter(|layer| layer != label))
+    }
+
+    /// The layer a config-driven install writes to: always the user layer,
+    /// never the auto-pick, which would choose `/etc/bddkit` when only it
+    /// exists. One `--bddkit-dir` has no layers, so no label.
+    pub(crate) fn config_install_layer(&self) -> Option<&'static str> {
+        (!self.layers.iter().any(|l| l.name == "override")).then_some("user")
+    }
+
+    /// The plugins `config` needs that no lock file of the chain installs,
+    /// and the groups no index entry claims. Decided from names, no library
+    /// is loaded. The config is parsed, not just located: a config that does
+    /// not load is the caller's error.
+    pub(crate) async fn needs(
+        &self,
+        config: &Path,
+    ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
+        let cfg = crate::config::load(config, None)?;
+        let groups = cfg.groups_in_use();
+        if groups.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let installed: Vec<String> = lock::load(&dirs::candidates(&self.layers, "plugins"))?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        let index = install::fetch_index(&self.client, &self.sources).await?;
+        let wanted = install::needs(&groups, &installed, &index)?;
+        let unclaimed = wanted.unclaimed;
+        let missing = wanted.missing.into_iter().cloned().collect();
+        Ok((missing, unclaimed))
+    }
+
+    /// `plugin install` with no name: every plugin `config` needs and the
+    /// chain lacks. One without a release for this ABI is a warning and the
+    /// rest are still installed; any other failure is exit 1 after the rest.
+    pub async fn install_needed(&self, config: &Path, layer: Option<&str>) -> Result<i32> {
+        let (missing, unclaimed) = self.needs(config).await?;
+        for group in &unclaimed {
+            eprintln!(
+                "warning: no plugin in the index serves resources.{group}; if a plugin installed from a repository does, ignore this"
+            );
+        }
+        if missing.is_empty() {
+            if unclaimed.is_empty() {
+                println!(
+                    "nothing to install: every plugin {} needs is installed",
+                    config.display()
+                );
+            }
+            return Ok(0);
+        }
+        let layer = layer.or(self.config_install_layer());
+        let mut code = 0;
+        for entry in &missing {
+            let mut acted = Acted::default();
+            let outcome = self.install_one(&entry.name, layer, &mut acted).await;
+            self.note(&acted, &outcome);
+            let no_build = install::result_of(&outcome) == PluginResult::NoBuild;
+            if let Err(error) = outcome {
+                if no_build {
+                    eprintln!("warning: {}: {error:#}", entry.name);
+                } else {
+                    eprintln!("error: {}: {error:#}", entry.name);
+                    code = 1;
+                }
+            }
+        }
+        Ok(code)
     }
 
     /// What the last `install`, `update` or `remove` acted on, for telemetry.

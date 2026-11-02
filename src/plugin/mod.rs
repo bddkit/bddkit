@@ -194,7 +194,7 @@ impl Plugins {
                 .map(|index| &plugins.libs[*index])
                 .with_context(|| {
                     format!(
-                        "{origin}: no installed plugin serves the group {:?}",
+                        "{origin}: no installed plugin serves the group {:?}; `bddkit plugin install` installs the plugins this config needs",
                         spec.group
                     )
                 })?;

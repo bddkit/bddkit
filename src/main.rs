@@ -170,6 +170,7 @@ const LAYERS: [&str; 6] = [
 #[command(after_help = "Examples:
   bddkit plugin list                        every plugin in the index
   bddkit plugin list mail                   only those whose name or description matches
+  bddkit plugin install                     every plugin the config needs, into the user layer
   bddkit plugin install exec                the latest release, into the user layer
   bddkit plugin install exec@0.1.0 --layer project.local
   bddkit plugin install someone/bddkit-widget
@@ -196,8 +197,8 @@ enum PluginCommand {
     },
     /// Download a plugin release and register it in a lock file
     Install {
-        /// An index name or owner/repo, optionally @<version>
-        plugin: String,
+        /// An index name or owner/repo, optionally @<version> [default: every plugin the config needs]
+        plugin: Option<String>,
         /// The lock file to write [default: user, or shared when only that directory exists]
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LAYERS))]
         layer: Option<String>,
@@ -231,6 +232,13 @@ enum PluginCommand {
     },
     /// Show installed plugins, or one plugin in detail
     Show { name: Option<String> },
+    /// The plugins the config needs and no lock file installs (what `upgrade` asks the new binary)
+    #[command(hide = true)]
+    Needs {
+        /// Accepted for the caller's sake: the answer is always `{"plugins":[{"name","repo"}]}`
+        #[arg(long)]
+        json: bool,
+    },
     /// Load a library and print its plugin name (what `upgrade` asks the new binary)
     #[command(hide = true)]
     Check { path: PathBuf },
@@ -264,17 +272,42 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
             println!("{}", lib.manifest.name);
             return Ok(0);
         }
-        // Located, never parsed: only the project layer's anchor is needed.
-        let config_dir = match config::resolve_config_path(args.config.as_deref())? {
+        let resolved = config::resolve_config_path(args.config.as_deref())?;
+        // The project layer's anchor; the config is parsed only by the commands
+        // that map its groups to plugins.
+        let config_dir = match &resolved {
             Some(resolved) => config_dir(&resolved.path).to_path_buf(),
             None => PathBuf::from("."),
+        };
+        let needed_config = || {
+            resolved
+                .as_ref()
+                .map(|resolved| resolved.path.clone())
+                .context(config::NO_CONFIG_FOUND)
         };
         let ctx =
             plugin::manage::Context::new(dirs::Env::from_process(args.bddkit_dir), &config_dir)?;
         let outcome = match command {
             PluginCommand::List { query } => ctx.list(query.as_deref()).await,
-            PluginCommand::Install { plugin, layer } => {
-                ctx.install(&plugin, layer.as_deref()).await
+            PluginCommand::Install {
+                plugin: Some(plugin),
+                layer,
+            } => ctx.install(&plugin, layer.as_deref()).await,
+            PluginCommand::Install {
+                plugin: None,
+                layer,
+            } => {
+                ctx.install_needed(&needed_config()?, layer.as_deref())
+                    .await
+            }
+            PluginCommand::Needs { .. } => {
+                let (missing, _) = ctx.needs(&needed_config()?).await?;
+                let plugins: Vec<_> = missing
+                    .iter()
+                    .map(|e| serde_json::json!({"name": e.name, "repo": e.repo}))
+                    .collect();
+                println!("{}", serde_json::json!({"plugins": plugins}));
+                Ok(0)
             }
             PluginCommand::Update {
                 names,
@@ -375,10 +408,12 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
         telemetry::command::Setting::discover(args.config.as_deref(), args.bddkit_dir.clone()).ok();
     let mut note = telemetry::payload::UpgradeInfo::default();
     let outcome: Result<i32> = async {
-        let config_dir = match config::resolve_config_path(args.config.as_deref())? {
+        let resolved = config::resolve_config_path(args.config.as_deref())?;
+        let config_dir = match &resolved {
             Some(resolved) => config_dir(&resolved.path).to_path_buf(),
             None => PathBuf::from("."),
         };
+        let bddkit_dir = args.bddkit_dir.clone();
         let ctx =
             plugin::manage::Context::new(dirs::Env::from_process(args.bddkit_dir), &config_dir)?;
         upgrade::run(
@@ -389,6 +424,8 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
                 rollback: args.rollback,
                 force: args.force,
                 yes: args.yes,
+                config: resolved.map(|resolved| resolved.path),
+                bddkit_dir,
             },
             &mut note,
         )

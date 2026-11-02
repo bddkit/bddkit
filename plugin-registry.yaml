@@ -2,34 +2,41 @@
 # read. A plugin gets here by a pull request adding one entry; `name` must be
 # the plugin manifest's own name, and `repo` must publish releases following
 # the convention in docs/plugin-authoring.md, section 7. An optional `abi` map
-# ("2": 0.2.0) names the newest release per plugin ABI.
+# ("2": 0.2.0) names the newest release per plugin ABI. `groups` lists the
+# `resources.<group>` keys the plugin serves, so `bddkit plugin install` with no
+# name can find the plugins a config needs; no group may be listed twice.
 plugin:
   - name: appium
     repo: bddkit/bddkit-appium
+    groups: [app]
     description: Drive native Android and Windows apps through Appium as a resource group
     abi:
       "2": 0.2.1
       "3": 0.3.0
   - name: browser
     repo: bddkit/bddkit-browser
+    groups: [browser]
     description: Drive a real browser through WebDriver as a resource group
     abi:
       "2": 0.2.1
       "3": 0.3.0
   - name: exec
     repo: bddkit/bddkit-exec
+    groups: [exec]
     description: Run local commands, stream background processes and validate their output as a resource group
     abi:
       "2": 0.2.1
       "3": 0.3.0
   - name: s3
     repo: bddkit/bddkit-s3
+    groups: [s3]
     description: S3-compatible object storage (AWS S3, MinIO, ...) as a resource group
     abi:
       "2": 0.2.1
       "3": 0.3.0
   - name: script
     repo: bddkit/bddkit-script
+    groups: [script]
     description: Transform values inside a test with Rhai scripts, without a browser or a plugin of your own
     abi:
       "3": 0.1.1
