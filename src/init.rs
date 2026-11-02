@@ -586,9 +586,32 @@ pub async fn apply(
     if let Err(error) = ignore_local_files() {
         report(error);
     }
-    if !answers.plugins.is_empty() {
+    let config_has_plugin_groups =
+        crate::config::load(config_path, None).is_ok_and(|cfg| !cfg.groups_in_use().is_empty());
+    if !answers.plugins.is_empty() || config_has_plugin_groups {
         match plugin::manage::Context::new(env.clone(), crate::config_dir(config_path)) {
             Ok(ctx) => {
+                // The plugins the answers named, then the ones the config just
+                // written needs (none while the host serves `api` and `db`
+                // itself, so no network is touched for them).
+                let mut names = answers.plugins.clone();
+                match ctx.needs(config_path).await {
+                    Ok((missing, _)) => {
+                        for entry in missing {
+                            // `--plugin` takes `name`, `owner/repo` and either with `@version`.
+                            let named = names.iter().any(|n| {
+                                let base = n.split('@').next().unwrap_or(n);
+                                base == entry.name || base == entry.repo
+                            });
+                            if !named {
+                                names.push(entry.name);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        report(error.context("could not work out which plugins the config needs"))
+                    }
+                }
                 // Never the auto-pick: with `/etc/bddkit` and no user directory
                 // it would install machine-wide. One `--bddkit-dir` has no layers.
                 let layer = match answers.layer {
@@ -596,7 +619,7 @@ pub async fn apply(
                     Layer::User => env.override_dir.is_none().then_some("user"),
                 };
                 let mut installed = false;
-                for name in &answers.plugins {
+                for name in &names {
                     let outcome = ctx.install(name, layer).await;
                     acted.extend(ctx.take_acted());
                     match outcome {

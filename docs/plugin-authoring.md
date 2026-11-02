@@ -508,7 +508,7 @@ Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the 
 
 `bddkit-exec`'s release workflow is a working template for all of this.
 
-To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"3": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand.
+To be reachable by name rather than only by `owner/repo`, open a pull request adding one entry to `plugin-registry.yaml` in `bddkit/bddkit`, with `name` equal to your manifest's own `name`. An entry may carry `abi: {"3": 0.2.0}`, the newest release per ABI, which saves a request per install; it is kept current by a scheduled job rather than by hand. An entry also lists `groups`, the `resources.<group>` keys the plugin serves (`groups: [s3]`), which is how `bddkit plugin install` with no name, `init` and `upgrade` find the plugins a config needs without loading a library; no group may be listed by two entries, and a test of `bddkit` checks that on every change to the file. A plugin that serves a group only through `implicit_instance` still lists it, so an explicit `resources.<group>:` finds the plugin too.
 
 `bddkit init` offers every plugin in the index as a checklist item with its `description`, so the index description is your plugin's pitch.
 
