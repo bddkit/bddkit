@@ -1177,16 +1177,87 @@ fn doctor_probes_a_declared_instance_only_under_live() {
     let (static_out, code) = doctor(&["doctor", "--config", "cfg.yaml"]);
     assert_eq!(code, Some(0), "{static_out}");
     assert!(
-        static_out.contains("plugin echo.main") && static_out.contains("skipped"),
+        static_out.contains("echo main") && static_out.contains("skipped"),
         "a bare doctor must not call the plugin's probe:\n{static_out}"
     );
 
     let (live_out, code) = doctor(&["doctor", "--config", "cfg.yaml", "--live"]);
     assert_eq!(code, Some(0), "{live_out}");
     assert!(
-        live_out.contains("plugin echo.main") && live_out.contains("probed clean"),
+        live_out.contains("echo main") && live_out.contains("probed clean"),
         "{live_out}"
     );
+}
+
+const TWO_REFUSED: &str =
+    "  echo:\n    a: {}\n    b: {}\n    c:\n      prefix: \"p-\"\ndefault_echo: c\n";
+
+#[test]
+fn doctor_and_run_report_every_refused_instance() {
+    let dir = project(
+        "refused-all",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        TWO_REFUSED,
+    );
+    let bddkit = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run bddkit");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code(),
+        )
+    };
+
+    let (text, code) = bddkit(&["run", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("resources.echo.a") && text.contains("resources.echo.b"),
+        "{text}"
+    );
+
+    let (text, code) = bddkit(&["doctor", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        text.contains("✗ echo a") && text.contains("✗ echo b"),
+        "each refusal has its own row:\n{text}"
+    );
+    assert!(
+        text.contains("steps"),
+        "one refused instance must not skip the steps stage:\n{text}"
+    );
+
+    let (live, _) = bddkit(&["doctor", "--config", "cfg.yaml", "--live"]);
+    assert!(
+        live.contains("✓ echo c") && live.contains("probed clean"),
+        "an accepted instance beside refused ones is still probed:\n{live}"
+    );
+    assert!(
+        live.contains("not probed: refused"),
+        "a refused instance says it was not probed:\n{live}"
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml", "--json"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor --json");
+    let rows = json["checks"].as_array().expect("checks");
+    for instance in ["a", "b"] {
+        assert!(
+            rows.iter().any(|c| c["stage"] == "echo"
+                && c["target"] == instance
+                && c["status"] == "failed"),
+            "stage is the group, target the instance: {json}"
+        );
+    }
 }
 
 #[test]
@@ -1239,7 +1310,7 @@ fn a_plugin_that_refuses_the_probe_fails_doctor_naming_the_instance() {
         .expect("run bddkit");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(stdout.contains("plugin echo.main"), "{stdout}");
+    assert!(stdout.contains("echo main"), "{stdout}");
     assert!(
         stdout.contains("bucket acceptance does not exist"),
         "{stdout}"
@@ -1394,7 +1465,7 @@ fn doctor_lists_the_implicit_instance_as_declared() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{stdout}");
     assert!(
-        stdout.contains("plugin echo.default") && stdout.contains("probed clean"),
+        stdout.contains("echo default") && stdout.contains("probed clean"),
         "{stdout}"
     );
 }

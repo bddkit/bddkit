@@ -1001,17 +1001,31 @@ fn load_plugins(
     cfg: &config::Config,
     env: &dirs::Env,
 ) -> Result<Option<Arc<plugin::Plugins>>> {
+    load_plugins_collecting(config_path, cfg, env, true)
+}
+
+/// `strict` false lets `doctor` read every refused instance off `Plugins`
+/// instead of stopping at the error that names them all.
+fn load_plugins_collecting(
+    config_path: &std::path::Path,
+    cfg: &config::Config,
+    env: &dirs::Env,
+    strict: bool,
+) -> Result<Option<Arc<plugin::Plugins>>> {
     let groups_in_config: Vec<String> = cfg.group_names().cloned().collect();
     // The same anchor `config::load` uses for the `.env` layers: the lock
     // belongs to the suite, not to whatever directory the run started in.
     let layers = dirs::layers(dirs::Os::current(), env, config_dir(config_path))?;
-    let mut plugins = plugin::Plugins::load(
+    let mut plugins = plugin::Plugins::load_collecting(
         plugin::lock::load(&dirs::candidates(&layers, "plugins"))?,
         &cfg.plugin_instances,
         &groups_in_config,
         cfg.concurrency,
         &cfg.effective_options,
     )?;
+    if strict {
+        plugins.ensure_valid()?;
+    }
     // Only meaningful once a plugin is loaded. With none there are no resource
     // groups at all, so every top-level `default_*` key is the unknown key
     // `Config` has always tolerated — it has never had `deny_unknown_fields`,
