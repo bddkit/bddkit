@@ -409,7 +409,17 @@ impl Context {
         let indexed = if spec.is_repo() {
             acted.from = Some(PluginFrom::Repository);
             acted.repo = Some(spec.target.clone());
-            None
+            // A pinned version needs no index. An unreadable index only costs
+            // the shortcut: the latest release is asked instead, as `update` does.
+            if spec.version.is_some() {
+                None
+            } else {
+                install::fetch_index(&self.client, &self.sources)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|entry| entry.repo == spec.target)
+            }
         } else {
             acted.from = Some(PluginFrom::Registry);
             let entry = install::fetch_index(&self.client, &self.sources)

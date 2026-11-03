@@ -538,17 +538,31 @@ pub async fn host_release(
 ) -> Result<std::result::Result<String, String>> {
     if let Some(entry) = indexed.filter(|entry| !entry.abi.is_empty()) {
         return Ok(entry.abi.get(&abi.to_string()).cloned().ok_or_else(|| {
-            let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
-            format!(
-                "{repo} has no release for plugin ABI {abi} yet; the index has releases for ABI {}",
-                have.join(", ")
-            )
+            let mut ahead: Vec<u32> = entry
+                .abi
+                .keys()
+                .filter_map(|key| key.parse().ok().filter(|n| *n > abi))
+                .collect();
+            if ahead.is_empty() {
+                let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
+                format!(
+                    "{repo} is not updated for this bddkit yet: it has no release for plugin ABI {abi}, only for ABI {}",
+                    have.join(", ")
+                )
+            } else {
+                ahead.sort_unstable();
+                let ahead: Vec<_> = ahead.iter().map(u32::to_string).collect();
+                format!(
+                    "{repo} has no release for plugin ABI {abi}, only for newer ABI {}: a newer bddkit is needed, run `bddkit upgrade`",
+                    ahead.join(", ")
+                )
+            }
         }));
     }
     let latest = latest_version(client, github, repo).await?;
     Ok(match release_abi(client, github, repo, &latest).await? {
         Some(declared) if declared != abi => Err(format!(
-            "{repo} {latest} targets plugin ABI {declared}, not {abi}"
+            "{repo} {latest} targets plugin ABI {declared}, not {abi}; pin a version built for ABI {abi} with {repo}@<version>"
         )),
         _ => Ok(latest),
     })
