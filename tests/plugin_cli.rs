@@ -1084,12 +1084,119 @@ async fn an_index_without_the_host_abi_names_the_abis_it_has() {
     let out = plugin(&dir, &github, &["install", "echo"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("no release for plugin ABI 3"),
+        text(&out).contains("only for newer ABI 4: a newer bddkit is needed, run `bddkit upgrade`"),
         "{}",
         text(&out)
     );
     assert!(text(&out).contains("ABI 4"), "{}", text(&out));
     assert!(!dir.join("plugins.yaml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_with_only_older_abis_says_the_plugin_is_not_updated_yet() {
+    let (stub, github) = spawn().await;
+    stub.index(
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n",
+    );
+    let dir = temp("abi-older");
+
+    let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("is not updated for this bddkit yet"),
+        "{}",
+        text(&out)
+    );
+    assert!(!text(&out).contains("bddkit upgrade"), "{}", text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mixed_abi_map_names_only_the_newer_abis_and_suggests_upgrade() {
+    let (stub, github) = spawn().await;
+    stub.index(
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n      \"10\": 0.4.0\n      \"4\": 0.2.0\n",
+    );
+    let dir = temp("abi-mixed");
+
+    let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("only for newer ABI 4, 10: a newer bddkit is needed"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pinned_repository_install_ignores_the_index() {
+    let (stub, github) = spawn().await;
+    // The index has no release for this host's ABI, a pin does not care.
+    stub.index(
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"4\": 0.2.0\n",
+    );
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("repo-pinned");
+
+    let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin@0.1.0"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_by_repository_takes_the_version_from_the_index() {
+    let (stub, github) = spawn().await;
+    stub.index(ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    // The latest release is for a newer ABI; the index says which one fits.
+    stub.latest("bddkit/echo-plugin", "0.2.0");
+    let dir = temp("repo-via-index");
+
+    let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_by_repository_falls_back_to_the_latest_release_without_an_index() {
+    let (stub, github) = spawn().await;
+    // No index is served at all: the request for it is a 404.
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    let dir = temp("repo-no-index");
+
+    let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("installed echo 0.1.0"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repository_outside_the_index_whose_latest_targets_another_abi_suggests_pinning() {
+    let (stub, github) = spawn().await;
+    stub.index(INDEX);
+    stub.publish("someone/echo-plugin", "0.3.0");
+    stub.latest("someone/echo-plugin", "0.3.0");
+    stub.declare_abi("someone/echo-plugin", "0.3.0", 4);
+    let dir = temp("repo-outside-abi");
+
+    let out = plugin(&dir, &github, &["install", "someone/echo-plugin"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("pin a version built for ABI 3 with someone/echo-plugin@<version>"),
+        "{}",
+        text(&out)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
