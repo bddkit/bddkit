@@ -49,7 +49,7 @@ The common fields, `privacy` and `resources` as for `run`, and:
 |---|---|---|
 | `doctor.live` | bool | `--live` was given |
 | `doctor.failed` | int | failed rows |
-| `doctor.stages_failed` | list | the names of the stages with a failed row, from doctor's own fixed set |
+| `doctor.stages_failed` | list | the names of the stages with a failed row, from doctor's own fixed set (a plugin instance's stage is reported as `plugin`) |
 
 The run-only counters (`files`, `scenarios`, `scenario_ms`, `usage`, …) are absent: `doctor` runs no scenario.
 

@@ -23,7 +23,11 @@ pub enum Status {
 /// with two answers to one question.
 #[derive(Debug, Serialize)]
 pub struct Check {
-    pub stage: &'static str,
+    pub stage: String,
+    /// The stage is a plugin's resource group, a name the team chose: telemetry
+    /// reports it as `plugin`, never as written.
+    #[serde(skip)]
+    pub plugin: bool,
     pub target: Option<String>,
     pub status: Status,
     pub probe: bool,
@@ -49,13 +53,13 @@ pub struct Report {
 
 impl Report {
     /// A static check — one that opened no socket.
-    fn push(&mut self, stage: &'static str, target: Option<&str>, status: Status, detail: &str) {
+    fn push(&mut self, stage: &str, target: Option<&str>, status: Status, detail: &str) {
         self.row(stage, target, status, false, detail);
     }
 
     /// The live half of a resource's row: the probe itself, or the note that
     /// `--live` was not passed and so it never ran.
-    fn push_live(&mut self, stage: &'static str, target: &str, status: Status, detail: &str) {
+    fn push_live(&mut self, stage: &str, target: &str, status: Status, detail: &str) {
         self.row(stage, Some(target), status, true, detail);
     }
 
@@ -87,14 +91,15 @@ impl Report {
 
     fn row(
         &mut self,
-        stage: &'static str,
+        stage: &str,
         target: Option<&str>,
         status: Status,
         probe: bool,
         detail: &str,
     ) {
         self.checks.push(Check {
-            stage,
+            stage: stage.to_string(),
+            plugin: false,
             target: target.map(str::to_string),
             status,
             probe,
@@ -144,7 +149,8 @@ impl Report {
                     out.push_str(&format!("      {line}\n"));
                 }
             } else {
-                out.push_str(&format!("  {mark} {label:<20}  {}\n", c.detail));
+                out.push_str(format!("  {mark} {label:<20}  {}", c.detail).trim_end());
+                out.push('\n');
             }
         }
         let failed = self.failed();
@@ -354,7 +360,7 @@ pub async fn check(
     }
 
     let mut plugins_failed = false;
-    let plugins = match crate::load_plugins(config_path, &cfg, dir_env) {
+    let plugins = match crate::load_plugins_collecting(config_path, &cfg, dir_env, false) {
         Ok(Some(plugins)) => {
             let detail = format!(
                 "{} step(s) over {} group(s)",
@@ -439,31 +445,44 @@ pub async fn check(
     report
 }
 
-/// The live half of the plugin config contract, one row per declared instance.
-/// Nothing static happens here: `validate_config` already ran for every
-/// instance in the plugins stage, and a second row saying the same thing would
-/// leave a script with two answers to one question.
+/// One static row and one live row per declared instance, stage the group and
+/// target the instance, like an `api` or `db` resource. The static row is what
+/// `validate_config` said when the plugins loaded; its `ok` has no detail yet,
+/// because a plugin cannot supply one under the current ABI.
 ///
 /// A plugin that exports no `bddkit_probe_config` is `Skipped`, never
 /// `Failed`: the symbol is optional, and a check that never ran has proved
-/// nothing about the configuration.
+/// nothing about the configuration. A refused instance is not probed, and its live row says so.
 ///
 /// ponytail: the FFI call blocks this thread. `doctor` runs its stages one at
 /// a time and has nothing else in flight, so `spawn_blocking` would buy
 /// nothing; it becomes worth it the day the probes run concurrently.
 fn check_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins, live: bool) {
+    let first = report.checks.len();
+    push_plugin_instances(report, plugins, live);
+    for check in &mut report.checks[first..] {
+        check.plugin = true;
+    }
+}
+
+fn push_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins, live: bool) {
     for (group, instance) in plugins.declared_instances() {
-        let target = format!("{group}.{instance}");
+        if let Some(refusal) = plugins.refusal(&group, &instance) {
+            report.push(&group, Some(&instance), Status::Failed, refusal);
+            report.push_live(&group, &instance, Status::Skipped, "not probed: refused");
+            continue;
+        }
+        report.push(&group, Some(&instance), Status::Ok, "");
         if !live {
-            report.push_live("plugin", &target, Status::Skipped, "live probe skipped");
+            report.push_live(&group, &instance, Status::Skipped, "live probe skipped");
             continue;
         }
         match plugins.probe_config(&group, &instance) {
-            Some(Ok(())) => report.push_live("plugin", &target, Status::Ok, "probed clean"),
-            Some(Err(error)) => report.push_live("plugin", &target, Status::Failed, &error),
+            Some(Ok(())) => report.push_live(&group, &instance, Status::Ok, "probed clean"),
+            Some(Err(error)) => report.push_live(&group, &instance, Status::Failed, &error),
             None => report.push_live(
-                "plugin",
-                &target,
+                &group,
+                &instance,
                 Status::Skipped,
                 "the plugin exports no bddkit_probe_config",
             ),
@@ -1142,7 +1161,8 @@ mod tests {
 
     fn check(status: Status) -> Check {
         Check {
-            stage: "config",
+            stage: "config".into(),
+            plugin: false,
             target: None,
             status,
             probe: false,
@@ -1201,7 +1221,8 @@ mod tests {
     #[test]
     fn a_failed_check_renders_its_target_and_every_line_of_its_detail() {
         let report = report(vec![Check {
-            stage: "db",
+            stage: "db".into(),
+            plugin: false,
             target: Some("primary".into()),
             status: Status::Failed,
             probe: true,

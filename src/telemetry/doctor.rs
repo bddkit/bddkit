@@ -32,14 +32,20 @@ pub fn row(decision: &Decision) -> String {
     }
 }
 
-fn stages_failed(report: &Report) -> Vec<&'static str> {
-    let mut stages: Vec<&'static str> = report
+fn stages_failed(report: &Report) -> Vec<String> {
+    let mut stages: Vec<String> = report
         .checks
         .iter()
         .filter(|check| check.status == Status::Failed)
-        .map(|check| check.stage)
+        .map(|check| {
+            if check.plugin {
+                "plugin".to_string()
+            } else {
+                check.stage.clone()
+            }
+        })
         .collect();
-    stages.sort_unstable();
+    stages.sort();
     stages.dedup();
     stages
 }
@@ -73,4 +79,31 @@ pub async fn finish(report: &Report, elapsed: Duration) {
         &mut interrupts,
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::doctor::Check;
+
+    #[test]
+    fn a_failed_plugin_instance_is_reported_as_plugin_never_by_its_group() {
+        let check = |stage: &str, plugin| Check {
+            stage: stage.into(),
+            plugin,
+            target: Some("main".into()),
+            status: Status::Failed,
+            probe: false,
+            detail: String::new(),
+        };
+        let report = Report {
+            config: "suite.yaml".into(),
+            config_source: None,
+            app_env: "dev".into(),
+            live: false,
+            checks: vec![check("acme-private-group", true), check("steps", false)],
+            telemetry: None,
+        };
+        assert_eq!(stages_failed(&report), ["plugin", "steps"]);
+    }
 }

@@ -51,6 +51,11 @@ pub struct Plugins {
     declared: BTreeMap<(String, String), InstanceSpec>,
     /// group -> default instance name
     defaults: BTreeMap<String, String>,
+    /// (group, instance) -> what its plugin's `validate_config` refused with.
+    /// Every instance is validated, so one refusal never hides the next;
+    /// `load` turns a non-empty map into the startup error, `doctor` reads it
+    /// row by row.
+    refused: BTreeMap<(String, String), String>,
     /// (group, instance) -> handle, for `shared` instances only. This is the
     /// lookup that makes a shared instance shared; a `per_worker` instance is
     /// never in here, because it belongs to one file.
@@ -85,7 +90,39 @@ impl Plugins {
     /// gets its instance synthesized HERE, from the manifest's
     /// `implicit_instance`, and that instance inherits the global options the
     /// same way a declared one with no `options` key of its own does.
+    #[cfg(test)]
     pub fn load(
+        entries: Vec<lock::LockEntry>,
+        instances: &[InstanceSpec],
+        groups_in_config: &[String],
+        concurrency: usize,
+        global: &Options,
+    ) -> Result<Self> {
+        let plugins =
+            Self::load_collecting(entries, instances, groups_in_config, concurrency, global)?;
+        plugins.ensure_valid()?;
+        Ok(plugins)
+    }
+
+    /// Every instance a plugin refused, as one startup error that names each.
+    pub fn ensure_valid(&self) -> Result<()> {
+        if self.refused.is_empty() {
+            return Ok(());
+        }
+        let lines: Vec<&str> = self.refused.values().map(String::as_str).collect();
+        bail!("{}", lines.join("\n"))
+    }
+
+    /// What `validate_config` refused `group.instance` with, if it did.
+    pub fn refusal(&self, group: &str, instance: &str) -> Option<&str> {
+        let key = (group.to_string(), instance.to_string());
+        self.refused.get(&key).map(String::as_str)
+    }
+
+    /// `load` without turning a refused instance into an error, so `doctor` can
+    /// report each one in its own row. A library that fails to load, or a group
+    /// nothing serves, is still an error here: nothing below it can run.
+    pub fn load_collecting(
         entries: Vec<lock::LockEntry>,
         instances: &[InstanceSpec],
         groups_in_config: &[String],
@@ -163,12 +200,13 @@ impl Plugins {
             }
         }
 
-        let plugins = Self {
+        let mut plugins = Self {
             libs,
             official,
             groups,
             declared,
             defaults,
+            refused: BTreeMap::new(),
             shared: Mutex::new(BTreeMap::new()),
             registry: Mutex::new(BTreeMap::new()),
         };
@@ -181,6 +219,7 @@ impl Plugins {
         // The group is looked up, never indexed: `groups_in_config` is the
         // caller's list of config keys, and an instance whose group is missing
         // from it must produce this error rather than an index panic.
+        let mut refused = BTreeMap::new();
         for spec in plugins.declared.values() {
             // Where the body came from — the config has no `resources.<group>`
             // line to send the reader to for a synthesized one.
@@ -198,10 +237,22 @@ impl Plugins {
                         spec.group
                     )
                 })?;
-            let request = plugins.init_request(spec)?;
-            lib.validate_config(&request)?
-                .map_err(|error| anyhow::anyhow!("{origin}: {error}"))?;
+            // An encode failure or a malformed reply is this instance's refusal
+            // too: stopping on it would hide the instances after it.
+            let verdict = match plugins
+                .init_request(spec)
+                .and_then(|request| lib.validate_config(&request))
+            {
+                Ok(Ok(())) => continue,
+                Ok(Err(error)) => error,
+                Err(error) => format!("{error:#}"),
+            };
+            refused.insert(
+                (spec.group.clone(), spec.name.clone()),
+                format!("{origin}: {verdict}"),
+            );
         }
+        plugins.refused = refused;
         Ok(plugins)
     }
 
@@ -968,6 +1019,39 @@ pub(crate) mod tests {
         let text = format!("{error:#}");
         assert!(text.contains("prefix"), "{text}");
         assert!(text.contains("resources.echo.a"), "{text}");
+    }
+
+    #[test]
+    fn every_refused_instance_is_reported_not_only_the_first() {
+        let instances = [
+            instance("a", None),
+            instance("b", None),
+            instance("c", Some("p-")),
+        ];
+        let error = Plugins::load(
+            vec![entry()],
+            &instances,
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect_err("a and b lack the prefix");
+        let text = format!("{error:#}");
+        assert!(text.contains("resources.echo.a"), "{text}");
+        assert!(text.contains("resources.echo.b"), "{text}");
+        assert!(!text.contains("resources.echo.c"), "{text}");
+
+        let plugins = Plugins::load_collecting(
+            vec![entry()],
+            &instances,
+            &["echo".into()],
+            1,
+            &Options::default(),
+        )
+        .expect("libraries load");
+        assert!(plugins.refusal("echo", "a").is_some());
+        assert!(plugins.refusal("echo", "b").is_some());
+        assert!(plugins.refusal("echo", "c").is_none());
     }
 
     #[test]

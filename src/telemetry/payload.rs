@@ -266,8 +266,8 @@ impl Engines {
 pub struct DoctorInfo {
     pub live: bool,
     pub failed: u64,
-    /// From doctor's own fixed set of stage names.
-    pub stages_failed: Vec<&'static str>,
+    /// From doctor's own fixed set of stage names; a plugin's group is `plugin`.
+    pub stages_failed: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
