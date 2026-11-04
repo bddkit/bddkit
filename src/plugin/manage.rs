@@ -460,7 +460,7 @@ impl Context {
                 &self.sources.github,
                 &repo,
                 indexed.as_ref(),
-                ABI_VERSION,
+                ABI_VERSION..=ABI_VERSION,
             )
             .await?
             .map_err(|why| install::classed(anyhow::Error::msg(why), PluginResult::NoBuild))?,
@@ -563,7 +563,7 @@ impl Context {
                         &self.sources.github,
                         source,
                         indexed,
-                        ABI_VERSION,
+                        ABI_VERSION..=ABI_VERSION,
                     )
                     .await?
                     {

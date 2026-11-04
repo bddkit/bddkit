@@ -142,7 +142,7 @@ struct UpgradeArgs {
     /// Restore the binary and lock files the last upgrade replaced
     #[arg(long)]
     rollback: bool,
-    /// Upgrade even when a plugin has no release for the new ABI, leaving it as it is
+    /// Upgrade even when a plugin has no release for an ABI the new bddkit accepts, leaving it as it is
     #[arg(long)]
     force: bool,
     /// Do not ask: required where there is no terminal

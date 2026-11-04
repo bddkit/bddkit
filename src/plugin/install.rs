@@ -8,6 +8,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 /// An error with the class telemetry reports it under, set where the error is
@@ -522,47 +523,69 @@ pub async fn release_abi(
     Ok(Some(declared.abi))
 }
 
-/// The newest release of `repo` that speaks plugin ABI `abi` — the running
-/// host's `ABI_VERSION`, or the one `bddkit upgrade` is moving to:
-/// `Ok(Ok(version))`, or `Ok(Err(why))` when it has none yet — a refusal for `install`, a report for
-/// `update`. The index's `abi` map answers without a request; a repository
-/// outside the index, or an entry with no map, is asked through the latest
-/// release's `bddkit-plugin.json`. A release that declares nothing passes here
-/// and is checked against the library itself after download (`Library::load`).
+/// An ABI range as a person reads it: `3`, or `3 to 4` when it spans several.
+pub fn abi_label(abis: &RangeInclusive<u32>) -> String {
+    if abis.start() == abis.end() {
+        abis.start().to_string()
+    } else {
+        format!("{} to {}", abis.start(), abis.end())
+    }
+}
+
+/// The newest release of `repo` that speaks a plugin ABI in `abis` — the
+/// running host's `ABI_VERSION` as both ends, or the range the staged binary
+/// of `bddkit upgrade` accepts: `Ok(Ok(version))`, or `Ok(Err(why))` when it
+/// has none yet — a refusal for `install`, a report for `update`. The index's
+/// `abi` map answers without a request, with the release under the highest key
+/// within the range; a repository outside the index, or an entry with no map,
+/// is asked through the latest release's `bddkit-plugin.json`. A release that
+/// declares nothing passes here and is checked against the library itself
+/// after download (`Library::load`).
 pub async fn host_release(
     client: &reqwest::Client,
     github: &str,
     repo: &str,
     indexed: Option<&IndexEntry>,
-    abi: u32,
+    abis: RangeInclusive<u32>,
 ) -> Result<std::result::Result<String, String>> {
+    let label = abi_label(&abis);
     if let Some(entry) = indexed.filter(|entry| !entry.abi.is_empty()) {
-        return Ok(entry.abi.get(&abi.to_string()).cloned().ok_or_else(|| {
-            let mut ahead: Vec<u32> = entry
+        // Keys compare as numbers: as text "10" sorts below "9".
+        let numbered = || {
+            entry
                 .abi
-                .keys()
-                .filter_map(|key| key.parse().ok().filter(|n| *n > abi))
-                .collect();
-            if ahead.is_empty() {
-                let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
-                format!(
-                    "{repo} is not updated for this bddkit yet: it has no release for plugin ABI {abi}, only for ABI {}",
-                    have.join(", ")
-                )
-            } else {
-                ahead.sort_unstable();
-                let ahead: Vec<_> = ahead.iter().map(u32::to_string).collect();
-                format!(
-                    "{repo} has no release for plugin ABI {abi}, only for newer ABI {}: a newer bddkit is needed, run `bddkit upgrade`",
-                    ahead.join(", ")
-                )
-            }
-        }));
+                .iter()
+                .filter_map(|(key, version)| Some((key.parse::<u32>().ok()?, version)))
+        };
+        return Ok(numbered()
+            .filter(|(key, _)| abis.contains(key))
+            .max_by_key(|(key, _)| *key)
+            .map(|(_, version)| version.clone())
+            .ok_or_else(|| {
+                let mut ahead: Vec<u32> = numbered()
+                    .map(|(key, _)| key)
+                    .filter(|key| key > abis.end())
+                    .collect();
+                if ahead.is_empty() {
+                    let have: Vec<_> = entry.abi.keys().map(String::as_str).collect();
+                    format!(
+                        "{repo} is not updated for this bddkit yet: it has no release for plugin ABI {label}, only for ABI {}",
+                        have.join(", ")
+                    )
+                } else {
+                    ahead.sort_unstable();
+                    let ahead: Vec<_> = ahead.iter().map(u32::to_string).collect();
+                    format!(
+                        "{repo} has no release for plugin ABI {label}, only for newer ABI {}: a newer bddkit is needed, run `bddkit upgrade`",
+                        ahead.join(", ")
+                    )
+                }
+            }));
     }
     let latest = latest_version(client, github, repo).await?;
     Ok(match release_abi(client, github, repo, &latest).await? {
-        Some(declared) if declared != abi => Err(format!(
-            "{repo} {latest} targets plugin ABI {declared}, not {abi}; pin a version built for ABI {abi} with {repo}@<version>"
+        Some(declared) if !abis.contains(&declared) => Err(format!(
+            "{repo} {latest} targets plugin ABI {declared}, not {label}; pin a version built for ABI {label} with {repo}@<version>"
         )),
         _ => Ok(latest),
     })
@@ -620,6 +643,21 @@ pub async fn download(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn the_range_picks_the_highest_abi_key_as_a_number() {
+        let entry: IndexEntry = serde_yaml_ng::from_str(
+            "name: x\nrepo: o/x\nabi: {\"3\": 0.3.0, \"9\": 0.9.0, \"10\": 0.10.0}\n",
+        )
+        .expect("entry");
+        let client = reqwest::Client::new();
+        let pick = |abis| host_release(&client, "http://unused", "o/x", Some(&entry), abis);
+        assert_eq!(pick(3..=10).await.unwrap().unwrap(), "0.10.0");
+        assert_eq!(pick(3..=9).await.unwrap().unwrap(), "0.9.0");
+        assert_eq!(pick(3..=3).await.unwrap().unwrap(), "0.3.0");
+        let refused = pick(4..=8).await.unwrap().unwrap_err();
+        assert!(refused.contains("ABI 4 to 8"), "{refused}");
+    }
 
     fn lib(stem: &str) -> String {
         dll_name(stem)

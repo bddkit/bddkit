@@ -17,6 +17,7 @@ use crate::plugin::manage::{self, Context, Fetched, Target};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{IsTerminal, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -68,6 +69,18 @@ struct Info {
     version: String,
     target: String,
     plugin_abi: u32,
+    /// The lowest plugin ABI the staged binary still loads. Absent means it
+    /// accepts only `plugin_abi`: a binary that says nothing has no range.
+    plugin_abi_min: Option<u32>,
+}
+
+impl Info {
+    /// Every plugin ABI the staged binary loads; a minimum above `plugin_abi` is clamped to it.
+    fn abis(&self) -> RangeInclusive<u32> {
+        self.plugin_abi_min
+            .unwrap_or(self.plugin_abi)
+            .min(self.plugin_abi)..=self.plugin_abi
+    }
 }
 
 /// One plugin that moves with the binary.
@@ -82,7 +95,7 @@ struct Move {
 #[derive(Default)]
 struct Plan {
     moves: Vec<Move>,
-    /// Writable entries with no release for the new ABI.
+    /// Writable entries with no release within the staged binary's ABI range.
     blocked: Vec<String>,
     /// Hand-written and project-layer entries: listed, never changed.
     left: Vec<String>,
@@ -292,11 +305,11 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     let abi_changes = info.plugin_abi != crate::plugin::abi::ABI_VERSION;
     note.abi_changed = abi_changes;
     let mut plan = if abi_changes {
-        plan_plugins(ctx, info.plugin_abi).await?
+        plan_plugins(ctx, info.abis()).await?
     } else {
         Plan::default()
     };
-    plan_needed(ctx, opts, &staged, info.plugin_abi, &mut plan).await?;
+    plan_needed(ctx, opts, &staged, info.abis(), &mut plan).await?;
     note.plugins_left = plan.left.len() as u64;
     note.plugins_refused = plan.blocked.len() as u64;
     print_plan(&version, &info, abi_changes, &plan);
@@ -305,7 +318,7 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
         bail!(
             "nothing was changed: {} plugin(s) have no release for plugin ABI {}; --force upgrades anyway and leaves them",
             plan.blocked.len(),
-            info.plugin_abi
+            install::abi_label(&info.abis())
         );
     }
     if let Some(dir) = not_writable {
@@ -400,13 +413,8 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     }
     for (planned, _) in &fetched {
         println!(
-            "{} {} → {} ({}, ABI {} → {})",
-            planned.name,
-            planned.from,
-            planned.to,
-            planned.target.label,
-            crate::plugin::abi::ABI_VERSION,
-            info.plugin_abi
+            "{} {} → {} ({})",
+            planned.name, planned.from, planned.to, planned.target.label
         );
     }
     // Versions this upgrade can still roll back to are not listed here, so
@@ -519,7 +527,7 @@ fn check_with_staged(staged: &Path, name: &str, lib: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn plan_plugins(ctx: &Context, abi: u32) -> Result<Plan> {
+async fn plan_plugins(ctx: &Context, abis: RangeInclusive<u32>) -> Result<Plan> {
     // A dead index costs only the shortcut: each plugin is then asked directly.
     let index = install::fetch_index(&ctx.client, &ctx.sources)
         .await
@@ -541,24 +549,32 @@ async fn plan_plugins(ctx: &Context, abi: u32) -> Result<Plan> {
                 continue;
             };
             let indexed = index.iter().find(|e| &e.repo == repo);
-            let release =
-                install::host_release(&ctx.client, &ctx.sources.github, repo, indexed, abi).await;
+            let release = install::host_release(
+                &ctx.client,
+                &ctx.sources.github,
+                repo,
+                indexed,
+                abis.clone(),
+            )
+            .await;
             match release {
-                // The newest release for this ABI is the one installed: fine
+                // The newest release in the range is the one installed: fine
                 // when the index or the release itself says it was built for
-                // it, otherwise the plugin has not published one, and the new
-                // binary would refuse it at load.
+                // an ABI within it, otherwise the plugin has not published
+                // one, and the new binary would refuse it at load.
                 Ok(Ok(to)) if &to == from => {
-                    let indexed_for =
-                        indexed.is_some_and(|e| e.abi.get(&abi.to_string()) == Some(&to));
+                    // A non-empty index map only ever yields a release under an
+                    // in-range key, so the index alone vouches for it.
+                    let indexed_for = indexed.is_some_and(|e| !e.abi.is_empty());
                     let declared_for = !indexed_for
                         && matches!(
                             install::release_abi(&ctx.client, &ctx.sources.github, repo, &to).await,
-                            Ok(Some(declared)) if declared == abi
+                            Ok(Some(declared)) if abis.contains(&declared)
                         );
                     if !(indexed_for || declared_for) {
                         plan.blocked.push(format!(
-                            "{row}: {from} is its newest release and was not built for ABI {abi}"
+                            "{row}: {from} is its newest release and was not built for ABI {}",
+                            install::abi_label(&abis)
                         ));
                     }
                 }
@@ -631,13 +647,13 @@ fn staged_needs(staged: &Path, opts: &Options) -> Vec<NeededPlugin> {
 }
 
 /// Adds the plugins the suite needs and no lock file has to the plan, next to
-/// the ones that move. One with no release for the new ABI blocks the upgrade
+/// the ones that move. One with no release within the ABI range blocks the upgrade
 /// like an installed one in that state (`--force` leaves it out).
 async fn plan_needed(
     ctx: &Context,
     opts: &Options,
     staged: &Path,
-    abi: u32,
+    abis: RangeInclusive<u32>,
     plan: &mut Plan,
 ) -> Result<()> {
     let needed = staged_needs(staged, opts);
@@ -660,8 +676,14 @@ async fn plan_needed(
         }
         let row = format!("{} ({}, needed by the config)", plugin.name, target.label);
         let indexed = index.iter().find(|e| e.repo == plugin.repo);
-        match install::host_release(&ctx.client, &ctx.sources.github, &plugin.repo, indexed, abi)
-            .await
+        match install::host_release(
+            &ctx.client,
+            &ctx.sources.github,
+            &plugin.repo,
+            indexed,
+            abis.clone(),
+        )
+        .await
         {
             Ok(Ok(to)) => plan.moves.push(Move {
                 target: target.clone(),
@@ -680,7 +702,7 @@ async fn plan_needed(
 fn print_plan(version: &str, info: &Info, abi_changes: bool, plan: &Plan) {
     println!(
         "bddkit {CURRENT} → {version} (plugin ABI {})",
-        info.plugin_abi
+        install::abi_label(&info.abis())
     );
     if !abi_changes {
         println!(
@@ -694,7 +716,10 @@ fn print_plan(version: &str, info: &Info, abi_changes: bool, plan: &Plan) {
         );
     }
     for row in &plan.blocked {
-        println!("  no release for ABI {}: {row}", info.plugin_abi);
+        println!(
+            "  no release for ABI {}: {row}",
+            install::abi_label(&info.abis())
+        );
     }
     for row in &plan.left {
         println!("  left as it is: {row}");
