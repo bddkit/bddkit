@@ -75,6 +75,23 @@ impl Stub {
     /// The same release whose `plugin needs` prints `needs` (a shell command);
     /// empty means a bddkit that does not know the subcommand.
     fn publish_bddkit_needing(&self, version: &str, abi: u32, check_exit: i32, needs: &str) {
+        self.publish_bddkit_full(version, abi, None, check_exit, needs);
+    }
+
+    /// A release for ABI `abi` that also says it accepts plugins down to `min`.
+    fn publish_bddkit_ranged(&self, version: &str, abi: u32, min: u32, needs: &str) {
+        self.publish_bddkit_full(version, abi, Some(min), 0, needs);
+    }
+
+    fn publish_bddkit_full(
+        &self,
+        version: &str,
+        abi: u32,
+        min: Option<u32>,
+        check_exit: i32,
+        needs: &str,
+    ) {
+        let min = min.map_or(String::new(), |m| format!(",\"plugin_abi_min\":{m}"));
         let needs = if needs.is_empty() {
             "echo \"error: unrecognized subcommand 'needs'\" >&2; exit 2".to_string()
         } else {
@@ -82,7 +99,7 @@ impl Stub {
         };
         let name = format!("bddkit-v{version}-{}", host_target());
         let script = format!(
-            "#!/bin/sh\ncase \"$1 $2\" in\n\"version --json\") echo '{{\"version\":\"{version}\",\"target\":\"{}\",\"plugin_abi\":{abi}}}' ;;\n\"plugin check\") if [ {check_exit} -ne 0 ]; then echo refused >&2; exit {check_exit}; fi; echo echo ;;\n\"plugin needs\") {needs} ;;\n*) echo staged-bddkit-{version} ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1 $2\" in\n\"version --json\") echo '{{\"version\":\"{version}\",\"target\":\"{}\",\"plugin_abi\":{abi}{min}}}' ;;\n\"plugin check\") if [ {check_exit} -ne 0 ]; then echo refused >&2; exit {check_exit}; fi; echo echo ;;\n\"plugin needs\") {needs} ;;\n*) echo staged-bddkit-{version} ;;\nesac\n",
             host_target()
         );
         let archive = pack_files(&name, &[("bddkit", script.as_bytes())]);
@@ -1777,6 +1794,115 @@ async fn an_abi_upgrade_with_a_plugin_lacking_a_release_changes_nothing() {
     assert!(!sandbox.plug.join("plugins/echo-plugin/0.2.0").exists());
     assert!(!sandbox.data().join("previous").exists());
     assert_eq!(sandbox.receipt_version(), CURRENT);
+}
+
+/// Echo 0.1.0 installed for ABI 3, and a bddkit 99.0.0 for ABI `max` that says it accepts `min..=max`.
+fn ranged_upgrade_ready(
+    sandbox: &Sandbox,
+    github: &str,
+    stub: &Stub,
+    index: &str,
+    (min, max): (u32, u32),
+) {
+    sandbox.install_echo(github, stub);
+    stub.index(index);
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit_ranged("99.0.0", max, min, "");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_with_a_release_inside_the_staged_range_keeps_the_upgrade_going() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-range-keeps");
+    let index =
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"3\": 0.1.0\n";
+    ranged_upgrade_ready(&sandbox, &github, &stub, index, (3, 4));
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(sandbox.lock(), lock, "the plugin stays where it is");
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+    assert_ne!(sandbox.bin_text(), sandbox.original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_with_a_newer_release_inside_the_staged_range_moves_to_the_highest() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-range-moves");
+    ranged_upgrade_ready(&sandbox, &github, &stub, ABI_INDEX, (3, 4));
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("echo 0.1.0 → 0.2.0"), "{}", text(&out));
+    assert!(
+        sandbox.lock().contains("version: 0.2.0"),
+        "{}",
+        sandbox.lock()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_release_outside_the_index_that_declares_an_abi_in_the_range_keeps_the_upgrade_going() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-range-declared");
+    sandbox.install_echo(&github, &stub);
+    stub.latest("bddkit/echo-plugin", "0.1.0");
+    stub.declare_abi("bddkit/echo-plugin", "0.1.0", 3);
+    stub.publish_bddkit_ranged("99.0.0", 4, 3, "");
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(sandbox.lock(), lock);
+    assert_eq!(sandbox.receipt_version(), "99.0.0");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_staged_range_above_the_installed_release_blocks_the_upgrade() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-range-blocks");
+    let index =
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"3\": 0.1.0\n";
+    ranged_upgrade_ready(&sandbox, &github, &stub, index, (4, 5));
+    let lock = sandbox.lock();
+
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("ABI 4 to 5"), "{}", text(&out));
+    assert!(text(&out).contains("--force"), "{}", text(&out));
+    assert_eq!(sandbox.bin_text(), sandbox.original);
+    assert_eq!(sandbox.lock(), lock);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_needed_plugin_installs_the_highest_release_in_the_staged_range() {
+    let (stub, github) = spawn().await;
+    let sandbox = Sandbox::new("upgrade-range-needs");
+    sandbox_suite(&sandbox);
+    stub.index(GROUPED_ABI_INDEX);
+    stub.publish("bddkit/echo-plugin", "0.1.0");
+    stub.publish("bddkit/echo-plugin", "0.2.0");
+    stub.publish_bddkit_ranged("99.0.0", 4, 3, NEEDS_ECHO);
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        sandbox.lock().contains("version: 0.2.0"),
+        "{}",
+        sandbox.lock()
+    );
+
+    // Only the ABI 3 release exists: it is within the range, so it is installed.
+    let sandbox = Sandbox::new("upgrade-range-needs-low");
+    sandbox_suite(&sandbox);
+    stub.index(&GROUPED_ABI_INDEX.replace("      \"4\": 0.2.0\n", ""));
+    let out = sandbox.upgrade(&github, &["--yes"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        sandbox.lock().contains("version: 0.1.0"),
+        "{}",
+        sandbox.lock()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

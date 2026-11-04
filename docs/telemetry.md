@@ -73,7 +73,7 @@ An entry with `other: true` and neither `from` nor `layer` is a name that was as
 
 ## `upgrade`
 
-The common fields and `upgrade`: `from` (the running version), `to` (the version, only once the release holding it has been downloaded and has said so itself; absent otherwise), `abi_changed`, `plugins_switched`, `plugins_refused` (no release for the new ABI, or refused by the new binary), `plugins_left` (hand-written and project entries, listed and never changed), `result` (`ok`, `refused`, `failed`, `rolled_back`) and `check` (`--check`).
+The common fields and `upgrade`: `from` (the running version), `to` (the version, only once the release holding it has been downloaded and has said so itself; absent otherwise), `abi_changed`, `plugins_switched`, `plugins_refused` (no release within the new binary's ABI range, or refused by the new binary), `plugins_left` (hand-written and project entries, listed and never changed), `result` (`ok`, `refused`, `failed`, `rolled_back`) and `check` (`--check`).
 
 ## `init`
 
