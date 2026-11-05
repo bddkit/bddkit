@@ -652,6 +652,11 @@ pub fn record(privacy: &Privacy, values: impl IntoIterator<Item = String>) {
     process.candidates.extend(values);
 }
 
+/// Records one value a message is about to quote.
+pub fn record_value(value: &str) {
+    process().candidates.push(value.to_string());
+}
+
 /// The secrets recorded so far, filtered by the `min_length` in force.
 pub fn recorded() -> Secrets {
     let process = process();

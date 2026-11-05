@@ -20,6 +20,16 @@ use std::sync::Mutex;
 /// exactly overlaps the built-in one, so it is refused for the same reason.
 const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
 
+/// How a plugin step reaches the registry.
+#[derive(Debug, Clone)]
+pub enum Declared {
+    Pattern {
+        text: String,
+        secret_groups: Vec<usize>,
+    },
+    Expression(crate::steps::expression::Compiled),
+}
+
 /// The variables a `wants_vars` step receives: what `<<name>>` would resolve,
 /// with the sentinel as `None` and the secret flag the plugin cannot compute.
 pub fn request_vars(
@@ -341,38 +351,50 @@ impl Plugins {
         self.libs.get(lib)?.steps.get(step)
     }
 
-    /// `(lib index, step index, pattern, is assertion, secret groups)` for
-    /// registry loading.
-    pub fn steps(&self) -> Vec<(usize, usize, String, bool, Vec<usize>)> {
+    /// `(lib index, step index, declaration, is assertion)` for registry
+    /// loading.
+    pub fn steps(&self) -> Vec<(usize, usize, Declared, bool)> {
         let mut out = Vec::new();
         for (lib_index, lib) in self.libs.iter().enumerate() {
             for (step_index, step) in lib.steps.iter().enumerate() {
-                out.push((
-                    lib_index,
-                    step_index,
-                    step.pattern.clone(),
-                    step.is_assertion(),
-                    step.secret_groups.clone(),
-                ));
+                let declared = match &step.compiled {
+                    Some(compiled) => Declared::Expression(compiled.clone()),
+                    None => Declared::Pattern {
+                        text: step.declaration().to_string(),
+                        secret_groups: step.secret_groups.clone(),
+                    },
+                };
+                out.push((lib_index, step_index, declared, step.is_assertion()));
             }
         }
         out
     }
 
-    /// `(group, pattern, is assertion, description)` for `bddkit steps list`.
-    /// Separate from `steps()`, which feeds the registry and needs indices
-    /// instead of the help text.
-    pub fn described_steps(&self) -> Vec<(String, String, bool, Option<String>)> {
+    /// Every step as `bddkit steps list` shows it. Separate from `steps()`,
+    /// which feeds the registry and needs indices instead of the help text.
+    pub fn described_steps(&self) -> Vec<crate::steps::help::StepRow> {
         self.libs
             .iter()
             .flat_map(|lib| {
                 lib.steps.iter().map(|step| {
-                    (
-                        step.group.clone(),
-                        step.pattern.clone(),
-                        step.is_assertion(),
-                        step.description.clone(),
-                    )
+                    let (template, pattern) = match &step.compiled {
+                        Some(compiled) => (compiled.template.clone(), compiled.regex.to_string()),
+                        None => (
+                            crate::steps::help::template(step.declaration()),
+                            step.declaration().to_string(),
+                        ),
+                    };
+                    crate::steps::help::StepRow {
+                        group: step.group.clone(),
+                        template,
+                        pattern,
+                        kind: if step.is_assertion() {
+                            "assertion"
+                        } else {
+                            "action"
+                        },
+                        description: step.description.clone(),
+                    }
                 })
             })
             .collect()
@@ -949,7 +971,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 19);
+        assert_eq!(plugins.step_count(), 26);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

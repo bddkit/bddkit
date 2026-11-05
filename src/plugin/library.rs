@@ -141,8 +141,9 @@ impl Library {
         // SAFETY: as for `manifest_fn` above.
         let steps_json = unsafe { take(free_string, list_steps_fn()) }
             .with_context(|| format!("plugin {name:?} returned no step list"))?;
-        let steps: Vec<StepSpec> = serde_json::from_str(&steps_json)
+        let mut steps: Vec<StepSpec> = serde_json::from_str(&steps_json)
             .with_context(|| format!("plugin {name:?} returned a malformed step list"))?;
+        prepare_steps(name, &mut steps)?;
         check_step_groups(name, &manifest, &steps)?;
         check_field_groups(name, &manifest)?;
         check_field_types(name, &manifest)?;
@@ -327,6 +328,71 @@ fn check_abi_version(name: &str, reported: u32) -> Result<()> {
     Ok(())
 }
 
+/// What a step spec declares is checked and compiled once, here: exactly one of
+/// `pattern` and `expression`, `secret_groups` only on a `pattern`, and every
+/// effect placeholder naming an argument. A placeholder cannot name a secret
+/// one, because `doctor` prints what an effect holds. A pattern that does not
+/// compile is left to the registry, which names it.
+///
+/// Reached from a unit test without building a cdylib per rejection case.
+fn prepare_steps(name: &str, steps: &mut [StepSpec]) -> Result<()> {
+    for step in steps {
+        match (&step.pattern, &step.expression) {
+            (Some(_), Some(_)) => bail!(
+                "plugin {name:?} declares a step with both pattern and expression: {:?}",
+                step.declaration()
+            ),
+            (None, None) => bail!(
+                "plugin {name:?} declares a step with neither pattern nor expression, in group {:?}",
+                step.group
+            ),
+            (Some(pattern), None) => {
+                let Ok(regex) = regex::Regex::new(pattern) else {
+                    continue;
+                };
+                // A group can nest inside a secret one and `regex` does not say
+                // so, so a pattern holding a secret names no group at all. Such
+                // a step can be an `expression`, whose parameters are flat.
+                step.arg_names = regex
+                    .capture_names()
+                    .skip(1)
+                    .map(|group| {
+                        group
+                            .filter(|_| step.secret_groups.is_empty())
+                            .map(str::to_string)
+                    })
+                    .collect();
+            }
+            (None, Some(expression)) => {
+                if !step.secret_groups.is_empty() {
+                    bail!(
+                        "plugin {name:?} declares secret_groups on the expression {expression:?}; write {{name:secret}} instead"
+                    );
+                }
+                let compiled = crate::steps::expression::compile(expression, "text")
+                    .map_err(|error| anyhow::anyhow!("plugin {name:?}: {error}"))?;
+                step.arg_names = compiled
+                    .params
+                    .iter()
+                    .map(|param| (!param.ty.secret).then(|| param.name.clone()))
+                    .collect();
+                step.compiled = Some(compiled);
+            }
+        }
+        for template in step.effect_templates() {
+            for placeholder in StepSpec::placeholders(template) {
+                if !step.arg_names.iter().flatten().any(|n| n == placeholder) {
+                    bail!(
+                        "plugin {name:?} step {:?}: the effect {template:?} names {{{placeholder}}}, which is no parameter of the step, or a secret one, or a group of a pattern with secret_groups",
+                        step.declaration()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A step may only sit in a group its own manifest claims. A plugin that
 /// answered for an unclaimed group would shadow the steps of whichever plugin
 /// legitimately owns it, so this is refused at load time rather than surfacing
@@ -339,7 +405,7 @@ fn check_step_groups(name: &str, manifest: &Manifest, steps: &[StepSpec]) -> Res
         if !manifest.groups.contains(&step.group) {
             bail!(
                 "plugin {name:?} declares step {:?} in group {:?}, which it does not claim",
-                step.pattern,
+                step.declaration(),
                 step.group
             );
         }
@@ -385,7 +451,7 @@ fn check_implicit_groups(name: &str, manifest: &Manifest) -> Result<()> {
 /// A pure predicate over the already-parsed step list, like its neighbours.
 fn check_secret_groups(name: &str, steps: &[StepSpec]) -> Result<()> {
     for step in steps.iter().filter(|step| !step.secret_groups.is_empty()) {
-        let Ok(pattern) = regex::Regex::new(&step.pattern) else {
+        let Some(Ok(pattern)) = step.pattern.as_deref().map(regex::Regex::new) else {
             continue;
         };
         let groups = pattern.captures_len() - 1;
@@ -396,7 +462,7 @@ fn check_secret_groups(name: &str, steps: &[StepSpec]) -> Result<()> {
         {
             bail!(
                 "plugin {name:?} marks capture group {bad} of {:?} as secret, but the pattern has {groups} (groups count from 1)",
-                step.pattern
+                step.declaration()
             );
         }
     }
@@ -505,6 +571,68 @@ mod tests {
             .join(crate::plugin::install::dll_name("echo_plugin"))
     }
 
+    fn prepared(step: &str) -> Result<Vec<StepSpec>> {
+        let mut steps: Vec<StepSpec> =
+            serde_json::from_str(&format!(r#"[{{"group":"w","kind":"action",{step}}}]"#))
+                .expect("steps parse");
+        prepare_steps("widget", &mut steps)?;
+        Ok(steps)
+    }
+
+    #[test]
+    fn a_step_declares_exactly_one_of_pattern_and_expression() {
+        prepared(r#""pattern":"^a$""#).expect("a pattern alone");
+        let steps = prepared(r#""expression":"a {n:uint}""#).expect("an expression alone");
+        assert!(steps[0].compiled.is_some());
+        for (step, needle) in [
+            (r#""pattern":"^a$","expression":"a""#, "both"),
+            (r#""description":"d""#, "neither"),
+            (r#""expression":"a {n:nope}""#, "unknown type"),
+            (
+                r#""expression":"a {n}","secret_groups":[1]"#,
+                "secret_groups",
+            ),
+        ] {
+            let error = prepared(step).expect_err("refused").to_string();
+            assert!(error.contains(needle), "{step}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_builtins_expression_compiles_as_it_does_for_the_builtin() {
+        // The API and DB plugins declare built-in expressions verbatim.
+        for (def, builtin) in crate::steps::BUILTIN_STEPS
+            .iter()
+            .zip(crate::steps::COMPILED_BUILTINS.iter())
+        {
+            let expression = serde_json::to_string(def.expression).expect("encodes");
+            let steps = prepared(&format!(r#""expression":{expression}"#)).expect("compiles");
+            let compiled = steps[0].compiled.as_ref().expect("compiled");
+            assert_eq!(compiled.regex.as_str(), builtin.regex.as_str());
+            assert_eq!(compiled.template, builtin.template);
+        }
+    }
+
+    #[test]
+    fn an_effect_may_name_only_an_argument_the_step_has_and_shows() {
+        prepared(r#""expression":"a {n}","sets_vars":["{n}_*"],"reads":["s:{n}"],"writes":["w"]"#)
+            .expect("n is a parameter");
+        prepared(r#""pattern":"^a (?P<n>x)$","writes":["{n}"]"#).expect("n is a named group");
+        for step in [
+            r#""expression":"a {n}","sets_vars":["{m}"]"#,
+            r#""expression":"a {n}","reads":["{m}"]"#,
+            r#""expression":"a {n}","writes":["{m}"]"#,
+            r#""pattern":"^a (x)$","sets_vars":["{m}"]"#,
+            r#""expression":"a {key:secret}","reads":["{key}"]"#,
+            r#""pattern":"^a (?P<key>x)$","secret_groups":[1],"reads":["{key}"]"#,
+            r#""pattern":"^a (?P<key>x(?P<inner>y))$","secret_groups":[1],"reads":["{inner}"]"#,
+            r#""pattern":"^a (?P<key>x) (?P<n>y)$","secret_groups":[1],"reads":["{n}"]"#,
+        ] {
+            let error = prepared(step).expect_err("refused").to_string();
+            assert!(error.contains("no parameter"), "{step}: {error}");
+        }
+    }
+
     #[test]
     fn a_secret_group_no_pattern_group_has_is_refused() {
         let step = |groups: &str| -> Vec<StepSpec> {
@@ -541,7 +669,7 @@ mod tests {
     #[test]
     fn lists_the_steps() {
         let lib = Library::load("echo", &fixture()).expect("loads");
-        assert_eq!(lib.steps.len(), 19);
+        assert_eq!(lib.steps.len(), 26);
         assert!(!lib.steps[0].is_assertion());
         assert!(lib.steps[1].is_assertion());
         assert_eq!(lib.steps[0].group, "echo");
