@@ -2579,3 +2579,173 @@ fn a_step_with_no_effects_or_an_unknown_name_makes_the_writer_list_give_up() {
         assert!(!out.contains("sets it"), "{name}: {out}");
     }
 }
+
+// ---- ABI 4: `secrets` and `detail` in a plugin's config replies ----
+
+/// stdout and stderr together, and the exit code, of `bddkit <args>` in `dir`.
+fn bddkit_in(dir: &Path, args: &[&str]) -> (String, Option<i32>) {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run bddkit");
+    (
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        out.status.code(),
+    )
+}
+
+/// `note` matches no privacy word, so only the reply's `secrets` can hide it.
+const REFUSING_NOTE: &str =
+    "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n      note_refuse: true\n";
+
+#[test]
+fn a_secret_in_a_refusing_reply_is_masked_in_its_own_refusal_text() {
+    let dir = project(
+        "cfg-secret-refusal",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        REFUSING_NOTE,
+    );
+    for args in [
+        &["run", "--config", "cfg.yaml"][..],
+        &["doctor", "--config", "cfg.yaml"][..],
+        &["doctor", "--config", "cfg.yaml", "--json"][..],
+    ] {
+        let (text, code) = bddkit_in(&dir, args);
+        assert_ne!(code, Some(0), "{args:?}: {text}");
+        assert!(text.contains("refuses the note"), "{args:?}: {text}");
+        assert!(!text.contains("plugin-note-9876"), "{args:?}: {text}");
+    }
+    let (text, _) = bddkit_in(&dir, &["run", "--config", "cfg.yaml", "--reveal"]);
+    assert!(
+        text.contains("plugin-note-9876"),
+        "--reveal shows it: {text}"
+    );
+}
+
+#[test]
+fn a_secret_under_min_length_stays_visible() {
+    let dir = project(
+        "cfg-secret-short",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: abc\n      note_refuse: true\n",
+    );
+    let (text, _) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert!(text.contains(r#"refuses the note "abc""#), "{text}");
+}
+
+#[test]
+fn resource_add_masks_a_secret_in_the_refusal_block() {
+    let dir = project(
+        "cfg-secret-resource-add",
+        "Feature: f\n",
+        &format!("{ECHO_GROUP}default_echo: main\n"),
+    );
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--note",
+            "plugin-note-9876",
+            "--note_refuse",
+            "true",
+        ],
+    );
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("refuses the note"), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}
+
+#[test]
+fn a_config_secret_is_masked_in_a_file_with_no_plugin_step() {
+    let dir = project(
+        "cfg-secret-no-step",
+        "Feature: f\n  Scenario: s\n    Given set variable \"v\" to \"plugin-note-9876\"\n    Then variable \"v\" should be equal to \"other\"\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}
+
+#[test]
+fn doctor_shows_the_detail_of_an_ok_instance_static_and_live() {
+    let dir = project(
+        "cfg-detail",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      detail: static-detail-text\n      probe_detail: live-detail-text\n    plain:\n      prefix: q-\ndefault_echo: main\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["doctor", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("static-detail-text"), "{text}");
+    assert!(!text.contains("live-detail-text"), "{text}");
+
+    let (live, _) = bddkit_in(&dir, &["doctor", "--config", "cfg.yaml", "--live"]);
+    assert!(live.contains("live-detail-text"), "{live}");
+    assert!(
+        live.contains("probed clean"),
+        "an ok instance without a detail keeps today's row:\n{live}"
+    );
+
+    let (json, _) = bddkit_in(
+        &dir,
+        &["doctor", "--config", "cfg.yaml", "--live", "--json"],
+    );
+    assert!(
+        json.contains("static-detail-text") && json.contains("live-detail-text"),
+        "{json}"
+    );
+}
+
+#[test]
+fn resource_add_masks_a_secret_only_the_probe_declares() {
+    let dir = project(
+        "cfg-probe-secret",
+        "Feature: f\n",
+        &format!("{ECHO_GROUP}default_echo: main\n"),
+    );
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--probe_note",
+            "plugin-probe-5555",
+            "--probe_detail",
+            "reached with plugin-probe-5555",
+        ],
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("reached with"), "{text}");
+    assert!(!text.contains("plugin-probe-5555"), "{text}");
+}
+
+#[test]
+fn a_malformed_config_reply_still_has_its_secrets_masked() {
+    let dir = project(
+        "cfg-malformed-secret",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n      malformed: true\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("malformed validate_config reply"), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}

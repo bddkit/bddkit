@@ -88,7 +88,17 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
                 {"name": "loud", "type": "boolean",
                  "description": "upper-cases what is echoed", "example": "true"},
                 {"name": "probe_error",
-                 "description": "message bddkit_probe_config answers with; omit to probe clean"}
+                 "description": "message bddkit_probe_config answers with; omit to probe clean"},
+                {"name": "note",
+                 "description": "a value validate_config declares secret; with note_refuse it also quotes it in a refusal"},
+                {"name": "note_refuse", "type": "boolean",
+                 "description": "refuse the config, quoting note"},
+                {"name": "detail",
+                 "description": "text validate_config answers with on an ok reply"},
+                {"name": "probe_note",
+                 "description": "a value bddkit_probe_config declares secret"},
+                {"name": "probe_detail",
+                 "description": "text bddkit_probe_config answers with on an ok reply"}
             ]}
         })
         .to_string()
@@ -170,6 +180,19 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
     })
 }
 
+/// An `ok` config reply carrying the config's `detail_key` as its `detail`
+/// and its `secret_key` as a secret.
+fn reply_with(value: &serde_json::Value, detail_key: &str, secret_key: &str) -> String {
+    let mut reply = serde_json::json!({"ok": true});
+    if let Some(detail) = value["config"][detail_key].as_str() {
+        reply["detail"] = detail.into();
+    }
+    if let Some(note) = value["config"][secret_key].as_str() {
+        reply["secrets"] = serde_json::json!([note]);
+    }
+    reply.to_string()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_validate_config(request: *const c_char) -> *mut c_char {
     guard("envelope", move || {
@@ -191,12 +214,34 @@ pub extern "C" fn bddkit_validate_config(request: *const c_char) -> *mut c_char 
             })
             .to_string();
         }
+        // ABI 4: `note` is a secret the plugin declares, under a name no
+        // privacy word matches, so only the reply's `secrets` can hide it.
+        if let Some(note) = value["config"]["note"].as_str()
+            && value["config"]["note_refuse"].as_bool() == Some(true)
+        {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("echo instance refuses the note {note:?}"),
+                "secrets": [note],
+            })
+            .to_string();
+        }
+        // A reply that does not fit the contract (`detail` is a number) but
+        // still declares a secret: the host must record it before it quotes
+        // the reply in its error.
+        if let Some(note) = value["config"]["note"].as_str()
+            && value["config"]["malformed"].as_bool() == Some(true)
+        {
+            return serde_json::json!({"ok": true, "detail": 5, "secrets": [note]}).to_string();
+        }
         // The half a manifest's `type` exists for: this key is a boolean, and a
         // plugin holding that line is what turns the host writing `'false'`
         // into a refusal the author of the config can do nothing about. The
         // manifest declares `"type": "boolean"` so the host writes `false`.
         match &value["config"]["loud"] {
-            serde_json::Value::Null | serde_json::Value::Bool(_) => r#"{"ok":true}"#.to_string(),
+            serde_json::Value::Null | serde_json::Value::Bool(_) => {
+                reply_with(&value, "detail", "note")
+            }
             _ => r#"{"ok":false,"error":"echo instance's \"loud\" must be true or false"}"#
                 .to_string(),
         }
@@ -218,7 +263,7 @@ pub extern "C" fn bddkit_probe_config(request: *const c_char) -> *mut c_char {
         };
         match value["config"]["probe_error"].as_str() {
             Some(error) => serde_json::json!({"ok": false, "error": error}).to_string(),
-            None => r#"{"ok":true}"#.to_string(),
+            None => reply_with(&value, "probe_detail", "probe_note"),
         }
     })
 }

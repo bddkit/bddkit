@@ -66,6 +66,8 @@ pub struct Plugins {
     /// `load` turns a non-empty map into the startup error, `doctor` reads it
     /// row by row.
     refused: BTreeMap<(String, String), String>,
+    /// (group, instance) -> the `detail` its `validate_config` reply gave.
+    details: BTreeMap<(String, String), String>,
     /// (group, instance) -> handle, for `shared` instances only. This is the
     /// lookup that makes a shared instance shared; a `per_worker` instance is
     /// never in here, because it belongs to one file.
@@ -127,6 +129,12 @@ impl Plugins {
     pub fn refusal(&self, group: &str, instance: &str) -> Option<&str> {
         let key = (group.to_string(), instance.to_string());
         self.refused.get(&key).map(String::as_str)
+    }
+
+    /// The `detail` `validate_config` gave `group.instance`, if it did.
+    pub fn detail(&self, group: &str, instance: &str) -> Option<&str> {
+        let key = (group.to_string(), instance.to_string());
+        self.details.get(&key).map(String::as_str)
     }
 
     /// `load` without turning a refused instance into an error, so `doctor` can
@@ -217,6 +225,7 @@ impl Plugins {
             declared,
             defaults,
             refused: BTreeMap::new(),
+            details: BTreeMap::new(),
             shared: Mutex::new(BTreeMap::new()),
             registry: Mutex::new(BTreeMap::new()),
         };
@@ -230,6 +239,7 @@ impl Plugins {
         // caller's list of config keys, and an instance whose group is missing
         // from it must produce this error rather than an index panic.
         let mut refused = BTreeMap::new();
+        let mut details = BTreeMap::new();
         for spec in plugins.declared.values() {
             // Where the body came from — the config has no `resources.<group>`
             // line to send the reader to for a synthesized one.
@@ -253,7 +263,12 @@ impl Plugins {
                 .init_request(spec)
                 .and_then(|request| lib.validate_config(&request))
             {
-                Ok(Ok(())) => continue,
+                Ok(Ok(detail)) => {
+                    if let Some(detail) = detail {
+                        details.insert((spec.group.clone(), spec.name.clone()), detail);
+                    }
+                    continue;
+                }
                 Ok(Err(error)) => error,
                 Err(error) => format!("{error:#}"),
             };
@@ -263,6 +278,7 @@ impl Plugins {
             );
         }
         plugins.refused = refused;
+        plugins.details = details;
         Ok(plugins)
     }
 
@@ -311,7 +327,11 @@ impl Plugins {
     /// instance could not be probed".
     ///
     /// Blocking, like `call_step`: FFI happens here.
-    pub fn probe_config(&self, group: &str, instance: &str) -> Option<Result<(), String>> {
+    pub fn probe_config(
+        &self,
+        group: &str,
+        instance: &str,
+    ) -> Option<Result<Option<String>, String>> {
         let lib = &self.libs[*self.groups.get(group)?];
         if !lib.has_probe_config() {
             return None;
@@ -897,7 +917,7 @@ pub(crate) mod tests {
             plugins.declared_instances(),
             vec![("echo".to_string(), "a".to_string())]
         );
-        assert_eq!(plugins.probe_config("echo", "a"), Some(Ok(())));
+        assert_eq!(plugins.probe_config("echo", "a"), Some(Ok(None)));
 
         // The fixture's probe answers with whatever `probe_error` names, which
         // is how a real plugin reports an endpoint that refused it.
@@ -940,7 +960,7 @@ pub(crate) mod tests {
             Some("default")
         );
         assert!(plugins.is_declared("echo", "default"));
-        assert_eq!(plugins.probe_config("echo", "default"), Some(Ok(())));
+        assert_eq!(plugins.probe_config("echo", "default"), Some(Ok(None)));
 
         // A declared section — this one non-empty — is the only source then.
         let plugins = Plugins::load(

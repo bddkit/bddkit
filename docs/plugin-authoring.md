@@ -45,7 +45,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 
 ## 3. The ABI
 
-`ABI_VERSION` is **4** and the host loads every plugin from `ABI_MIN` **3** up. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. Generation 3 added, all optional and all described below: the request's `vars` key, a step's `wants_vars` and `raw_docstring`, and the `bddkit_validate_step` export. Generation 4 added, all optional and all described below: a step's `expression`, `reads`, `writes` and `sets_vars`. The host loads a plugin reporting a number from 3 to 4 and refuses one outside that range, newer or older. A compatible change (an optional key or symbol with a default, or a request field an older plugin can ignore) raises only `ABI_VERSION`; an incompatible one raises `ABI_MIN` too. The host does not gate an addition on the number you report: a plugin built for 3 does not send the new keys or export the new symbols, and gets each addition's default.
+`ABI_VERSION` is **4** and the host loads every plugin from `ABI_MIN` **3** up. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. Generation 3 added, all optional and all described below: the request's `vars` key, a step's `wants_vars` and `raw_docstring`, and the `bddkit_validate_step` export. Generation 4 added, all optional and all described below: a step's `expression`, `reads`, `writes` and `sets_vars`, and the `secrets` and `detail` keys of the `bddkit_validate_config` and `bddkit_probe_config` replies. The host loads a plugin reporting a number from 3 to 4 and refuses one outside that range, newer or older. A compatible change (an optional key or symbol with a default, or a request field an older plugin can ignore) raises only `ABI_VERSION`; an incompatible one raises `ABI_MIN` too. The host does not gate an addition on the number you report: a plugin built for 3 does not send the new keys or export the new symbols, and gets each addition's default.
 
 | Symbol | Signature | Required |
 |---|---|---|
@@ -213,11 +213,21 @@ Reply — the **envelope**, shared with `drop_instance` and `reset_scenario`:
 
 `error` is optional; if it is missing on a failure the host substitutes "the plugin reported a failure with no message" rather than losing the failure. Always send one — the host prefixes it with `resources.<group>.<instance>: `, so write the part after the colon.
 
+Two optional keys, ABI 4, on the reply of both `bddkit_validate_config` and `bddkit_probe_config`; a plugin built for ABI 3 simply has neither:
+
+```json
+{ "ok": true, "detail": "https://api.example.com (20s timeout)", "secrets": ["s3cr3t-value"] }
+```
+
+`secrets` is a list of values the config holds that must never be printed. The host records them into the process-wide sink before it reads the rest of the reply, on `ok` and on a refusal alike, so the reply's own `error` is masked, and so are the config errors, the `doctor` rows, the block `bddkit resource add` prints when it refuses, and a feature file that never calls a step of this plugin. They obey `privacy.min_length` and `--reveal` like any other secret. A value under a key name the host already treats as secret (`password`, `token`, …) is masked without this; `secrets` is for the values the host cannot recognise by name. Keep each value whole, as the config holds it. A reply that is not valid JSON still has its `secrets` recorded when the JSON parses at all, because the host quotes the malformed reply in its own error.
+
+`detail` is an optional one-line text on an `ok` reply, shown in the instance's `doctor` row and `doctor --json`: from `validate_config` in the static row, from `bddkit_probe_config` in the live row (`bddkit resource add` prints the probe's). Keep it to one line. Absent or empty, the row reads as it did before (`probed clean` live, nothing static). A refused instance shows its `error` instead.
+
 ### `bddkit_probe_config`
 
 Optional, and the live counterpart of `validate_config`: the one call that is allowed to open a connection. A plugin that does not export it simply has no live check, and that is reported as **not available** — never as a failure. This is where a probe differs from `bddkit_reset_scenario`, which the host treats as `ok` when it is absent: having no per-scenario state to clear really is success, while a reachability check that never ran has proved nothing.
 
-Request: identical to `validate_config`. Reply: the same envelope.
+Request: identical to `validate_config`. Reply: the same envelope, with the optional `secrets` and `detail` described there.
 
 Called by `bddkit doctor --live`, once per declared instance of your groups. A plugin that does not export it gets a `skipped` row saying so, not a failed one.
 

@@ -451,8 +451,8 @@ pub async fn check(
 
 /// One static row and one live row per declared instance, stage the group and
 /// target the instance, like an `api` or `db` resource. The static row is what
-/// `validate_config` said when the plugins loaded; its `ok` has no detail yet,
-/// because a plugin cannot supply one under the current ABI.
+/// `validate_config` said when the plugins loaded; its `ok` carries the plugin's
+/// `detail`, if it gave one.
 ///
 /// A plugin that exports no `bddkit_probe_config` is `Skipped`, never
 /// `Failed`: the symbol is optional, and a check that never ran has proved
@@ -476,13 +476,23 @@ fn push_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins, 
             report.push_live(&group, &instance, Status::Skipped, "not probed: refused");
             continue;
         }
-        report.push(&group, Some(&instance), Status::Ok, "");
+        report.push(
+            &group,
+            Some(&instance),
+            Status::Ok,
+            plugins.detail(&group, &instance).unwrap_or(""),
+        );
         if !live {
             report.push_live(&group, &instance, Status::Skipped, "live probe skipped");
             continue;
         }
         match plugins.probe_config(&group, &instance) {
-            Some(Ok(())) => report.push_live(&group, &instance, Status::Ok, "probed clean"),
+            Some(Ok(detail)) => report.push_live(
+                &group,
+                &instance,
+                Status::Ok,
+                detail.as_deref().unwrap_or("probed clean"),
+            ),
             Some(Err(error)) => report.push_live(&group, &instance, Status::Failed, &error),
             None => report.push_live(
                 &group,
