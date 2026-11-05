@@ -2,13 +2,17 @@
 //! Fetching and unpacking is `install.rs`; the lock file format is `lock.rs`.
 
 use crate::dirs::{self, Env, Layer, Os};
-use crate::plugin::abi::ABI_VERSION;
+use crate::plugin::abi::{ABI_MIN, ABI_VERSION};
 use crate::plugin::install::{self, Sources};
 use crate::plugin::library::Library;
 use crate::plugin::lock;
 use crate::telemetry::payload::{Acted, PluginFrom, PluginInfo, PluginResult};
 use anyhow::{Context as _, Result, bail};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+
+/// Every plugin ABI this host loads.
+const HOST_ABIS: RangeInclusive<u32> = ABI_MIN..=ABI_VERSION;
 
 /// One lock file an install can write, and where its libraries go.
 #[derive(Clone)]
@@ -444,10 +448,11 @@ impl Context {
             Some(version) => {
                 let github = &self.sources.github;
                 match install::release_abi(&self.client, github, &repo, &version).await? {
-                    Some(abi) if abi != ABI_VERSION => {
+                    Some(abi) if !HOST_ABIS.contains(&abi) => {
                         return Err(install::classed(
                             anyhow::anyhow!(
-                                "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+                                "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {}",
+                                install::abi_label(&HOST_ABIS)
                             ),
                             PluginResult::NoBuild,
                         ));
@@ -460,7 +465,7 @@ impl Context {
                 &self.sources.github,
                 &repo,
                 indexed.as_ref(),
-                ABI_VERSION..=ABI_VERSION,
+                HOST_ABIS,
             )
             .await?
             .map_err(|why| install::classed(anyhow::Error::msg(why), PluginResult::NoBuild))?,
@@ -563,14 +568,15 @@ impl Context {
                         &self.sources.github,
                         source,
                         indexed,
-                        ABI_VERSION..=ABI_VERSION,
+                        HOST_ABIS,
                     )
                     .await?
                     {
                         Ok(latest) => latest,
                         Err(why) => {
                             return Ok(format!(
-                                "up to date for ABI {ABI_VERSION} ({current}): {why}"
+                                "up to date for ABI {} ({current}): {why}",
+                                install::abi_label(&HOST_ABIS)
                             ));
                         }
                     };

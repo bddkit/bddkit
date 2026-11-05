@@ -533,7 +533,7 @@ pub fn abi_label(abis: &RangeInclusive<u32>) -> String {
 }
 
 /// The newest release of `repo` that speaks a plugin ABI in `abis` — the
-/// running host's `ABI_VERSION` as both ends, or the range the staged binary
+/// running host's `ABI_MIN..=ABI_VERSION`, or the range the staged binary
 /// of `bddkit upgrade` accepts: `Ok(Ok(version))`, or `Ok(Err(why))` when it
 /// has none yet — a refusal for `install`, a report for `update`. The index's
 /// `abi` map answers without a request, with the release under the highest key

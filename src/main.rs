@@ -958,6 +958,7 @@ async fn main() {
                     "version": env!("CARGO_PKG_VERSION"),
                     "target": target,
                     "plugin_abi": plugin::abi::ABI_VERSION,
+                    "plugin_abi_min": plugin::abi::ABI_MIN,
                 })
             );
             (Ok(0), "nothing printed")

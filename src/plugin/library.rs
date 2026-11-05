@@ -2,7 +2,7 @@
 //! `String -> String` calls and typed payloads.
 
 use super::abi::{
-    ABI_VERSION, Concurrency, DispatchResult, Envelope, InitResponse, Manifest, StepSpec,
+    ABI_MIN, ABI_VERSION, Concurrency, DispatchResult, Envelope, InitResponse, Manifest, StepSpec,
 };
 use anyhow::{Context, Result, bail};
 use std::ffi::{CStr, CString, c_char};
@@ -309,13 +309,19 @@ impl Library {
     }
 }
 
-/// The host speaks exactly one ABI generation. A pure predicate over the
-/// reported number, extracted for the same reason as `check_reset_scenario`: it is
-/// reachable from a unit test without building a cdylib per rejection case.
+/// The host speaks the generations `ABI_MIN` to `ABI_VERSION`. A pure
+/// predicate over the reported number, extracted for the same reason as
+/// `check_reset_scenario`: it is reachable from a unit test without building a
+/// cdylib per rejection case.
 fn check_abi_version(name: &str, reported: u32) -> Result<()> {
-    if reported != ABI_VERSION {
+    if reported > ABI_VERSION {
         bail!(
-            "plugin {name:?} was built for ABI version {reported}, this bddkit speaks {ABI_VERSION}"
+            "plugin {name:?} was built for ABI version {reported}, newer than the {ABI_VERSION} this bddkit speaks: upgrade bddkit"
+        );
+    }
+    if reported < ABI_MIN {
+        bail!(
+            "plugin {name:?} was built for ABI version {reported}, older than the {ABI_MIN} this bddkit still loads: the plugin is not updated for this bddkit yet"
         );
     }
     Ok(())
@@ -596,12 +602,24 @@ mod tests {
 
     #[test]
     fn an_abi_mismatch_names_both_versions() {
-        let error = check_abi_version("ancient", ABI_VERSION + 1).expect_err("refused");
-        let text = format!("{error:#}");
-        assert!(text.contains("ancient"), "{text}");
-        assert!(text.contains(&(ABI_VERSION + 1).to_string()), "{text}");
-        assert!(text.contains(&ABI_VERSION.to_string()), "{text}");
-        check_abi_version("current", ABI_VERSION).expect("the host's own version is accepted");
+        let text = |reported| {
+            format!(
+                "{:#}",
+                check_abi_version("odd", reported).expect_err("refused")
+            )
+        };
+        let newer = text(ABI_VERSION + 1);
+        assert!(
+            newer.contains("odd") && newer.contains(&(ABI_VERSION + 1).to_string()),
+            "{newer}"
+        );
+        assert!(newer.contains("upgrade bddkit"), "{newer}");
+        let older = text(ABI_MIN - 1);
+        assert!(older.contains(&(ABI_MIN - 1).to_string()), "{older}");
+        assert!(older.contains("not updated"), "{older}");
+        for accepted in ABI_MIN..=ABI_VERSION {
+            check_abi_version("current", accepted).expect("inside the range");
+        }
     }
 
     #[test]
