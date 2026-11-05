@@ -9,8 +9,11 @@
 //! in hand-written YAML — that asymmetry is intentional, not an oversight to
 //! "clean up".
 
+use crate::steps::expression::Compiled;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 /// The newest ABI generation this host speaks; it loads every plugin reporting
 /// a number from `ABI_MIN` to this one, and refuses the rest.
@@ -33,7 +36,8 @@ use std::collections::BTreeMap;
 /// an optional `bddkit_validate_step` (#55), moved once for the lot.
 ///
 /// 4: the first generation of the range (#205). It adds nothing by itself;
-/// every later optional key of the phase builds on it.
+/// every later optional key of the phase builds on it: a step spec's
+/// `expression`, `reads`, `writes` and `sets_vars` (#206).
 pub const ABI_VERSION: u32 = 4;
 
 /// The oldest ABI generation this host still loads.
@@ -134,9 +138,20 @@ pub enum StepKind {
     Assertion,
 }
 
+/// A `{param}` in a step effect.
+static EFFECT_PLACEHOLDER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").expect("a constant"));
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StepSpec {
-    pub pattern: String,
+    /// A Rust regex. A step declares this or `expression`, exactly one of the
+    /// two (`library::prepare_steps`).
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// A Cucumber expression with bddkit's `{name:type}`, compiled by the
+    /// host's one parser, so the step gets what a built-in gets.
+    #[serde(default)]
+    pub expression: Option<String>,
     pub group: String,
     pub kind: StepKind,
     /// The author's own one-line help, shown by `bddkit steps list`. Optional
@@ -150,7 +165,8 @@ pub struct StepSpec {
     /// literal one in every step text it shows, registers the value as it
     /// does for `{name:secret}`, and writes `***` for its slot in the stream.
     /// Optional and defaulted; an index no group has is a load error
-    /// (`library::check_secret_groups`).
+    /// (`library::check_secret_groups`), and so is the key on an `expression`
+    /// step, which writes `{name:secret}` instead.
     #[serde(default)]
     pub secret_groups: Vec<usize>,
     /// The dispatch request carries `vars` for this step, and for no other.
@@ -159,11 +175,100 @@ pub struct StepSpec {
     /// The host does not interpolate this step's doc string.
     #[serde(default)]
     pub raw_docstring: bool,
+    /// State this step uses, in the plugin's own vocabulary, for `doctor`'s
+    /// hints. All three effects are optional, and absent differs from empty: a
+    /// step declaring none of them is unknown (`effects`).
+    #[serde(default)]
+    pub reads: Option<Vec<String>>,
+    /// State this step leaves behind, in the same vocabulary as `reads`.
+    #[serde(default)]
+    pub writes: Option<Vec<String>>,
+    /// Variables this step writes: `{name}`, a fixed name, or a trailing `*`
+    /// for a family.
+    #[serde(default)]
+    pub sets_vars: Option<Vec<String>>,
+    /// The compiled `expression`, set at load. Never sent by a plugin.
+    #[serde(skip)]
+    pub compiled: Option<Compiled>,
+    /// By argument position, the name an effect may call it: a parameter's or
+    /// a named capture group's, `None` for an unnamed or a secret one, and for
+    /// every group of a pattern with `secret_groups`. Set at load. Never sent
+    /// by a plugin.
+    #[serde(skip)]
+    pub arg_names: Vec<Option<String>>,
+}
+
+/// What a step uses and leaves behind, with its placeholders filled.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Effects {
+    pub reads: Vec<String>,
+    pub sets_vars: Vec<String>,
 }
 
 impl StepSpec {
     pub fn is_assertion(&self) -> bool {
         matches!(self.kind, StepKind::Assertion)
+    }
+
+    /// The text the plugin declared the step with, for a message.
+    pub fn declaration(&self) -> &str {
+        self.expression
+            .as_deref()
+            .or(self.pattern.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Every template of `reads`, `writes` and `sets_vars`.
+    pub fn effect_templates(&self) -> impl Iterator<Item = &String> {
+        [&self.reads, &self.writes, &self.sets_vars]
+            .into_iter()
+            .flatten()
+            .flatten()
+    }
+
+    /// The effects of one use of this step, from its RAW arguments: `doctor`
+    /// knows no variable's value (invariant 1). `None` when the step is
+    /// unknown: it declares no effect at all, or a placeholder's value holds a
+    /// `<<slot>>` or an Outline `<column>`, or is absent. A step that declares
+    /// only `reads` or `writes` is known, and sets nothing.
+    pub fn effects(&self, args: &[String]) -> Option<Effects> {
+        if self.reads.is_none() && self.writes.is_none() && self.sets_vars.is_none() {
+            return None;
+        }
+        let fill = |list: &Option<Vec<String>>| -> Option<Vec<String>> {
+            list.iter()
+                .flatten()
+                .map(|template| self.fill(template, args))
+                .collect()
+        };
+        fill(&self.writes)?;
+        Some(Effects {
+            reads: fill(&self.reads)?,
+            sets_vars: fill(&self.sets_vars)?,
+        })
+    }
+
+    fn fill(&self, template: &str, args: &[String]) -> Option<String> {
+        let mut known = true;
+        let filled = EFFECT_PLACEHOLDER.replace_all(template, |captures: &regex::Captures<'_>| {
+            let value = self
+                .arg_names
+                .iter()
+                .position(|name| name.as_deref() == Some(&captures[1]))
+                .and_then(|index| args.get(index))
+                .filter(|value| !value.is_empty() && !value.contains('<'));
+            known &= value.is_some();
+            value.cloned().unwrap_or_default()
+        });
+        known.then(|| filled.into_owned())
+    }
+
+    /// The `{param}` names one effect template holds.
+    pub fn placeholders(template: &str) -> impl Iterator<Item = &str> {
+        EFFECT_PLACEHOLDER
+            .captures_iter(template)
+            .filter_map(|captures| captures.get(1))
+            .map(|name| name.as_str())
     }
 }
 
@@ -373,6 +478,55 @@ mod tests {
             serde_json::from_str(r#"{"pattern":"^x$","group":"g","kind":"action"}"#).unwrap();
         assert!(!spec.wants_vars);
         assert!(!spec.raw_docstring);
+    }
+
+    fn spec_with_args(json: &str, names: &[Option<&str>]) -> StepSpec {
+        let mut spec: StepSpec = serde_json::from_str(json).expect("step parses");
+        spec.arg_names = names.iter().map(|name| name.map(str::to_string)).collect();
+        spec
+    }
+
+    #[test]
+    fn a_step_with_no_effect_is_unknown_and_one_with_any_effect_is_known() {
+        let bare = spec_with_args(r#"{"pattern":"^x$","group":"g","kind":"action"}"#, &[]);
+        assert_eq!(bare.effects(&[]), None);
+        for key in ["reads", "writes", "sets_vars"] {
+            let spec = spec_with_args(
+                &format!(r#"{{"pattern":"^x$","group":"g","kind":"action","{key}":[]}}"#),
+                &[],
+            );
+            let effects = spec.effects(&[]).expect("declared, so known");
+            assert!(effects.sets_vars.is_empty(), "{key}");
+        }
+    }
+
+    #[test]
+    fn effects_are_filled_from_the_raw_arguments() {
+        let spec = spec_with_args(
+            r#"{"pattern":"^x$","group":"g","kind":"action","reads":["process:{p}"],
+                "writes":["w"],"sets_vars":["fixed","{name}","{name}_*"]}"#,
+            &[Some("p"), None, Some("name")],
+        );
+        let args = |p: &str, name: &str| vec![p.to_string(), "other".to_string(), name.to_string()];
+        assert_eq!(
+            spec.effects(&args("a", "n")),
+            Some(Effects {
+                reads: vec!["process:a".to_string()],
+                sets_vars: vec!["fixed".to_string(), "n".to_string(), "n_*".to_string()],
+            })
+        );
+        // A value not known statically, wherever it sits, makes the step unknown.
+        assert_eq!(spec.effects(&args("<<slot>>", "n")), None);
+        assert_eq!(spec.effects(&args("a", "<column>")), None);
+        assert_eq!(spec.effects(&args("a", "")), None);
+        assert_eq!(spec.effects(&["a".to_string()]), None);
+
+        let writes = spec_with_args(
+            r#"{"pattern":"^x$","group":"g","kind":"action","writes":["w:{p}"]}"#,
+            &[Some("p")],
+        );
+        assert!(writes.effects(&["a".to_string()]).is_some());
+        assert_eq!(writes.effects(&["<<slot>>".to_string()]), None);
     }
 
     #[test]

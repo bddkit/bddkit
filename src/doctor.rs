@@ -683,9 +683,10 @@ fn check_features(
 /// variables the host cannot see, so neither finding is certain enough for
 /// `validate::check`.
 ///
-/// 1. An `extract … from JSON|cookies|response body` straight after an include
-///    reads the response the helper left behind; it breaks the day the helper
-///    sends one more request. Quiet when the helper exports that name.
+/// 1. An `extract … from JSON|cookies|response body`, or a plugin step that
+///    `reads` some state and `sets_vars`, straight after an include reads what
+///    the helper left behind; it breaks the day the helper sends one more
+///    request. Quiet when the helper exports that name.
 /// 2. An `@exports` name no step of the helper (or the nested include it
 ///    exports) writes: `run` finds it out only at the include.
 ///
@@ -728,18 +729,18 @@ fn include_hints(
                         continue;
                     };
                     if let Some(next) = steps.get(i + 1)
-                        && let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
-                            registry.find(&next.text)
-                        && RESPONSE_EXTRACTS.contains(&id)
-                        && !exported(&exports, prefix, &caps[1])
+                        && let Ok(Some((target, caps))) = registry.find(&next.text)
                     {
-                        extracts.insert(format!(
-                            "{}:{}: extract {:?} reads the response the include left behind; \
-                             export the value from the helper instead",
-                            feature::display_path(&lf.path),
-                            next.line,
-                            caps[1]
-                        ));
+                        for (name, state) in left_behind(target, &caps, registry) {
+                            if !exported(&exports, prefix, &name) {
+                                extracts.insert(format!(
+                                    "{}:{}: extract {name:?} reads the {state} the include left behind; \
+                                     export the value from the helper instead",
+                                    feature::display_path(&lf.path),
+                                    next.line,
+                                ));
+                            }
+                        }
                     }
                     let Some(written) = written_names(&included, chosen, registry) else {
                         continue;
@@ -749,7 +750,7 @@ fn include_hints(
                             && !["last_insert_", "updated_", "deleted_"]
                                 .iter()
                                 .any(|p| export.starts_with(p))
-                            && !written.contains(export)
+                            && !exported(&written, "", export)
                         {
                             unset.insert(format!(
                                 "{}:{}: @exports names {export:?}, but no step of the scenario sets it",
@@ -765,10 +766,42 @@ fn include_hints(
     extracts.into_iter().chain(unset).collect()
 }
 
+/// The variables a step takes out of the state it reads, each with that state.
+/// A family has no one name to export, so it gets no hint.
+fn left_behind(
+    target: crate::steps::StepTarget,
+    caps: &[String],
+    registry: &crate::steps::Registry,
+) -> Vec<(String, String)> {
+    use crate::steps::StepTarget;
+    match target {
+        StepTarget::Builtin { id, .. } if RESPONSE_EXTRACTS.contains(&id) => {
+            vec![(caps[1].clone(), "response".to_string())]
+        }
+        StepTarget::Plugin { lib, step, .. } => {
+            let Some(effects) = registry
+                .plugin_step(lib, step)
+                .and_then(|spec| spec.effects(caps))
+                .filter(|effects| !effects.reads.is_empty())
+            else {
+                return Vec::new();
+            };
+            let state = effects.reads.join(", ");
+            effects
+                .sets_vars
+                .into_iter()
+                .filter(|name| !name.ends_with('*'))
+                .map(|name| (name, state.clone()))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `name`, as the caller sees it after `with prefix`, is one of the
-/// helper's `exports` (a trailing `*` matches the rest).
-fn exported(exports: &[String], prefix: &str, name: &str) -> bool {
-    exports.iter().any(|e| match e.strip_suffix('*') {
+/// helper's `exports`, or of a writer list (a trailing `*` matches the rest).
+fn exported<'a>(exports: impl IntoIterator<Item = &'a String>, prefix: &str, name: &str) -> bool {
+    exports.into_iter().any(|e| match e.strip_suffix('*') {
         Some(stem) => name.starts_with(&prefixed(prefix, stem)),
         None => name == prefixed(prefix, e),
     })
@@ -817,7 +850,8 @@ fn load_included(path_literal: &str, base: &std::path::Path) -> Option<feature::
 /// The variable names a scenario's own steps write, or `None` when it has a
 /// step whose writes cannot be listed (SRP and AES derive a prefix, a name
 /// holding a `<<slot>>` or an Outline `<column>`, a macro or include exporting
-/// a glob, a plugin step, which can publish what the host cannot see).
+/// a glob, a plugin step that declares no effects, which can publish what the
+/// host cannot see). A plugin step's family stays in the list with its `*`.
 fn written_names(
     lf: &feature::LoadedFeature,
     chosen: feature::ScenarioRef<'_>,
@@ -872,7 +906,10 @@ fn written_names(
                 }
                 _ => continue,
             },
-            StepTarget::Plugin { .. } => return None,
+            StepTarget::Plugin { lib, step, .. } => {
+                out.extend(registry.plugin_step(lib, step)?.effects(&caps)?.sets_vars);
+                continue;
+            }
         };
         if names.iter().any(|n| n.contains('<') || n.ends_with('*')) {
             return None;

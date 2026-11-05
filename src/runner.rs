@@ -1363,13 +1363,12 @@ mod tests {
         let steps: Vec<_> = plugins
             .steps()
             .into_iter()
-            .map(|(lib, index, pattern, assertion, secret_groups)| {
+            .map(|(lib, index, declared, assertion)| {
                 (
                     lib,
                     index,
-                    pattern,
+                    declared,
                     assertion && force_action != Some(index),
-                    secret_groups,
                 )
             })
             .collect();

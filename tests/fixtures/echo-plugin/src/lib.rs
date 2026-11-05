@@ -147,7 +147,24 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I echo validated doc string:$"#, "group": "echo", "kind": "action",
               "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" },
             { "pattern": r#"^I echo one piece of evidence(?: for "(?P<value>[^"]*)")?$"#, "group": "echo", "kind": "action",
-              "description": "passes, reporting exactly one text diagnostic; an optional \"for\" argument gives the step a slot" }
+              "description": "passes, reporting exactly one text diagnostic; an optional \"for\" argument gives the step a slot" },
+            { "expression": "I echo the number {n:uint}", "group": "echo", "kind": "action",
+              "description": "publishes its args, joined by |, as echo_args; its validate_step refuses 13" },
+            { "expression": "the echo should fail with key {key:secret}", "group": "echo", "kind": "assertion",
+              "description": "fails with an error that quotes its key" },
+            { "expression": "I send the echo", "group": "echo", "kind": "action", "writes": ["exchange"],
+              "description": "passes; sets no variable, and says so by declaring what it writes" },
+            { "expression": "I keep the echo as {name}", "group": "echo", "kind": "action",
+              "reads": ["exchange"], "sets_vars": ["{name}"],
+              "description": "publishes the variable it names, read out of the last exchange" },
+            { "expression": "the echo exchange should be kept", "group": "echo", "kind": "assertion", "reads": ["exchange"],
+              "description": "passes; reads the last exchange and sets nothing" },
+            { "expression": "I spread the echo over {prefix}", "group": "echo", "kind": "action",
+              "reads": ["exchange"], "sets_vars": ["echo_spread", "{prefix}_*"],
+              "description": "publishes echo_spread and <prefix>_one" },
+            { "pattern": r#"^I keep the echo slot "(?P<slot>[^"]*)" as "(?P<name>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "reads": ["slot:{slot}"], "sets_vars": ["{name}"],
+              "description": "publishes the variable it names, read out of a named slot" }
         ])
         .to_string()
     })
@@ -405,6 +422,27 @@ pub extern "C" fn bddkit_dispatch(
                 "diagnostics": [{"title": "echo state", "kind": "text", "content": "one"}]
             })
             .to_string(),
+            19 => serde_json::json!({"status": "passed", "vars": {"echo_args": args.join("|")}})
+                .to_string(),
+            20 => serde_json::json!({
+                "status": "fatal",
+                "error": format!("the echo saw {}", args.first().cloned().unwrap_or_default()),
+            })
+            .to_string(),
+            21 | 23 => serde_json::json!({"status": "passed"}).to_string(),
+            22 => {
+                let name = args.first().cloned().unwrap_or_default();
+                serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
+            }
+            24 => {
+                let family = format!("{}_one", args.first().cloned().unwrap_or_default());
+                serde_json::json!({"status": "passed", "vars": {"echo_spread": "1", family: "1"}})
+                    .to_string()
+            }
+            25 => {
+                let name = args.get(1).cloned().unwrap_or_default();
+                serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
+            }
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
@@ -424,6 +462,7 @@ pub extern "C" fn bddkit_validate_step(step_index: u32, request: *const c_char) 
             (16, Some("panic")) => panic!("the echo validator exploded"),
             (16, Some("malformed")) => "not json".to_string(),
             (16, Some("noerror")) => r#"{"ok":false}"#.to_string(),
+            (19, Some("13")) => refuse("the echo refuses 13"),
             (17, _) if doc.contains("<<") => {
                 refuse("the doc string reached validation uninterpolated")
             }

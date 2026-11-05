@@ -839,12 +839,26 @@ struct Entry {
     /// `optional` one owns two capture groups, see `Param::groups`). A
     /// group-switch regex has none; a plugin's has them only up to its last
     /// secret group (`expression::plugin_params`). Captures of either are
-    /// never type-checked.
+    /// never type-checked; a plugin's `expression` is an expression like any
+    /// other.
     params: Vec<expression::Param>,
     /// What `steps list` prints for this entry.
     template: String,
-    /// `expression::Compiled::loose`; `None` for a plugin or group-switch regex.
+    /// `expression::Compiled::loose`; `None` for a plugin's or a group-switch
+    /// regex.
     loose: Option<Regex>,
+}
+
+impl Entry {
+    fn compiled(target: StepTarget, compiled: &expression::Compiled) -> Self {
+        Self {
+            target,
+            regex: compiled.regex.clone(),
+            params: compiled.params.clone(),
+            template: compiled.template.clone(),
+            loose: compiled.loose.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -883,41 +897,49 @@ impl Registry {
     /// time, macro bodies included.
     pub fn with_macros_and_plugins(
         catalog: MacroCatalog,
-        plugin_steps: &[(usize, usize, String, bool, Vec<usize>)],
+        plugin_steps: &[(usize, usize, crate::plugin::Declared, bool)],
         plugin_groups: &[String],
         plugins: Option<std::sync::Arc<crate::plugin::Plugins>>,
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
         for (def, compiled) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
-            entries.push(Entry {
-                target: StepTarget::Builtin {
-                    id: def.id,
-                    kind: def.kind,
-                },
-                regex: compiled.regex.clone(),
-                params: compiled.params.clone(),
-                template: compiled.template.clone(),
-                loose: compiled.loose.clone(),
-            });
+            let target = StepTarget::Builtin {
+                id: def.id,
+                kind: def.kind,
+            };
+            entries.push(Entry::compiled(target, compiled));
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
-            entries.push(Entry {
-                target: StepTarget::Macro(index),
-                regex: definition.compiled.regex.clone(),
-                params: definition.compiled.params.clone(),
-                template: definition.compiled.template.clone(),
-                loose: definition.compiled.loose.clone(),
-            });
+            entries.push(Entry::compiled(
+                StepTarget::Macro(index),
+                &definition.compiled,
+            ));
         }
         let mut registry = Self {
             entries,
             macros: catalog.definitions,
             plugins,
         };
-        for (lib, step, pattern, assertion, secret_groups) in plugin_steps {
-            registry.add_plugin_step(*lib, *step, pattern, *assertion, secret_groups)?;
+        let mut expressions = Vec::new();
+        for (lib, step, declared, assertion) in plugin_steps {
+            match declared {
+                crate::plugin::Declared::Pattern {
+                    text,
+                    secret_groups,
+                } => registry.add_plugin_step(*lib, *step, text, *assertion, secret_groups)?,
+                crate::plugin::Declared::Expression(compiled) => {
+                    let target = StepTarget::Plugin {
+                        lib: *lib,
+                        step: *step,
+                        assertion: *assertion,
+                    };
+                    registry.entries.push(Entry::compiled(target, compiled));
+                    expressions.push(compiled);
+                }
+            }
         }
         registry.add_use_group_step(plugin_groups)?;
+        registry.check_plugin_conflicts(&expressions)?;
         registry.validate_macros()?;
         Ok(registry)
     }
@@ -952,10 +974,15 @@ impl Registry {
         match hits.len() {
             0 => Ok(None),
             1 => Ok(Some(hits.remove(0))),
-            _ => Err(format!(
-                "step {text:?} matches several definitions: {:?}",
-                hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
-            )),
+            _ => Err({
+                for (_, caps, params) in &hits {
+                    record_literal_secrets(params, caps);
+                }
+                format!(
+                    "step {text:?} matches several definitions: {:?}",
+                    hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
+                )
+            }),
         }
     }
 
@@ -967,6 +994,7 @@ impl Registry {
         let refused = self.entries.iter().find_map(|entry| {
             let caps = entry.loose.as_ref()?.captures(text)?;
             let values = expression::arguments(&entry.params, &caps);
+            record_literal_secrets(&entry.params, &values);
             entry
                 .params
                 .iter()
@@ -1099,6 +1127,41 @@ impl Registry {
             params: Vec::new(),
             loose: None,
         });
+        Ok(())
+    }
+
+    /// A plugin's expression meets the check a macro does. A `pattern` is an
+    /// arbitrary regex with no token model, so `find` reports its overlaps.
+    fn check_plugin_conflicts(&self, expressions: &[&expression::Compiled]) -> Result<(), String> {
+        for (index, left) in expressions.iter().enumerate() {
+            for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
+                if expression::conflicts(&left.variants, &builtin.variants) {
+                    return Err(format!(
+                        "plugin step {:?} conflicts with builtin step {:?}",
+                        left.template, def.expression
+                    ));
+                }
+            }
+            for definition in &self.macros {
+                if expression::conflicts(&definition.compiled.variants, &left.variants) {
+                    return Err(format!(
+                        "macro step {:?} from {}:{} conflicts with plugin step {:?}",
+                        definition.step,
+                        definition.source.display(),
+                        definition.line,
+                        left.template
+                    ));
+                }
+            }
+            for right in expressions.iter().skip(index + 1) {
+                if expression::conflicts(&left.variants, &right.variants) {
+                    return Err(format!(
+                        "plugin step {:?} conflicts with plugin step {:?}",
+                        left.template, right.template
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1247,6 +1310,21 @@ impl Registry {
         visiting[index] = false;
         visited[index] = true;
         Ok(())
+    }
+}
+
+/// A message about to quote a step that no single entry matched cannot hide a
+/// secret by position, as `Registry::display_text` does, so the literal goes to
+/// the process sink, which every such message passes through.
+// ponytail: masked by value, so `privacy.min_length` applies and a shorter
+// secret prints; carry the spans into the message if that ever matters.
+fn record_literal_secrets(params: &[expression::Param], values: &[String]) {
+    for (_, value) in params
+        .iter()
+        .zip(values)
+        .filter(|(param, value)| param.ty.secret && !crate::vars::is_whole_slot(value))
+    {
+        crate::privacy::record_value(value);
     }
 }
 
@@ -1651,6 +1729,48 @@ mod tests {
         assert!(params.is_empty());
     }
 
+    fn expression_registry(expressions: &[&str]) -> Result<Registry, String> {
+        let steps: Vec<_> = expressions
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let compiled = expression::compile(text, "text").expect("compiles");
+                (
+                    0,
+                    index,
+                    crate::plugin::Declared::Expression(compiled),
+                    false,
+                )
+            })
+            .collect();
+        Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &[], None)
+    }
+
+    #[test]
+    fn a_plugin_expression_is_found_with_one_argument_per_parameter() {
+        let reg = expression_registry(&[r#"I ship {n:uint} to "{city}""#]).expect("builds");
+        for text in [r#"I ship 5 to "Riga""#, r#"I ship "5" to "Riga""#] {
+            let (target, caps) = reg.find(text).expect("no ambiguity").expect("matched");
+            assert!(matches!(target, StepTarget::Plugin { step: 0, .. }));
+            assert_eq!(caps, ["5", "Riga"], "{text}");
+        }
+        assert!(
+            reg.unknown_step_detail(r#"I ship abc to "Riga""#)
+                .contains(r#"parameter <n> expects uint, got "abc""#)
+        );
+    }
+
+    #[test]
+    fn a_plugin_expression_conflict_is_refused_as_a_macros_is() {
+        let error = expression_registry(&[r#"set variable "{a}" to "{b}""#])
+            .expect_err("overlaps a builtin");
+        assert!(error.contains("conflicts with builtin step"), "{error}");
+        let error = expression_registry(&["I ship {n:uint}", "I ship {n:word}"])
+            .expect_err("overlaps the other plugin step");
+        assert!(error.contains("conflicts with plugin step"), "{error}");
+        expression_registry(&["I ship {n:uint}", "I ship all"]).expect("no overlap");
+    }
+
     #[test]
     fn a_plugin_secret_group_is_hidden_like_a_secret_parameter() {
         let mut reg = Registry::new().expect("registry");
@@ -1956,9 +2076,11 @@ mod tests {
             &[(
                 0,
                 1,
-                r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
+                crate::plugin::Declared::Pattern {
+                    text: r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
+                    secret_groups: Vec::new(),
+                },
                 false,
-                Vec::new(),
             )],
             &[],
             None,

@@ -2303,3 +2303,279 @@ fn a_plugin_without_the_hook_accepts_every_step() {
     );
     assert_green(&run(&dir));
 }
+
+/// A file of `feature` run through the echo fixture, for the `expression` steps.
+fn expression_project(name: &str, feature: &str) -> PathBuf {
+    project(name, &format!("Feature: f\n{feature}"), ECHO_GROUP)
+}
+
+#[test]
+fn an_expression_step_gets_one_arg_per_parameter_with_or_without_its_optional_quotes() {
+    let dir = expression_project(
+        "expression-args",
+        "  Scenario: s\n    When I echo the number 5\n    Then variable \"echo_args\" should be equal to \"5\"\n    When I echo the number \"6\"\n    Then variable \"echo_args\" should be equal to \"6\"\n",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn validate_step_gets_one_arg_per_parameter_with_or_without_its_optional_quotes() {
+    for (name, step) in [
+        ("expression-validate-bare", "I echo the number 13"),
+        ("expression-validate-quoted", "I echo the number \"13\""),
+    ] {
+        let dir = expression_project(name, &format!("  Scenario: s\n    When {step}\n"));
+        let out = run(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains("the echo refuses 13"), "{stderr}");
+    }
+}
+
+#[test]
+fn a_typed_parameter_holding_a_wrong_literal_is_exit_2_naming_the_parameter() {
+    let dir = expression_project(
+        "expression-wrong-literal",
+        "  Scenario: s\n    When I echo the number abc\n",
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(r#"parameter <n> expects uint, got "abc""#),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_slot_holding_a_wrong_value_fails_the_step_as_a_builtins_would() {
+    let dir = expression_project(
+        "expression-wrong-slot",
+        "  Scenario: s\n    Given set variable \"n\" to \"abc\"\n    When I echo the number <<n>>\n",
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains(r#"parameter <n> expects uint, got "abc""#),
+        "{stdout}"
+    );
+    assert!(stdout.contains("failed: 1 (1 input)"), "{stdout}");
+}
+
+#[test]
+fn a_literal_secret_parameter_is_hidden_everywhere_and_joins_the_secret_set() {
+    let dir = expression_project(
+        "expression-secret",
+        "  Scenario: a\n    Then the echo should fail with key \"key-literal-1\"\n\n  Scenario: b\n    Then the echo should fail quoting \"key-literal-1\"\n",
+    );
+    let out = run_with(
+        &dir,
+        &["--events", "events.ndjson", "--junit", "junit.xml"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains(r#"with key "***""#), "{stdout}");
+    assert!(stdout.contains("the echo saw ***"), "{stdout}");
+    assert!(stdout.contains("the echo quoted ***"), "{stdout}");
+    assert!(!stdout.contains("key-literal-1"), "{stdout}");
+    for report in ["events.ndjson", "junit.xml"] {
+        let text = std::fs::read_to_string(dir.join(report)).expect("report");
+        assert!(!text.contains("key-literal-1"), "{report}: {text}");
+    }
+    let stream = std::fs::read_to_string(dir.join("events.ndjson")).expect("stream");
+    assert!(stream.contains(r#"with key \"***\""#), "{stream}");
+}
+
+#[test]
+fn steps_list_shows_an_expression_steps_template() {
+    let dir = expression_project("expression-list", "");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["steps", "list", "echo", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("I echo the number <n>"), "{stdout}");
+    assert!(
+        stdout.contains(r#"the echo should fail with key "<key>""#),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_macro_conflicting_with_an_expression_step_is_refused_at_startup() {
+    let dir = macro_project(
+        "expression-conflict",
+        "Feature: f\n  Scenario: s\n    When I echo the number 5\n",
+        "- step: I echo the number {x:uint}\n  do: [set variable \"a\" to \"b\"]\n",
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("conflicts with plugin step \"I echo the number <n>\""),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_literal_secret_in_a_step_no_single_entry_matched_stays_hidden() {
+    for (name, yaml, step) in [
+        // A refused typed literal: the step matches nothing.
+        (
+            "secret-refused-literal",
+            "- step: I ship {n:uint} with key {key:secret}\n  do: [set variable \"a\" to \"b\"]\n",
+            "I ship abc with key \"real-secret-value\"",
+        ),
+        // A macro overlapping a plugin pattern: the step matches two.
+        (
+            "secret-ambiguous",
+            "- step: I echo {user:text} with password {key:secret}\n  do: [set variable \"a\" to \"b\"]\n",
+            "I echo \"ann\" with password \"real-secret-value\"",
+        ),
+    ] {
+        let dir = macro_project(
+            name,
+            &format!("Feature: f\n  Scenario: s\n    When {step}\n"),
+            yaml,
+        );
+        let out = run(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{name}: {stderr}");
+        assert!(stderr.contains("***"), "{name}: {stderr}");
+        assert!(!stderr.contains("real-secret-value"), "{name}: {stderr}");
+    }
+}
+
+/// `doctor` over a caller and the `helper.feature` it includes.
+fn doctor_on_include(name: &str, caller: &str, helper: &str) -> String {
+    let dir = project(
+        name,
+        &format!("Feature: only\n  Scenario: one\n{caller}"),
+        ECHO_GROUP,
+    );
+    std::fs::write(
+        dir.join("features/helper.feature"),
+        format!("Feature: helper\n{helper}"),
+    )
+    .expect("write helper");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "both are hints: {stdout}");
+    stdout
+}
+
+const INCLUDE: &str = "    Given I include \"helper.feature\"\n";
+const SENDS: &str = "  Scenario: make\n    Given I send the echo\n";
+
+#[test]
+fn an_extract_shaped_step_after_an_include_gets_the_hint_naming_the_state() {
+    let out = doctor_on_include(
+        "effects-hint",
+        &format!("{INCLUDE}    And I keep the echo as \"team_id\"\n"),
+        SENDS,
+    );
+    assert!(
+        out.contains(
+            "plugin.feature:4: extract \"team_id\" reads the exchange the include left behind; export the value from the helper instead"
+        ),
+        "{out}"
+    );
+    // A pattern step fills a placeholder from a named capture group.
+    let out = doctor_on_include(
+        "effects-hint-pattern",
+        &format!("{INCLUDE}    And I keep the echo slot \"a\" as \"team_id\"\n"),
+        SENDS,
+    );
+    assert!(
+        out.contains("extract \"team_id\" reads the slot:a the include left behind"),
+        "{out}"
+    );
+}
+
+#[test]
+fn the_hint_stays_quiet_about_an_export_a_reader_and_an_unknown_name() {
+    for (name, next) in [
+        (
+            "effects-quiet-read",
+            "Then the echo exchange should be kept",
+        ),
+        ("effects-quiet-slot", "And I keep the echo as \"<<team>>\""),
+        (
+            "effects-quiet-state",
+            "And I keep the echo slot \"<<s>>\" as \"team_id\"",
+        ),
+    ] {
+        let out = doctor_on_include(name, &format!("{INCLUDE}    {next}\n"), SENDS);
+        assert!(!out.contains("left behind"), "{name}: {out}");
+    }
+    let out = doctor_on_include(
+        "effects-quiet-export",
+        "    Given I include \"helper.feature\" with prefix \"a\"\n    And I keep the echo as \"a_team_id\"\n",
+        "  @exports(team_id)\n  Scenario: make\n    Given I keep the echo as \"team_id\"\n",
+    );
+    assert!(!out.contains("left behind"), "{out}");
+    assert!(!out.contains("sets it"), "{out}");
+}
+
+#[test]
+fn a_family_gets_no_hint_of_its_own_and_its_fixed_name_does() {
+    let out = doctor_on_include(
+        "effects-family-hint",
+        &format!("{INCLUDE}    And I spread the echo over \"fam\"\n"),
+        SENDS,
+    );
+    assert!(out.contains("extract \"echo_spread\" reads"), "{out}");
+    assert!(!out.contains("fam_"), "{out}");
+}
+
+#[test]
+fn the_writer_list_takes_sets_vars_and_reports_what_no_step_writes() {
+    let out = doctor_on_include(
+        "effects-writers",
+        INCLUDE,
+        "  @exports(team_id,nobody)\n  Scenario: make\n    Given I send the echo\n    And I keep the echo as \"team_id\"\n",
+    );
+    assert!(out.contains("@exports names \"nobody\""), "{out}");
+    assert!(!out.contains("\"team_id\", but"), "{out}");
+}
+
+#[test]
+fn a_family_matches_an_export_by_prefix() {
+    let out = doctor_on_include(
+        "effects-family",
+        INCLUDE,
+        "  @exports(fam_one,echo_spread,other)\n  Scenario: make\n    Given I spread the echo over \"fam\"\n",
+    );
+    assert!(out.contains("@exports names \"other\""), "{out}");
+    assert!(!out.contains("\"fam_one\", but"), "{out}");
+    assert!(!out.contains("\"echo_spread\", but"), "{out}");
+}
+
+#[test]
+fn a_step_with_no_effects_or_an_unknown_name_makes_the_writer_list_give_up() {
+    for (name, helper) in [
+        (
+            "effects-giveup-none",
+            "  @exports(nobody)\n  Scenario: make\n    Given I echo \"x\" as \"y\"\n",
+        ),
+        (
+            "effects-giveup-slot",
+            "  @exports(nobody)\n  Scenario: make\n    Given I keep the echo as \"<<n>>\"\n",
+        ),
+        (
+            "effects-giveup-column",
+            "  @exports(nobody)\n  Scenario Outline: make\n    Given I keep the echo as \"<k>\"\n    Examples:\n      | k |\n      | a |\n",
+        ),
+    ] {
+        let out = doctor_on_include(name, INCLUDE, helper);
+        assert!(!out.contains("sets it"), "{name}: {out}");
+    }
+}

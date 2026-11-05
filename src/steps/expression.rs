@@ -1,10 +1,10 @@
 //! The one parser of step declarations.
 //!
-//! A builtin step and a macro template are both a Cucumber Expression
-//! (optional `(text)`, alternation `a/b`, escapes `\(` `\{` `\/` `\\`) whose
-//! parameters follow a bddkit extension: `{name}` or `{name:type}`. Cucumber
-//! itself has no parameter names — only types — so the name is written into the
-//! type slot and split off here. [`compile`] parses an expression ONCE and
+//! A builtin step, a macro template and a plugin's `expression` are each a
+//! Cucumber Expression (optional `(text)`, alternation `a/b`, escapes `\(` `\{`
+//! `\/` `\\`) whose parameters follow a bddkit extension: `{name}` or
+//! `{name:type}`. Cucumber itself has no parameter names — only types — so the
+//! name is written into the type slot and split off here. [`compile`] parses an expression ONCE and
 //! derives from that single AST everything the host needs from it: the
 //! matching regex, the conflict-detection token streams, the `steps list`
 //! template and each parameter's type. Nothing else in the host parses a
