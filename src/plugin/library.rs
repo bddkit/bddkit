@@ -2,7 +2,8 @@
 //! `String -> String` calls and typed payloads.
 
 use super::abi::{
-    ABI_MIN, ABI_VERSION, Concurrency, DispatchResult, Envelope, InitResponse, Manifest, StepSpec,
+    ABI_MIN, ABI_VERSION, Concurrency, ConfigReply, DispatchResult, Envelope, InitResponse,
+    Manifest, StepSpec,
 };
 use anyhow::{Context, Result, bail};
 use std::ffi::{CStr, CString, c_char};
@@ -174,8 +175,8 @@ impl Library {
         self.probe_config.is_some()
     }
 
-    pub fn validate_config(&self, request: &str) -> Result<Result<(), String>> {
-        self.envelope_call(self.validate_config, request, "validate_config")
+    pub fn validate_config(&self, request: &str) -> Result<Result<Option<String>, String>> {
+        self.config_call(self.validate_config, request, "validate_config")
     }
 
     /// `None` means the plugin exports no probe at all — "not available",
@@ -184,9 +185,9 @@ impl Library {
     /// reachability check that never ran has proved nothing, so the caller
     /// must be able to tell the two apart.
     ///
-    pub fn probe_config(&self, request: &str) -> Option<Result<Result<(), String>>> {
+    pub fn probe_config(&self, request: &str) -> Option<Result<Result<Option<String>, String>>> {
         let function = self.probe_config?;
-        Some(self.envelope_call(function, request, "probe_config"))
+        Some(self.config_call(function, request, "probe_config"))
     }
 
     /// `None` means the plugin exports no hook — every step is accepted.
@@ -257,17 +258,29 @@ impl Library {
         Ok(envelope.into_result())
     }
 
-    /// The shared body of the two `JsonFn` calls that reply with an envelope.
-    fn envelope_call(
+    /// The two config replies. Their `secrets` are recorded into the process
+    /// sink before anything else reads the reply, `ok` or not, and also from a
+    /// reply that does not parse as a whole: `malformed` quotes it.
+    fn config_call(
         &self,
         function: JsonFn,
         request: &str,
         what: &str,
-    ) -> Result<Result<(), String>> {
+    ) -> Result<Result<Option<String>, String>> {
         let reply = self.call_json(function, request, what)?;
-        let envelope: Envelope =
+        if let Some(secrets) = serde_json::from_str::<serde_json::Value>(&reply)
+            .ok()
+            .as_ref()
+            .and_then(|value| value.get("secrets")?.as_array())
+        {
+            secrets
+                .iter()
+                .filter_map(|secret| secret.as_str())
+                .for_each(crate::privacy::record_value);
+        }
+        let parsed: ConfigReply =
             serde_json::from_str(&reply).with_context(|| self.malformed(what, &reply))?;
-        Ok(envelope.into_result())
+        Ok(parsed.into_result())
     }
 
     fn call_json(&self, function: JsonFn, request: &str, what: &str) -> Result<String> {

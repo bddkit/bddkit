@@ -446,6 +446,29 @@ impl Envelope {
     }
 }
 
+/// The reply of `bddkit_validate_config` and `bddkit_probe_config`: the
+/// envelope plus the optional ABI 4 `detail`. `secrets` is read by
+/// `Library::config_call` straight from the JSON, whatever `ok` says; `detail` is the one-line text of an `ok` instance's `doctor` row.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigReply {
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl ConfigReply {
+    /// `Ok` carries the plugin's `detail`, if it gave one (an empty one is none).
+    pub fn into_result(self) -> Result<Option<String>, String> {
+        if self.ok {
+            Ok(self.detail.filter(|detail| !detail.is_empty()))
+        } else {
+            Err(self.error.unwrap_or_else(|| NO_MESSAGE.to_string()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct InitResponse {
     pub ok: bool,

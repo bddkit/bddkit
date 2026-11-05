@@ -796,7 +796,10 @@ async fn check_new_resource(
                 return Ok(());
             }
             match plugins.probe_config(group, input.name) {
-                Some(Ok(())) => println!("probed clean"),
+                Some(Ok(detail)) => println!(
+                    "{}",
+                    crate::privacy::mask_text(detail.as_deref().unwrap_or("probed clean"))
+                ),
                 Some(Err(error)) => return Err(error),
                 None => {
                     println!("the plugin exports no bddkit_probe_config, so nothing was probed")
