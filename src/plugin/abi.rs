@@ -12,8 +12,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Bumped only for a breaking change to the payloads or the symbol set.
-/// The host refuses a plugin reporting anything else.
+/// The newest ABI generation this host speaks; it loads every plugin reporting
+/// a number from `ABI_MIN` to this one, and refuses the rest.
+///
+/// The rule for a change: a compatible one raises only `ABI_VERSION`, an
+/// incompatible one raises `ABI_MIN` too. Compatible means an optional key or
+/// symbol with a default, or a request field an older plugin can ignore
+/// without harm. Incompatible means removing or renaming a field or symbol,
+/// changing its meaning, or adding a request field a plugin must honour. The
+/// host never gates an addition on the number a plugin reports: a plugin
+/// built for an older generation does not send the new keys or export the new
+/// symbols, and gets each addition's default.
 ///
 /// 2: the dispatch request gained `evidence`, the reply `secrets`, a
 /// diagnostic `media_type` and a step spec `secret_groups` (#90). Each is
@@ -22,7 +31,13 @@ use std::collections::BTreeMap;
 ///
 /// 3: the request's `vars`, the spec's `wants_vars` and `raw_docstring`, and
 /// an optional `bddkit_validate_step` (#55), moved once for the lot.
-pub const ABI_VERSION: u32 = 3;
+///
+/// 4: the first generation of the range (#205). It adds nothing by itself;
+/// every later optional key of the phase builds on it.
+pub const ABI_VERSION: u32 = 4;
+
+/// The oldest ABI generation this host still loads.
+pub const ABI_MIN: u32 = 3;
 
 /// A message used whenever a plugin reports failure without giving a reason.
 const NO_MESSAGE: &str = "the plugin reported a failure with no message";
