@@ -58,6 +58,11 @@ impl fmt::Display for FailureKind {
 pub struct StepError {
     pub kind: FailureKind,
     pub message: String,
+    /// What a plugin's failing reply showed besides its message, already
+    /// rendered: the console dump appends it once. It is kept apart from
+    /// `message` so a polled assertion's `attempt` event and the timeout text
+    /// quote the mismatch alone, and it survives `wrap`.
+    pub diagnostics: Vec<String>,
 }
 
 impl StepError {
@@ -65,7 +70,14 @@ impl StepError {
         Self {
             kind,
             message: message.into(),
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// The same error with the diagnostics of the reply that caused it.
+    pub fn with_diagnostics(mut self, diagnostics: Vec<String>) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 
     pub fn assertion(message: impl Into<String>) -> Self {
@@ -95,7 +107,7 @@ impl StepError {
     pub fn wrap(self, f: impl FnOnce(&str) -> String) -> Self {
         Self {
             message: f(&self.message),
-            kind: self.kind,
+            ..self
         }
     }
 }

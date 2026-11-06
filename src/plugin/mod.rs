@@ -3,6 +3,7 @@ pub mod install;
 pub mod library;
 pub mod lock;
 pub mod manage;
+pub mod reply;
 
 use crate::config::InstanceSpec;
 use crate::options::Options;
@@ -991,7 +992,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 26);
+        assert_eq!(plugins.step_count(), 27);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

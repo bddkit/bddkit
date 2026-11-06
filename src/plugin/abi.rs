@@ -343,20 +343,33 @@ pub enum Status {
     Fatal,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A diagnostic as the plugin sent it. `content` is kept as JSON so a shape
+/// that does not fit is refused by `plugin::reply` with a message that quotes
+/// nothing: a typed field would let serde's error text carry the value.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Diagnostic {
-    pub title: String,
-    /// `text | json | http | image`. Not an enum: an unknown kind from a newer
-    /// plugin must degrade to "print it as text", never fail the parse.
-    pub kind: String,
+    /// Required, except for kinds `http` and `sql`.
     #[serde(default)]
-    pub content: Option<String>,
+    pub title: Option<String>,
+    /// `text | json | http | sql | image`. Not an enum: an unknown kind from a
+    /// newer plugin must degrade to "print it as text", never fail the parse.
+    pub kind: String,
+    /// Text, or for `http` and `sql` an object of the shape in
+    /// `docs/events-design.md` 9.3.
+    #[serde(default)]
+    pub content: Option<serde_json::Value>,
     #[serde(default)]
     pub path: Option<String>,
     /// The media type of the file at `path`. When absent the host guesses it
     /// from the file's extension.
     #[serde(default)]
     pub media_type: Option<String>,
+    /// The instance the diagnostic concerns; absent: the selected one.
+    #[serde(default)]
+    pub resource: Option<String>,
+    /// False: evidence only, never in the console dump.
+    #[serde(default)]
+    pub in_dump: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -371,60 +384,91 @@ pub struct DispatchResult {
     /// `privacy.min_length` as any other value.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// What the host checks for sensitive field names, registering what it
+    /// finds and printing nothing, on every status.
+    #[serde(default)]
+    pub scan: Vec<crate::diagnostic::ScanItem>,
     #[serde(default)]
     pub error: Option<String>,
 }
 
 impl DispatchResult {
     /// A reply that does not parse as a whole may still have declared
-    /// `secrets`, and the message that reports it quotes the raw reply. Read
-    /// just that key so the failure can be masked like any other; `None` when
-    /// it declared none, and the caller reports the parse error as it always
-    /// did.
+    /// `secrets` and `scan` items, and the message that reports it quotes the
+    /// raw reply. Read just those keys so the failure can be masked like any
+    /// other; `None` when it declared none, and the caller reports the parse
+    /// error as it always did.
     pub fn salvage(reply: &str, message: String) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(reply).ok()?;
-        let secrets: Vec<String> = value
-            .get("secrets")?
-            .as_array()?
+        let list = |key: &str| value.get(key).and_then(|v| v.as_array()).cloned();
+        let secrets: Vec<String> = list("secrets")
+            .unwrap_or_default()
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
-        (!secrets.is_empty()).then(|| Self {
+        let scan: Vec<crate::diagnostic::ScanItem> = list("scan")
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(lenient_scan_item)
+            .collect();
+        // Each diagnostic on its own: one that does not fit must not take the
+        // others with it. A bare `http` content still gets registered.
+        let diagnostics: Vec<Diagnostic> = list("diagnostics")
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                serde_json::from_value(item.clone()).ok().or_else(|| {
+                    let content = item.get("content").filter(|c| c.is_object())?.clone();
+                    Some(Diagnostic {
+                        kind: "http".into(),
+                        content: Some(content),
+                        ..Diagnostic::default()
+                    })
+                })
+            })
+            .collect();
+        (!secrets.is_empty() || !scan.is_empty() || !diagnostics.is_empty()).then(|| Self {
             status: Status::Fatal,
             vars: BTreeMap::new(),
-            diagnostics: Vec::new(),
+            diagnostics,
             secrets,
+            scan,
             error: Some(message),
         })
     }
 
-    /// Diagnostics are evidence on the failure path, so they have to end up
-    /// inside the one string `report::render_file` writes. Printing them
-    /// directly would land in the middle of another worker's dump.
-    ///
-    /// A `json` diagnostic is masked by name BEFORE it is joined in, while its
-    /// positions still exist, and what it holds under a sensitive name joins the
-    /// file's set. The rest of the text (the error, a text diagnostic) is masked
-    /// by value by whoever prints the failure.
-    pub fn render_failure(&self, redactor: &crate::privacy::Redactor) -> String {
-        let mut out = self.error.clone().unwrap_or_else(|| NO_MESSAGE.to_string());
-        for d in &self.diagnostics {
-            out.push_str(&format!("\n\n--- {} ({}) ---", d.title, d.kind));
-            if let Some(content) = &d.content {
-                out.push('\n');
-                if d.kind == "json" {
-                    redactor.register(&redactor.json_hits(content));
-                    out.push_str(&redactor.mask_json(content));
-                } else {
-                    out.push_str(content);
-                }
-            }
-            if let Some(path) = &d.path {
-                out.push_str(&format!("\n{path}"));
-            }
-        }
-        out
+    /// The text of a failing reply: its `error` alone. The diagnostics travel
+    /// apart (`plugin::reply`), so a polled assertion's `attempt` event and
+    /// the timeout message do not quote a dump.
+    pub fn message(&self) -> String {
+        self.error.clone().unwrap_or_else(|| NO_MESSAGE.to_string())
     }
+}
+
+/// A `scan` item of a malformed reply, read as far as it can be: a `content`
+/// that is not a string is registered as its JSON text, a pair that is not two
+/// strings is skipped.
+fn lenient_scan_item(item: serde_json::Value) -> Option<crate::diagnostic::ScanItem> {
+    serde_json::from_value(item.clone()).ok().or_else(|| {
+        Some(crate::diagnostic::ScanItem {
+            kind: item.get("kind")?.as_str()?.to_string(),
+            content: item
+                .get("content")
+                .map(|c| c.as_str().map_or_else(|| c.to_string(), str::to_string)),
+            pairs: item
+                .get("pairs")
+                .and_then(|p| p.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|p| {
+                    Some((
+                        p.get(0)?.as_str()?.to_string(),
+                        p.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect(),
+        })
+    })
 }
 
 /// The reply shape for everything that is not a step: configuration validation
@@ -612,47 +656,25 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_render_into_the_failure_text() {
-        // The report layer composes a file's whole output into ONE string, so
-        // plugin evidence has to arrive as text on the error path, not as a
-        // separate print (invariant 6 + the atomic per-file dump).
-        let r = DispatchResult {
-            status: Status::Fatal,
-            vars: Default::default(),
-            diagnostics: vec![
-                Diagnostic {
-                    title: "PUT /b/o".into(),
-                    kind: "http".into(),
-                    content: Some("403 Forbidden".into()),
-                    path: None,
-                    media_type: None,
-                },
-                Diagnostic {
-                    title: "Screenshot".into(),
-                    kind: "image".into(),
-                    content: None,
-                    path: Some("/run/artifacts/7/fail.png".into()),
-                    media_type: None,
-                },
-            ],
-            secrets: Vec::new(),
-            error: Some("access denied".into()),
-        };
-        let text = r.render_failure(&crate::privacy::Redactor::disabled());
-        assert!(text.contains("access denied"), "{text}");
-        assert!(text.contains("PUT /b/o"), "{text}");
-        assert!(text.contains("403 Forbidden"), "{text}");
-        assert!(text.contains("/run/artifacts/7/fail.png"), "{text}");
-    }
-
-    #[test]
     fn a_malformed_reply_still_yields_the_secrets_it_declared() {
-        let reply = r#"{"status":"fatal","secrets":["tok-123456"],"diagnostics":[{"kind":"x"}]}"#;
+        let reply = r#"{"status":"fatal","secrets":["tok-123456"],"scan":[{"kind":"form","pairs":[["password","p&w%41"]]}],"diagnostics":[{}]}"#;
         assert!(serde_json::from_str::<DispatchResult>(reply).is_err());
         let salvaged = DispatchResult::salvage(reply, "malformed".into()).expect("secrets kept");
         assert_eq!(salvaged.secrets, vec!["tok-123456".to_string()]);
+        assert_eq!(salvaged.scan[0].pairs[0].1, "p&w%41");
         assert_eq!(salvaged.status, Status::Fatal);
         assert!(DispatchResult::salvage(r#"{"status":1}"#, "m".into()).is_none());
+        // A diagnostic that fits survives its broken neighbour, a `scan`
+        // item whose content is not a string is kept as its JSON text, and a
+        // diagnostic with a bad `kind` still yields its `http` content.
+        let reply = r#"{"status":"fatal","scan":[{"kind":"json","content":{"token":"t-12345678"}}],"diagnostics":[{"kind":"text","title":"ok"},{"kind":5,"content":{"url":"u"}},{}]}"#;
+        let salvaged = DispatchResult::salvage(reply, "m".into()).expect("kept");
+        assert_eq!(salvaged.diagnostics.len(), 2);
+        assert_eq!(salvaged.diagnostics[1].kind, "http");
+        assert_eq!(
+            salvaged.scan[0].content.as_deref(),
+            Some(r#"{"token":"t-12345678"}"#)
+        );
         assert!(DispatchResult::salvage("not json", "m".into()).is_none());
     }
 

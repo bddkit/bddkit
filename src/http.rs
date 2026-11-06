@@ -661,7 +661,7 @@ impl HttpState {
 /// Registers a sensitive header's value whole, and the part of it that travels
 /// on its own: the credential of `Authorization: Bearer <credential>`, each
 /// value of `Cookie`, the cookie value of `Set-Cookie` (not its attributes).
-fn register_header(redactor: &Redactor, name: &str, value: &str) {
+pub(crate) fn register_header(redactor: &Redactor, name: &str, value: &str) {
     redactor.secret(value);
     let parts: Vec<&str> = match name.to_ascii_lowercase().as_str() {
         "authorization" | "proxy-authorization" => {

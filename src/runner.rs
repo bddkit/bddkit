@@ -500,15 +500,13 @@ async fn run_step(
                 world
                     .plugins
                     .record(&group, &instance, lib, handle, per_worker);
-                // Every secret this reply carries is registered before
-                // anything else is read from it, on any status: the error,
-                // a diagnostic or a `not_yet` message may quote one.
+                // Everything this reply reveals is registered before anything
+                // else is read from it, on any status and in a fixed order
+                // (`plugin::reply::absorb`): the error, a diagnostic or a
+                // `not_yet` message may quote it.
                 let mut result = result;
-                for secret in &result.secrets {
-                    world.redactor.secret(secret);
-                }
-                // A diagnostic may also quote a value another one, or a
-                // published variable, marks as secret.
+                let shown = crate::plugin::reply::absorb(&result, &world.redactor, &instance)
+                    .map_err(StepError::plugin)?;
                 if matches!(result.status, Status::Passed) {
                     // Variables are published only on success: an
                     // intermediate observation must not leak into the
@@ -517,45 +515,37 @@ async fn run_step(
                         world.vars.set(&name, value);
                     }
                 }
-                for diagnostic in &result.diagnostics {
-                    if diagnostic.kind == "json"
-                        && let Some(content) = &diagnostic.content
-                    {
-                        world.redactor.register(&world.redactor.json_hits(content));
-                    }
-                }
                 // Whatever the status: the console shows diagnostics only of
                 // a failure, the stream of every reply.
-                for diagnostic in &result.diagnostics {
-                    let notes =
-                        world
-                            .trace
-                            .diagnostic(&group, &instance, &dispatch_dir, diagnostic);
+                for diagnostic in &shown {
+                    let notes = diagnostic.emit(&world.trace, &group, &instance, &dispatch_dir);
                     world.warnings.extend(notes);
                 }
+                // The failing reply's diagnostics ride on the error, apart
+                // from its text.
+                let failure = |error: StepError| {
+                    error.with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                };
 
                 match result.status {
                     Status::Passed => return Ok(()),
                     Status::Fatal => {
-                        return Err(StepError::plugin(result.render_failure(&world.redactor)));
+                        return Err(failure(StepError::plugin(result.message())));
                     }
                     Status::NotYet if !assertion => {
-                        return Err(StepError::plugin(format!(
+                        return Err(failure(StepError::plugin(format!(
                             "a plugin action answered not_yet, which only an assertion may do: {}",
-                            result.render_failure(&world.redactor)
-                        )));
+                            result.message()
+                        ))));
                     }
                     Status::NotYet => match &mut polling {
                         // Without an armed modifier there is no second
                         // attempt, so not_yet is simply a failure.
                         None => {
-                            return Err(StepError::assertion(
-                                result.render_failure(&world.redactor),
-                            ));
+                            return Err(failure(StepError::assertion(result.message())));
                         }
                         Some(polling) => {
-                            let error =
-                                StepError::assertion(result.render_failure(&world.redactor));
+                            let error = failure(StepError::assertion(result.message()));
                             attempts += 1;
                             world.trace.attempt(attempts, &error.message);
                             polling.after_not_yet(&error).await?
@@ -1003,6 +993,9 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         ctx.reg.display_text(&step.text, &world.redactor),
                         e.message
                     ));
+                    for dump in &e.diagnostics {
+                        msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
+                    }
                     if let Some(dump) = world
                         .http
                         .last()
@@ -1398,6 +1391,16 @@ mod tests {
     }
 
     async fn run_step(world: &mut World, reg: &Registry, text: &str) -> Result<(), String> {
+        run_step_error(world, reg, text)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    async fn run_step_error(
+        world: &mut World,
+        reg: &Registry,
+        text: &str,
+    ) -> Result<(), StepError> {
         let step = ExpandedStep {
             keyword: String::new(),
             text: text.to_string(),
@@ -1412,9 +1415,7 @@ mod tests {
             index: None,
             comment: None,
         };
-        execute_step(world, reg, &step, source, &generator, 0, origin)
-            .await
-            .map_err(|error| error.message)
+        execute_step(world, reg, &step, source, &generator, 0, origin).await
     }
 
     #[tokio::test]
@@ -1538,12 +1539,20 @@ mod tests {
         let plugins = echo_plugins();
         let reg = echo_registry(&plugins, None);
         let (mut world, _) = echo_world(plugins);
-        let error = run_step(&mut world, &reg, "the echo should fail")
+        let error = run_step_error(&mut world, &reg, "the echo should fail")
             .await
             .expect_err("the step is asked to fail");
-        assert!(error.contains("the echo step was asked to fail"), "{error}");
-        assert!(error.contains("echo state"), "{error}");
-        assert!(error.contains("prefix=p-"), "{error}");
+        assert!(
+            error.message.contains("the echo step was asked to fail"),
+            "{error}"
+        );
+        assert!(
+            !error.message.contains("echo state"),
+            "the message is the error alone: {error}"
+        );
+        let dump = error.diagnostics.join("\n");
+        assert!(dump.contains("echo state"), "{dump}");
+        assert!(dump.contains("prefix=p-"), "{dump}");
     }
 
     fn macro_catalog(name: &str, source: &str) -> MacroCatalog {
