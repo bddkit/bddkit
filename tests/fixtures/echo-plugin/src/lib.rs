@@ -174,7 +174,9 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "description": "publishes echo_spread and <prefix>_one" },
             { "pattern": r#"^I keep the echo slot "(?P<slot>[^"]*)" as "(?P<name>[^"]*)"$"#, "group": "echo", "kind": "action",
               "reads": ["slot:{slot}"], "sets_vars": ["{name}"],
-              "description": "publishes the variable it names, read out of a named slot" }
+              "description": "publishes the variable it names, read out of a named slot" },
+            { "pattern": r#"^the echo answers:$"#, "group": "echo", "kind": "assertion",
+              "description": "replies with its doc string verbatim, whatever it holds: a structured diagnostic, a scan item, any status" }
         ])
         .to_string()
     })
@@ -488,6 +490,7 @@ pub extern "C" fn bddkit_dispatch(
                 let name = args.get(1).cloned().unwrap_or_default();
                 serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
             }
+            26 => value["docstring"].as_str().unwrap_or_default().trim().to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()

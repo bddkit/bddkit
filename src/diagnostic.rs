@@ -31,6 +31,7 @@ pub enum BodyForm {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpSide {
     /// `[name, value]` pairs, order and repeats kept.
+    #[serde(default)]
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
 }
@@ -179,6 +180,138 @@ impl HttpDiagnostic {
             content["duration_us"] = duration.into();
         }
         content
+    }
+}
+
+/// What a plugin's `http` diagnostic holds in `content`: the evidence fields
+/// and the two the renderer needs. `resource` and `in_dump` stand beside it
+/// in the diagnostic and are added by `HttpDiagnostic::from_plugin`.
+#[derive(Deserialize)]
+struct HttpContent {
+    method: String,
+    url: String,
+    #[serde(default)]
+    request: HttpSide,
+    status: u16,
+    #[serde(default)]
+    response: HttpSide,
+    #[serde(default)]
+    duration_us: Option<u64>,
+    #[serde(default)]
+    sensitive_headers: Vec<String>,
+    #[serde(default)]
+    request_form: BodyForm,
+}
+
+#[derive(Deserialize)]
+struct SqlContent {
+    sql: String,
+    #[serde(default)]
+    binds: Vec<Option<String>>,
+    #[serde(default)]
+    duration_us: Option<u64>,
+}
+
+impl HttpDiagnostic {
+    /// A plugin's `content` object. A shape that does not fit is refused with
+    /// a message that names the kind and quotes nothing: serde's own text
+    /// would quote the offending value.
+    pub fn from_plugin(content: &Value, resource: &str, in_dump: bool) -> Result<Self, String> {
+        let wire: HttpContent = serde_json::from_value(content.clone())
+            .map_err(|_| "the content of an http diagnostic does not fit its shape".to_string())?;
+        Ok(Self {
+            method: wire.method,
+            url: wire.url,
+            request: wire.request,
+            status: wire.status,
+            response: wire.response,
+            duration_us: wire.duration_us,
+            sensitive_headers: wire.sensitive_headers,
+            request_form: wire.request_form,
+            resource: resource.to_string(),
+            in_dump,
+        })
+    }
+
+    /// Adds to the set what the exchange holds under sensitive names, as
+    /// `HttpState::send` does for a built-in one: the listed headers' values
+    /// (whole and in parts), the query's and the request body's fields, and
+    /// the response body's JSON fields.
+    pub fn register(&self, redactor: &Redactor) {
+        let listed = |name: &str| {
+            self.sensitive_headers
+                .iter()
+                .any(|listed| listed.eq_ignore_ascii_case(name))
+        };
+        for (name, value) in self.request.headers.iter().chain(&self.response.headers) {
+            if listed(name) {
+                crate::http::register_header(redactor, name, value);
+            }
+        }
+        redactor.register(&redactor.query_hits(&self.url));
+        if let Some(body) = &self.request.body {
+            redactor.register(&match self.request_form {
+                BodyForm::Form => redactor.pair_hits(body),
+                BodyForm::Raw => redactor.json_hits(body),
+                BodyForm::Multipart => Vec::new(),
+            });
+        }
+        if let Some(body) = &self.response.body {
+            redactor.register(&redactor.json_hits(body));
+        }
+    }
+}
+
+impl SqlDiagnostic {
+    /// A plugin's `content` object, refused like `HttpDiagnostic::from_plugin`.
+    pub fn from_plugin(content: &Value, resource: &str) -> Result<Self, String> {
+        let wire: SqlContent = serde_json::from_value(content.clone())
+            .map_err(|_| "the content of an sql diagnostic does not fit its shape".to_string())?;
+        Ok(Self {
+            sql: wire.sql,
+            binds: wire.binds,
+            duration_us: wire.duration_us,
+            resource: resource.to_string(),
+        })
+    }
+}
+
+/// One `scan` item of a plugin's reply: text the host checks for sensitive
+/// field names, registering what it finds and printing nothing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScanItem {
+    /// `json`, `form` or `query`.
+    pub kind: String,
+    /// The text of a `json` item.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// The raw, not encoded, `[name, value]` pairs of a `form` or `query`
+    /// item: a value holding `&`, `=`, `+` or `%XX` is registered whole.
+    #[serde(default)]
+    pub pairs: Vec<(String, String)>,
+}
+
+impl ScanItem {
+    /// An item of another kind is refused; the message quotes nothing.
+    pub fn register(&self, redactor: &Redactor) -> Result<(), String> {
+        match self.kind.as_str() {
+            "json" => {
+                let content = self
+                    .content
+                    .as_deref()
+                    .ok_or("a json scan item has no content")?;
+                redactor.register(&redactor.json_hits(content));
+            }
+            "form" | "query" => {
+                for (name, value) in &self.pairs {
+                    if redactor.field_is_sensitive(name) {
+                        redactor.secret(value);
+                    }
+                }
+            }
+            _ => return Err("a scan item is neither json, form nor query".to_string()),
+        }
+        Ok(())
     }
 }
 

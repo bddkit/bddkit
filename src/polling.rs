@@ -75,7 +75,8 @@ impl<'a> Polling<'a> {
                     "{} did not pass within {:?} (interval {:?}, {} attempts, elapsed {:?}): {}",
                     self.assertion, self.timeout, self.interval, self.attempts, elapsed, last
                 ),
-            ));
+            )
+            .with_diagnostics(last.diagnostics.clone()));
         }
         tokio::time::sleep((self.deadline - now).min(self.interval)).await;
         Ok(())
