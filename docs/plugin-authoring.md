@@ -32,20 +32,24 @@ serde_json = "1.0"
 
 The build produces `libbddkit_s3.so` (Linux), `libbddkit_s3.dylib` (macOS) or `bddkit_s3.dll` (Windows) in `target/<profile>/`. That file's path is what goes into the lock file in section 7.
 
-**`tests/fixtures/echo-plugin/` in the bddkit repository is a complete, working plugin — about 500 lines, every export, every reply shape, the panic guard, the NUL handling.** Copy it and replace the body. Two things in it are deliberately bad examples for the host's own tests: its `validate_config` refuses a `password` key by quoting the value back, and `the echo should fail quoting "…"` quotes its argument in an error — each exists to prove the host hides what a careless plugin prints, and neither is a pattern to copy. It is also what the host's own test suite runs against, so it cannot rot: a change to the ABI that the fixture does not follow turns the suite red.
+**`tests/fixtures/echo-plugin/` in the bddkit repository is a complete, working plugin — about 600 lines, the required exports plus `bddkit_probe_config`, `bddkit_validate_step`, `bddkit_reset_scenario` and `bddkit_failure_context`, every reply shape, the panic guard, the NUL handling.** Copy it and replace the body. Two things in it are deliberately bad examples for the host's own tests: its `validate_config` refuses a `password` key by quoting the value back, and `the echo should fail quoting "…"` quotes its argument in an error — each exists to prove the host hides what a careless plugin prints, and neither is a pattern to copy. It is also what the host's own test suite runs against, so it cannot rot: a change to the ABI that the fixture does not follow turns the suite red. The group-scoped handle (`handle_scope`, `eager_init`, `deprecated`, `bddkit_select_instance`) is shown by `tests/fixtures/group-plugin/` instead.
 
-For a plugin that does real work rather than echoing its arguments back, read
-[`bddkit/bddkit-s3`](https://github.com/bddkit/bddkit-s3): an S3/MinIO plugin
-with 22 steps, written against this document and nothing else — no part of it
-required reading the host's source, which is the claim this document opens
-with. It is where to look for what a skeleton cannot show: validating an
-instance config the host is blind to, deciding where `not_yet` ends and `fatal`
-begins, attaching an HTTP exchange to a failure without leaking the credential
-inside it, and refusing a file name that arrived from a `.feature` file.
+For a plugin that does real work rather than echoing its arguments back, read [`bddkit/bddkit-s3`](https://github.com/bddkit/bddkit-s3): an S3/MinIO plugin with 22 steps, written against this document and nothing else — no part of it required reading the host's source, which is the claim this document opens with. It is where to look for what a skeleton cannot show: validating an instance config the host is blind to, deciding where `not_yet` ends and `fatal` begins, attaching an HTTP exchange to a failure without leaking the credential inside it, and refusing a file name that arrived from a `.feature` file.
 
 ## 3. The ABI
 
-`ABI_VERSION` is **4** and the host loads every plugin from `ABI_MIN` **3** up. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. Generation 3 added, all optional and all described below: the request's `vars` key, a step's `wants_vars` and `raw_docstring`, and the `bddkit_validate_step` export. Generation 4 added, all optional and all described below: a step's `expression`, `reads`, `writes` and `sets_vars`, and the `secrets` and `detail` keys of the `bddkit_validate_config` and `bddkit_probe_config` replies. The host loads a plugin reporting a number from 3 to 4 and refuses one outside that range, newer or older. A compatible change (an optional key or symbol with a default, or a request field an older plugin can ignore) raises only `ABI_VERSION`; an incompatible one raises `ABI_MIN` too. The host does not gate an addition on the number you report: a plugin built for 3 does not send the new keys or export the new symbols, and gets each addition's default.
+`ABI_VERSION` is **4** and the host loads every plugin from `ABI_MIN` **3** up. Every symbol is `extern "C"` and `#[unsafe(no_mangle)]`. Generation 2 added, all optional: the request's `evidence` key, the reply's `secrets`, a diagnostic's `media_type` and a step's `secret_groups`. Generation 3 added, all optional and all described below: the request's `vars` key, a step's `wants_vars` and `raw_docstring`, and the `bddkit_validate_step` export. Generation 4 added, all optional and all described below, in these groups:
+
+- Step specs: `expression`, `reads`, `writes` and `sets_vars`.
+- Manifest: `handle_scope`, `eager_init` and `deprecated`; with them, the `bddkit_select_instance` export and the `instances` key of a group-scoped `bddkit_init_instance` request.
+- Dispatch request: `instance`, `attempt` and `source_dir` (and `source_dir` in the `bddkit_validate_step` request).
+- Dispatch reply: `scan`, `class`, `options_instance`, `output` and `global_vars`; in a diagnostic, structured `http` and `sql` content, `resource` and `in_dump`.
+- Config replies: the `secrets` and `detail` keys of `bddkit_validate_config` and `bddkit_probe_config`.
+- The `bddkit_failure_context` export.
+
+**The compatibility rule.** The host loads a plugin reporting a number from `ABI_MIN` (3) to `ABI_VERSION` (4) and refuses one outside that range, newer or older. A compatible change (an optional key or symbol with a default, or a request field an older plugin can ignore) raises only `ABI_VERSION`; an incompatible one (a changed meaning, a new required symbol or key, a new closed value) raises `ABI_MIN` too, and then every published plugin is re-released. The host does not gate an addition on the number you report: a plugin built for 3 does not send the new keys or export the new symbols, and gets each addition's default. Those defaults are the ones named beside each key below (no `instance` use, `class` absent so the class is `plugin`, `handle_scope` `"instance"`, no failure context, and so on). An older host gets no plugin fixes for an older ABI: an ABI 3 host keeps installing the newest ABI 3 release of each plugin through the index, and a user who needs a newer one upgrades the host.
+
+**Moving a plugin to ABI 4** changes two things and nothing else is required: `bddkit_abi_version` returns 4, and the release's `bddkit-plugin.json` says `{"abi": 4, "groups": ["s3"]}` (section 7). The host reads only `abi` from that file; `groups` repeats the manifest's, so the index and the plugin can be checked against each other. Then adopt the additions you need, each on its own.
 
 | Symbol | Signature | Required |
 |---|---|---|
@@ -581,7 +585,7 @@ Each archive holds exactly one dynamic library for its target (`lib*.so`, `lib*.
 
 Attach `<asset>.sha256` beside each archive, in plain `sha256sum` output (`<hex>  <file name>`). It is checked against the download before anything is written, and it comes from the same release as the archive — it guards the download's integrity, not who built it.
 
-Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the plugin ABI the library was built for (`bddkit_abi_version`): `{"abi": 4}`. Without it `install` has to download the archive to find out.
+Attach `bddkit-plugin.json` to every release, a one-line JSON object naming the plugin ABI the library was built for (`bddkit_abi_version`) and the groups it serves: `{"abi": 4, "groups": ["s3"]}`. Without it `install` has to download the archive to find out. The host reads only `abi`; `groups` must equal the manifest's, and a plugin's own test should check that.
 
 `bddkit-exec`'s release workflow is a working template for all of this.
 
