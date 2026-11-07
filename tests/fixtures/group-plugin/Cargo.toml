@@ -1,0 +1,21 @@
+# Its own workspace root on purpose: the parent package must never build this
+# implicitly, and `cargo clippy --all-targets` at the repository root must not
+# see it. The tests build it explicitly with --manifest-path.
+[workspace]
+
+[package]
+name = "group-plugin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Exports `bddkit_reset_scenario` and `bddkit_select_instance`. A cdylib's
+# symbols are fixed at build time and an environment switch cannot hide one,
+# so the build that must load `shared` at concurrency 2 is a different build.
+hooks = []
+
+[dependencies]
+serde_json = "1.0"

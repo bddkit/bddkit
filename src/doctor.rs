@@ -671,6 +671,10 @@ fn check_features(
             if !hints.is_empty() {
                 detail.push_str(&format!("\ninclude hints:\n{}", hints.join("\n")));
             }
+            let deprecated = deprecated_hints(&loaded, registry);
+            if !deprecated.is_empty() {
+                detail.push_str(&format!("\ndeprecated:\n{}", deprecated.join("\n")));
+            }
         }
         report.push("steps", None, Status::Ok, &detail);
     }
@@ -774,6 +778,95 @@ fn include_hints(
         }
     }
     extracts.into_iter().chain(unset).collect()
+}
+
+/// Every use of a plugin's deprecated switch word, in the feature files, the
+/// scenarios they include (followed through nested includes) and the macro
+/// bodies, each with the step that replaces it. A hint under the `steps` row:
+/// the step still works and `run` says nothing.
+fn deprecated_hints(
+    loaded: &[std::sync::Arc<feature::LoadedFeature>],
+    registry: &crate::steps::Registry,
+) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for lf in loaded {
+        for sc in lf.scenarios() {
+            for expanded in feature::expand_outlines(sc.scenario) {
+                let steps = lf
+                    .background_steps(sc.rule)
+                    .into_iter()
+                    .chain(expanded.steps)
+                    .collect::<Vec<_>>();
+                scan_deprecated(lf, &steps, registry, &mut out, &mut seen);
+            }
+        }
+    }
+    for definition in registry.macros() {
+        for step in &definition.body {
+            if let Some(hint) = deprecated_hint(registry, &step.text) {
+                out.insert(format!(
+                    "{}:{}: macro {:?}: {hint}",
+                    feature::display_path(&definition.source),
+                    definition.line,
+                    definition.step
+                ));
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn deprecated_hint(registry: &crate::steps::Registry, text: &str) -> Option<String> {
+    let (word, name, group) = registry.deprecated_switch(text)?;
+    Some(format!(
+        "I use {name:?} {word} is deprecated, write I use {name:?} {group}"
+    ))
+}
+
+fn scan_deprecated(
+    lf: &feature::LoadedFeature,
+    steps: &[feature::ExpandedStep],
+    registry: &crate::steps::Registry,
+    out: &mut std::collections::BTreeSet<String>,
+    seen: &mut std::collections::BTreeSet<(std::path::PathBuf, String)>,
+) {
+    use crate::steps::{StepId, StepTarget};
+    let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
+    for step in steps {
+        if let Some(hint) = deprecated_hint(registry, &step.text) {
+            out.insert(format!(
+                "{}:{}: {hint}",
+                feature::display_path(&lf.path),
+                step.line
+            ));
+        }
+        let Ok(Some((StepTarget::Builtin { id, .. }, caps))) = registry.find(&step.text) else {
+            continue;
+        };
+        if !matches!(id, StepId::Include | StepId::IncludeScenario) {
+            continue;
+        }
+        let Some((name, _)) = include_call(id, &caps) else {
+            continue;
+        };
+        let Some(included) = load_included(&caps[0], base) else {
+            continue;
+        };
+        let Ok(chosen) = crate::include::select_scenario(&included, name) else {
+            continue;
+        };
+        // A cycle or a repeat is walked once; `validate::check` refuses cycles.
+        if !seen.insert((included.path.clone(), chosen.scenario.name.clone())) {
+            continue;
+        }
+        let inner: Vec<_> = included
+            .background_steps(chosen.rule)
+            .into_iter()
+            .chain(chosen.scenario.steps.iter().map(feature::to_step))
+            .collect();
+        scan_deprecated(&included, &inner, registry, out, seen);
+    }
 }
 
 /// The variables a step takes out of the state it reads, each with that state.

@@ -448,3 +448,39 @@ pub fn build_worker_plugin() -> std::path::PathBuf {
     );
     path
 }
+
+/// Builds the `group-plugin` fixture. `hooks` adds `bddkit_reset_scenario` and
+/// `bddkit_select_instance`, which a build that must load `shared` at
+/// concurrency 2 cannot have; each variant has its own target directory.
+pub fn build_group_plugin(hooks: bool) -> std::path::PathBuf {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = root.join(if hooks {
+        "target/group-plugin-hooks"
+    } else {
+        "target/group-plugin"
+    });
+    let mut command = std::process::Command::new(env!("CARGO"));
+    command
+        .args(["build", "--manifest-path"])
+        .arg(root.join("tests/fixtures/group-plugin/Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target);
+    if hooks {
+        command.args(["--features", "hooks"]);
+    }
+    let out = command
+        .output()
+        .expect("failed to run cargo for the group plugin");
+    assert!(
+        out.status.success(),
+        "group plugin build failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = target.join("debug").join(dll_name("group_plugin"));
+    assert!(
+        path.exists(),
+        "group plugin artifact missing at {}",
+        path.display()
+    );
+    path
+}

@@ -1529,6 +1529,21 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         None => None,
     };
 
+    // After every fallible resolution above, so no later `?` can leave a handle
+    // that came up unswept. A plugin group that asked for `eager_init` is connected here too, so an
+    // unreachable resource is exit 2 before `run <id>`. Blocking FFI, off the
+    // executor; a handle that did come up is swept before the process leaves.
+    if let Some(plugins) = &plugins {
+        let eager = Arc::clone(plugins);
+        let outcome = tokio::task::spawn_blocking(move || eager.eager_init())
+            .await
+            .map_err(anyhow::Error::new)?;
+        if let Err(error) = outcome {
+            let sweep = Arc::clone(plugins);
+            let _ = tokio::task::spawn_blocking(move || sweep.shutdown()).await;
+            return Err(anyhow::Error::msg(error));
+        }
+    }
     // Before anything is announced, and before the handler task is first
     // polled: see `Interrupts`.
     let interrupts = Interrupts::install();

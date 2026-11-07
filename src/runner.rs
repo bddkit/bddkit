@@ -445,6 +445,7 @@ async fn run_step(
             loop {
                 let dispatch_dir = world.artifacts.next_dir();
                 let request = serde_json::to_string(&DispatchRequest {
+                    instance: &instance,
                     args: &args.caps,
                     docstring: args.docstring.as_ref(),
                     table: args.table.as_ref(),
