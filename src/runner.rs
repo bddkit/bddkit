@@ -264,6 +264,7 @@ async fn run_step(
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
             let args = args.expect("resolve interpolates every step but an include");
+            #[cfg(not(feature = "dev-unreserve"))]
             if id == StepId::AttachFile {
                 // Needs the directory of the file the step is written in,
                 // which `dispatch` does not carry — same reason as Include.
@@ -282,11 +283,13 @@ async fn run_step(
                     };
                     let base = match source_kind {
                         OptionsSource::Global => world.options.clone(),
+                        #[cfg(not(feature = "dev-unreserve"))]
                         OptionsSource::Http => world
                             .http
                             .options_for_last_response()
                             .map_err(StepError::input)?
                             .clone(),
+                        #[cfg(not(feature = "dev-unreserve"))]
                         OptionsSource::Db => world.db.options().map_err(StepError::input)?.clone(),
                     };
                     let effective = base.apply(&layer).map_err(StepError::input)?;
@@ -829,11 +832,15 @@ fn debug_display(value: &str) -> &str {
 /// a single reference instead of six.
 pub struct RunContext {
     pub reg: Registry,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub apis: Arc<crate::http::Apis>,
     pub generator: Arc<Generator>,
     pub filter: crate::feature::TagFilter,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub db: Option<Arc<crate::db::Db>>,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub default_db: String,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
     pub options: Options,
@@ -861,12 +868,12 @@ impl RunContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         reg: Registry,
-        apis: Arc<crate::http::Apis>,
+        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         filter: crate::feature::TagFilter,
-        db: Option<Arc<crate::db::Db>>,
-        default_db: String,
-        srp: Option<Arc<crate::srp::SrpParams>>,
+        #[cfg(not(feature = "dev-unreserve"))] db: Option<Arc<crate::db::Db>>,
+        #[cfg(not(feature = "dev-unreserve"))] default_db: String,
+        #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
         artifacts: Arc<crate::artifacts::Artifacts>,
@@ -879,11 +886,15 @@ impl RunContext {
         Self {
             counters,
             reg,
+            #[cfg(not(feature = "dev-unreserve"))]
             apis,
             generator,
             filter,
+            #[cfg(not(feature = "dev-unreserve"))]
             db,
+            #[cfg(not(feature = "dev-unreserve"))]
             default_db,
+            #[cfg(not(feature = "dev-unreserve"))]
             srp,
             plugins,
             options,
@@ -974,9 +985,12 @@ async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) ->
 /// task, and `tokio::spawn` requires `'static`.
 pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResult {
     let mut world = World::new(
+        #[cfg(not(feature = "dev-unreserve"))]
         ctx.apis.clone(),
         ctx.generator.clone(),
+        #[cfg(not(feature = "dev-unreserve"))]
         crate::db::DbHandle::new(ctx.db.clone(), ctx.default_db.clone()),
+        #[cfg(not(feature = "dev-unreserve"))]
         ctx.srp.clone(),
         ctx.plugins.clone(),
         ctx.options.clone(),
@@ -1080,6 +1094,7 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     for dump in &e.diagnostics {
                         msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
                     }
+                    #[cfg(not(feature = "dev-unreserve"))]
                     if let Some(dump) = world
                         .http
                         .last()
@@ -1377,13 +1392,16 @@ pub async fn run_all(
 mod tests {
     use super::*;
     use crate::macros::MacroCatalog;
+    #[cfg(not(feature = "dev-unreserve"))]
     use crate::unique::UniqueKind;
     use std::path::PathBuf;
 
+    #[cfg(not(feature = "dev-unreserve"))]
     fn apis() -> Arc<crate::http::Apis> {
         apis_at("http://example.test")
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     fn apis_at(base: &str) -> Arc<crate::http::Apis> {
         let mut by_name = std::collections::HashMap::new();
         by_name.insert(
@@ -1395,17 +1413,21 @@ mod tests {
 
     fn context_with(
         registry: Registry,
-        apis: Arc<crate::http::Apis>,
+        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
     ) -> Arc<RunContext> {
         Arc::new(RunContext::new(
             registry,
+            #[cfg(not(feature = "dev-unreserve"))]
             apis,
             generator,
             crate::feature::TagFilter::new(&[]),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
+            #[cfg(not(feature = "dev-unreserve"))]
             String::new(),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
             plugins,
             Options::default(),
@@ -1415,7 +1437,13 @@ mod tests {
     }
 
     fn context(registry: Registry) -> Arc<RunContext> {
-        context_with(registry, apis(), Arc::new(Generator::new()), None)
+        context_with(
+            registry,
+            #[cfg(not(feature = "dev-unreserve"))]
+            apis(),
+            Arc::new(Generator::new()),
+            None,
+        )
     }
 
     /// The fixture plugin, with one declared instance "a" that is also the
@@ -1468,9 +1496,12 @@ mod tests {
     fn echo_world(plugins: crate::plugin::Plugins) -> (World, Arc<crate::plugin::Plugins>) {
         let plugins = Arc::new(plugins);
         let world = World::new(
+            #[cfg(not(feature = "dev-unreserve"))]
             apis(),
             Arc::new(Generator::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             crate::db::DbHandle::new(None, String::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
             Some(plugins.clone()),
             Options::default(),
@@ -1850,7 +1881,7 @@ Feature: macro
     async fn macro_call_rejects_docstring_argument() {
         let registry = registry(
             "call-docstring",
-            "- step: I do business\n  do: [the response code is 200]\n",
+            "- step: I do business\n  do: [Show all variables]\n",
         );
         let result = run(
             r#"
@@ -1873,7 +1904,7 @@ Feature: macro
     async fn macro_call_rejects_table_argument() {
         let registry = registry(
             "call-table",
-            "- step: I do business\n  do: [the response code is 200]\n",
+            "- step: I do business\n  do: [Show all variables]\n",
         );
         let result = run(
             r#"
@@ -1917,6 +1948,7 @@ Feature: macro
             .expect("the plugin registry builds");
             let context = context_with(
                 registry,
+                #[cfg(not(feature = "dev-unreserve"))]
                 apis(),
                 Arc::new(Generator::new()),
                 Some(Arc::new(plugins)),
@@ -1983,6 +2015,7 @@ Feature: eventual assertion
 
         // moves-to: api
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(feature = "dev-unreserve"))]
         async fn a_retrying_assertion_prepares_unique_capture_once() {
             // Real time and a real stub: the built-in path is the one under
             // test, and a built-in retry needs a response it can re-request.

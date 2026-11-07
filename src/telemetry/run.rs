@@ -100,6 +100,7 @@ impl RunProbe {
 /// engines. Plugin instances are added once the plugins are loaded. An engine
 /// is named by its DSN scheme, so MariaDB reads as `mysql` until a connection
 /// has told them apart (`Db::engines`).
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn resources_of(cfg: &crate::config::Config) -> Resources {
     let mut resources = Resources {
         api: cfg.resources.api.len() as u64,
@@ -112,4 +113,10 @@ pub fn resources_of(cfg: &crate::config::Config) -> Resources {
         }
     }
     resources
+}
+
+/// A `dev-unreserve` build declares no resource of its own to count.
+#[cfg(feature = "dev-unreserve")]
+pub fn resources_of(_cfg: &crate::config::Config) -> Resources {
+    Resources::default()
 }

@@ -6,6 +6,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bddkit_crate_json::{matcher, path};
 
+#[cfg(not(feature = "dev-unreserve"))]
 use super::markup::{self, MarkupError};
 use regex::Regex;
 
@@ -83,6 +84,7 @@ fn scalar(v: &serde_json::Value) -> String {
     }
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn extract_from_json(
     w: &mut World,
     p: &str,
@@ -144,6 +146,7 @@ pub fn extract_regex_from_variable(
     set_variable(w, name, &value, global)
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn extract_from_cookies(
     w: &mut World,
     cookie: &str,
@@ -160,6 +163,7 @@ pub fn extract_from_cookies(
     set_variable(w, name, &value, global)
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<(), StepError> {
     let ex = w
         .http
@@ -331,10 +335,12 @@ mod tests {
     use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
+    #[cfg(not(feature = "dev-unreserve"))]
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn world() -> World {
+        #[cfg(not(feature = "dev-unreserve"))]
         let resources = HashMap::from([(
             "main".to_string(),
             crate::http::ApiResource::new(
@@ -345,14 +351,18 @@ mod tests {
             )
             .expect("valid base URL"),
         )]);
+        #[cfg(not(feature = "dev-unreserve"))]
         let apis = Arc::new(
             crate::http::Apis::new(resources, Some("main".to_string()))
                 .expect("default API exists"),
         );
         World::new(
+            #[cfg(not(feature = "dev-unreserve"))]
             apis,
             Arc::new(crate::unique::Generator::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             crate::db::DbHandle::new(None, String::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
             crate::options::Options::default(),
@@ -439,6 +449,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn extract_from_markup_writes_the_selected_text() {
         let mut w = world();
         w.http.store_test_exchange(crate::http::Exchange {
@@ -459,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn extract_from_markup_propagates_the_error_without_setting_the_variable() {
         let mut w = world();
         w.http.store_test_exchange(crate::http::Exchange {

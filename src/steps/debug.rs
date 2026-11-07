@@ -1,6 +1,7 @@
 use crate::failure::StepError;
 use crate::world::World;
 
+#[cfg(not(feature = "dev-unreserve"))]
 use super::markup::{self, BodyKind};
 
 pub fn debug_on(w: &mut World) -> Result<(), StepError> {
@@ -26,6 +27,7 @@ fn headers_table(headers: &[(String, String)]) -> String {
         .join("\n")
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn print_headers(w: &World) -> Result<(), String> {
     let ex = super::assert::last(w)?;
     debug_eprintln!(
@@ -180,6 +182,7 @@ pub(crate) fn render_headers(
     format!("{title}\n{}", headers_table(&shown))
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn print_body(w: &World) -> Result<(), String> {
     let ex = super::assert::last(w)?;
     match markup::classify(markup::content_type(&ex.resp_headers)) {
@@ -198,6 +201,7 @@ pub fn print_body(w: &World) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
     let ex = super::assert::last(w)?;
     let kind = markup::classify(markup::content_type(&ex.resp_headers));

@@ -88,6 +88,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         });
                     }
                 }
+                #[cfg(not(feature = "dev-unreserve"))]
                 Ok(Some((
                     StepTarget::Builtin {
                         id: crate::steps::StepId::AttachFile,
@@ -314,6 +315,7 @@ fn check_include_recursive(
 /// path holding a `<<variable>>` can only be read once it is interpolated, so
 /// the step itself reports it then. A macro body is not walked here, so a
 /// literal path inside one is also caught only at the step.
+#[cfg(not(feature = "dev-unreserve"))]
 pub(crate) fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), String> {
     if file.contains("<<") {
         return Ok(());
@@ -417,6 +419,7 @@ fn check_include_body_step(
                 stack,
             )
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         Ok(Some((
             StepTarget::Builtin {
                 id: crate::steps::StepId::AttachFile,
@@ -478,11 +481,7 @@ mod tests {
             "bddkit-validate-macro-{}-{name}.yaml",
             std::process::id()
         ));
-        std::fs::write(
-            &path,
-            "- step: I do business\n  do: [the response code is 200]\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "- step: I do business\n  do: [Show all variables]\n").unwrap();
         Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap()
     }
 
@@ -492,10 +491,10 @@ mod tests {
             "\
 Feature: f
   Background:
-    Given the \"Accept\" request header is \"application/json\"
+    Given set variable \"a\" to \"b\"
   Scenario: s
-    When I request \"/ping\" using HTTP POST
-    Then the response code is 200
+    When I am in debug mode
+    Then Show all variables
 ",
         );
         let p = check(&[&lf], &Registry::new().unwrap(), &TagFilter::new(&[]));
@@ -532,7 +531,7 @@ Feature: f
     #[test]
     fn checks_background_steps_too() {
         let lf = loaded(
-            "Feature: f\n  Background:\n    Given I refund the order\n  Scenario: s\n    Then the response code is 200\n",
+            "Feature: f\n  Background:\n    Given I refund the order\n  Scenario: s\n    Then Show all variables\n",
         );
         let p = check(&[&lf], &Registry::new().unwrap(), &TagFilter::new(&[]));
         assert_eq!(p.len(), 1);
@@ -546,7 +545,7 @@ Feature: f
 Feature: f
   @smoke
   Scenario: selected
-    Then the response code is 200
+    Then Show all variables
   @slow
   Scenario: filtered_out
     When I refund the order
@@ -589,7 +588,7 @@ Feature: f
     fn steps_with_variables_validate_without_values() {
         // Substitution happens in arguments, so matching does not require values.
         let lf = loaded(
-            "Feature: f\n  Scenario: s\n    When I request \"/users/<<userId>>\" using HTTP GET\n",
+            "Feature: f\n  Scenario: s\n    When set variable \"path\" to \"/users/<<userId>>\"\n",
         );
         let p = check(&[&lf], &Registry::new().unwrap(), &TagFilter::new(&[]));
         assert!(p.is_empty(), "{p:?}");
@@ -601,10 +600,10 @@ Feature: f
             "\
 Feature: f
   Scenario: s
-    When I request \"/ping\" using HTTP GET
-    Then the response code is 200
+    When I am in debug mode
+    Then Show all variables
   Scenario: t
-    Then the response code is 200
+    Then Show all variables
 ",
         );
         let unserved = |target: &StepTarget| match target {
@@ -627,7 +626,7 @@ Feature: f
     #[test]
     fn a_served_step_is_not_a_finding() {
         let lf = loaded(
-            "Feature: f\n  Scenario: s\n    When I frobnicate\n    Then the response code is 200\n",
+            "Feature: f\n  Scenario: s\n    When I frobnicate\n    Then Show all variables\n",
         );
 
         let p = unserved_resources(
@@ -687,6 +686,7 @@ Feature: f
         assert!(problems.iter().any(|p| p.message.contains("nope.feature")));
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     fn attach_problems(tag: &str, path_literal: &str, create: bool) -> Vec<Problem> {
         let dir = std::env::temp_dir().join(format!(
             "bddkit-validate-attach-{tag}-{}",
@@ -710,6 +710,7 @@ Feature: f
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn attaching_a_missing_literal_file_is_a_problem_naming_it() {
         let problems = attach_problems("missing", "fixtures/id.png", false);
         assert!(
@@ -721,16 +722,19 @@ Feature: f
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn attaching_an_existing_literal_file_is_no_problem() {
         assert!(attach_problems("present", "fixtures/id.png", true).is_empty());
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn attaching_a_file_whose_path_has_a_variable_is_left_to_the_step() {
         assert!(attach_problems("variable", "fixtures/<<name>>.png", false).is_empty());
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn a_missing_attached_file_inside_an_included_scenario_is_a_problem() {
         let dir = std::env::temp_dir().join(format!(
             "bddkit-validate-attach-include-{}",

@@ -77,6 +77,32 @@ jobs:
           $results | Format-Table -AutoSize
           if ($results.Count -gt 0) { exit 1 }
 
+  # A build without the built-in API and databases (`dev-unreserve`), which is
+  # what `bddkit-api` and `bddkit-db` run on until the built-ins are gone. What
+  # is left needs neither the stub nor a database, so no containers here.
+  test-without-built-ins:
+    name: test & clippy (dev-unreserve)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      # Pinned for the reason given in the job below.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          components: clippy
+          rustflags: ""
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --features dev-unreserve -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --features dev-unreserve
+
   test:
     name: test & clippy
     needs: changes
@@ -171,6 +197,10 @@ jobs:
 
       - name: Plugin acceptance tests
         run: cargo test --locked --test plugin
+
+      # Among them, that a default build refuses a plugin claiming a built-in's group.
+      - name: Group plugin tests
+        run: cargo test --locked --test group_plugin
 
       # The apibdd_it fixture schema is shared, so DB tests run single-threaded.
       # The same suite runs once per engine: BDDKIT_TEST_ENGINE picks the dialect

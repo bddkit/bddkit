@@ -371,6 +371,7 @@ fn a_manifest_the_host_cannot_accept_is_exit_2_and_names_the_culprit() {
     for (case, concurrency, wants) in [
         ("target", 1, "elsewhere"),
         ("group", 1, "gtwo"),
+        #[cfg(not(feature = "dev-unreserve"))]
         ("host", 1, "\"db\""),
         ("eager_unclaimed", 1, "elsewhere"),
         ("eager_per_worker", 1, "eager_init"),
@@ -413,4 +414,221 @@ fn the_context_is_asked_before_the_reset_of_the_next_scenario() {
     assert_eq!(count(&calls, "context"), 1, "{calls:?}");
     let at = |prefix: &str| calls.iter().position(|c| c.starts_with(prefix)).unwrap();
     assert!(at("context") < at("reset"), "{calls:?}");
+}
+
+/// `api`, `srp` and `db` are claimed by the fixture itself: what a plugin author
+/// runs on a `dev-unreserve` build. The default build keeps them for its
+/// built-ins and refuses it at load.
+const HOST_GROUPS: &[(&str, &str)] = &[("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "1")];
+
+fn host_groups_project(name: &str, feature: &str, config: &str) -> Project {
+    let project = project(
+        &format!("host-{name}"),
+        false,
+        1,
+        &[("f.feature", feature)],
+        "",
+    );
+    std::fs::write(project.dir.join("cfg.yaml"), config).expect("write config");
+    project
+}
+
+// The same manifest the `dev-unreserve` tests below load.
+#[cfg(not(feature = "dev-unreserve"))]
+#[test]
+fn a_default_build_refuses_a_plugin_claiming_the_built_in_groups() {
+    let project = host_groups_project(
+        "refused",
+        "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
+        "paths: [features]\nresources: {}\n",
+    );
+    let out = project.bddkit("run", HOST_GROUPS);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(
+        text(&out).contains("which bddkit serves itself"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[cfg(feature = "dev-unreserve")]
+mod dev_unreserve {
+    use super::*;
+
+    impl Project {
+        /// A command of its own, with the fixture claiming the host's groups.
+        fn bddkit_with(&self, args: &[&str]) -> std::process::Output {
+            Command::new(env!("CARGO_BIN_EXE_bddkit"))
+                .args(args)
+                .args(["--config", "cfg.yaml", "--bddkit-dir"])
+                .arg(self.dir.join(".bddkit"))
+                .current_dir(&self.dir)
+                .envs(HOST_GROUPS.iter().copied())
+                .output()
+                .expect("failed to run bddkit")
+        }
+    }
+
+    const RESOURCES: &str = "paths: [features]\nconcurrency: 1\nresources:\n  api:\n    a: {}\n    b: {}\n  db:\n    main: {}\n    other: {}\n  srp:\n    login: {}\ndefault_api: a\ndefault_db: main\n";
+
+    #[test]
+    fn a_plugin_claims_the_built_in_groups_and_their_switch_steps_are_generated() {
+        let project = host_groups_project(
+            "claims",
+            r#"Feature: f
+  Scenario: the generated switch steps select instances of the claimed groups
+    When I use "b" api
+    And I read the selected api instance into "who"
+    Then variable "who" should be equal to "b"
+    When I use "login" srp
+    And I use "other" db
+    And I read the selected instance into "db"
+    Then variable "db" should be equal to "other"
+"#,
+            RESOURCES,
+        );
+        passed(&project.bddkit("run", HOST_GROUPS));
+    }
+
+    #[test]
+    fn the_deprecated_connection_word_selects_a_db_instance() {
+        let project = host_groups_project(
+            "connection",
+            r#"Feature: f
+  Scenario: the former switch word still switches
+    When I use "other" connection
+    And I read the selected instance into "db"
+    Then variable "db" should be equal to "other"
+"#,
+            RESOURCES,
+        );
+        passed(&project.bddkit("run", HOST_GROUPS));
+    }
+
+    #[test]
+    fn resources_api_reaches_the_plugins_validate_config() {
+        let project = host_groups_project(
+            "validate",
+            "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
+            "paths: [features]\nresources:\n  api:\n    main:\n      refuse: not for this plugin\n",
+        );
+        let out = project.bddkit("run", HOST_GROUPS);
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(text(&out).contains("not for this plugin"), "{}", text(&out));
+        assert!(text(&out).contains("resources.api.main"), "{}", text(&out));
+    }
+
+    #[test]
+    fn the_default_flag_and_variable_reach_a_group_that_was_built_in() {
+        let feature = r#"Feature: f
+  Scenario: the default decides what a scenario starts on
+    When I read the selected api instance into "who"
+    Then variable "who" should be equal to "b"
+"#;
+        let project = host_groups_project("default", feature, RESOURCES);
+        passed(&project.bddkit_with(&["run", "--default", "api=b"]));
+        let variable = [HOST_GROUPS[0], ("BDDKIT_DEFAULT_API", "b")];
+        passed(&project.bddkit("run", &variable));
+    }
+
+    #[test]
+    fn a_stray_default_of_a_group_nothing_declares_is_refused() {
+        let project = host_groups_project(
+            "stray",
+            "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
+            "paths: [features]\ndefault_api: main\nresources:\n  db:\n    main: {}\n",
+        );
+        let out = project.bddkit("run", HOST_GROUPS);
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(text(&out).contains("default_api"), "{}", text(&out));
+    }
+
+    #[test]
+    fn a_built_in_step_is_unknown_unless_the_plugin_declares_it() {
+        let project = host_groups_project(
+            "unknown",
+            "Feature: f\n  Scenario: s\n    When I request \"/x\"\n",
+            RESOURCES,
+        );
+        let out = project.bddkit("run", HOST_GROUPS);
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(text(&out).contains("unknown step"), "{}", text(&out));
+    }
+
+    #[test]
+    fn a_plugin_may_declare_the_text_of_a_step_that_was_built_in() {
+        let project = host_groups_project(
+            "declares",
+            "Feature: f\n  Scenario: s\n    Then the response code is 200\n",
+            RESOURCES,
+        );
+        passed(&project.bddkit("run", HOST_GROUPS));
+    }
+
+    #[test]
+    fn doctor_gives_each_instance_of_a_claimed_group_its_own_row() {
+        let project = host_groups_project(
+            "doctor",
+            "Feature: f\n  Scenario: s\n    When I use \"other\" connection\n",
+            RESOURCES,
+        );
+        let out = project.bddkit_with(&["doctor", "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor --json");
+        let checks = report["checks"].as_array().expect("checks");
+        for (stage, target) in [
+            ("api", "a"),
+            ("api", "b"),
+            ("db", "main"),
+            ("db", "other"),
+            ("srp", "login"),
+        ] {
+            assert!(
+                checks
+                    .iter()
+                    .any(|row| row["stage"] == stage && row["target"] == target),
+                "{stage} {target}: {checks:?}"
+            );
+        }
+        let steps = checks
+            .iter()
+            .find(|row| row["stage"] == "steps")
+            .expect("a steps row");
+        let detail = steps["detail"].as_str().expect("its detail");
+        assert!(
+            detail.contains(r#"I use "other" connection is deprecated, write I use "other" db"#),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn the_built_in_default_flags_are_gone() {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["run", "--default-api", "a"])
+            .output()
+            .expect("failed to run bddkit");
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(text(&out).contains("--default-api"), "{}", text(&out));
+    }
+
+    #[test]
+    fn steps_list_shows_no_built_in_group() {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["steps", "list", "--no-config"])
+            .output()
+            .expect("failed to run bddkit");
+        let listing = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{}", text(&out));
+        assert!(listing.contains("vars:"), "{listing}");
+        for gone in [
+            "api:",
+            "db:",
+            "srp:",
+            "I request",
+            "the response code",
+            "Print response",
+        ] {
+            assert!(!listing.contains(gone), "{gone} in:\n{listing}");
+        }
+    }
 }

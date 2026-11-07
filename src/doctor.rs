@@ -3,7 +3,9 @@
 //! does not have: whether the resources the config names actually answer.
 
 use crate::steps::{BUILTIN_STEPS, StepTarget};
-use crate::{config, db, dirs, feature, http, validate};
+use crate::{config, dirs, feature, validate};
+#[cfg(not(feature = "dev-unreserve"))]
+use crate::{db, http};
 use serde::Serialize;
 use std::path::Path;
 
@@ -429,8 +431,11 @@ pub async fn check(
     );
     let stream = events_path.is_some() || crate::privacy::process_env("BDDKIT_EVENTS").is_some();
     push_evidence(&mut report, &cfg, stream);
+    #[cfg(not(feature = "dev-unreserve"))]
     check_apis(&mut report, &cfg, live).await;
+    #[cfg(not(feature = "dev-unreserve"))]
     check_databases(&mut report, &cfg, live).await;
+    #[cfg(not(feature = "dev-unreserve"))]
     check_srp(&mut report, &cfg);
     if let Some(plugins) = plugins.as_ref() {
         check_plugin_instances(&mut report, plugins, live);
@@ -878,6 +883,7 @@ fn left_behind(
 ) -> Vec<(String, String)> {
     use crate::steps::StepTarget;
     match target {
+        #[cfg(not(feature = "dev-unreserve"))]
         StepTarget::Builtin { id, .. } if RESPONSE_EXTRACTS.contains(&id) => {
             vec![(caps[1].clone(), "response".to_string())]
         }
@@ -919,6 +925,7 @@ fn prefixed(prefix: &str, name: &str) -> String {
 }
 
 /// The steps that read a variable out of the last response.
+#[cfg(not(feature = "dev-unreserve"))]
 const RESPONSE_EXTRACTS: [crate::steps::StepId; 5] = {
     use crate::steps::StepId::*;
     [
@@ -983,20 +990,24 @@ fn written_names(
             StepTarget::Macro(index) => registry.macro_def(index).exports.clone(),
             StepTarget::Builtin { id, .. } => match id {
                 StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
+                #[cfg(not(feature = "dev-unreserve"))]
                 id if RESPONSE_EXTRACTS.contains(&id) || id == StepId::GetSequence => {
                     vec![caps[1].clone()]
                 }
                 StepId::ExtractJsonFromVariable
                 | StepId::ExtractJsonFromVariableGlobal
                 | StepId::ExtractRegexFromVariable
-                | StepId::ExtractRegexFromVariableGlobal
-                | StepId::CallFunction => vec![caps[2].clone()],
+                | StepId::ExtractRegexFromVariableGlobal => vec![caps[2].clone()],
+                #[cfg(not(feature = "dev-unreserve"))]
+                StepId::CallFunction => vec![caps[2].clone()],
+                #[cfg(not(feature = "dev-unreserve"))]
                 StepId::ExtractFromDb => vec![caps[3].clone()],
+                #[cfg(not(feature = "dev-unreserve"))]
                 StepId::SrpVerifier
                 | StepId::SrpVerifierWithSalt
                 | StepId::SrpStartLogin
-                | StepId::SrpCompleteLogin
-                | StepId::EncryptWithAes => return None,
+                | StepId::SrpCompleteLogin => return None,
+                StepId::EncryptWithAes => return None,
                 StepId::Include | StepId::IncludeScenario => {
                     let (name, prefix) = include_call(id, &caps)?;
                     let inner = load_included(&caps[0], base)?;
@@ -1159,19 +1170,22 @@ fn push_privacy(
 /// `debug`, `general`, and a macro, whose body is checked step by step only
 /// when it runs).
 fn unserved_group(
-    cfg: &config::Config,
+    #[cfg_attr(feature = "dev-unreserve", allow(unused_variables))] cfg: &config::Config,
     plugins: Option<&crate::plugin::Plugins>,
     target: &StepTarget,
 ) -> Option<String> {
     let (group, served) = match target {
         StepTarget::Builtin { id, .. } => {
             let group = BUILTIN_STEPS.iter().find(|def| def.id == *id)?.group;
+            #[cfg(not(feature = "dev-unreserve"))]
             let served = match group {
                 "api" => !cfg.resources.api.is_empty(),
                 "db" => !cfg.resources.db.is_empty(),
                 "srp" => !cfg.resources.srp.is_empty(),
                 _ => true,
             };
+            #[cfg(feature = "dev-unreserve")]
+            let served = true;
             (group, served)
         }
         StepTarget::Plugin { lib, step, .. } => {
@@ -1195,6 +1209,7 @@ fn unserved_group(
 /// ones over the single resource it is about to write. A second copy is how the
 /// two commands come to disagree about whether a config is valid — which for
 /// `doctor` is by definition a bug in `doctor`.
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn check_api(api: &config::ApiConfig) -> Result<(http::ApiResource, String), String> {
     let headers = api
         .default_headers
@@ -1216,6 +1231,7 @@ pub fn check_api(api: &config::ApiConfig) -> Result<(http::ApiResource, String),
 
 /// The live half: whether the base URL answers at all. Any status is a pass —
 /// reachability is the question, the application's own routing is not.
+#[cfg(not(feature = "dev-unreserve"))]
 pub async fn probe_api(resource: &http::ApiResource, base_url: &str) -> Result<String, String> {
     let status = resource.probe().await?;
     Ok(format!("GET {base_url} → {status}"))
@@ -1231,6 +1247,7 @@ pub async fn probe_api(resource: &http::ApiResource, base_url: &str) -> Result<S
 /// "connection refused". That is `Db::connect`'s own behaviour, which `run`
 /// shares, so fixing it belongs there rather than here: an `acquire_timeout` on
 /// `AnyPoolOptions` in `Db::connect` would make every caller fail fast at once.
+#[cfg(not(feature = "dev-unreserve"))]
 pub async fn probe_db(name: &str, connection: &config::Connection) -> Result<String, String> {
     let one = std::collections::BTreeMap::from([(name.to_string(), connection.clone())]);
     let pool = db::Db::connect(&one, 1).await?;
@@ -1241,12 +1258,14 @@ pub async fn probe_db(name: &str, connection: &config::Connection) -> Result<Str
 }
 
 /// The SRP parameters a run would derive, and the variant that named them.
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn check_srp_resource(srp: &config::SrpConfig) -> Result<String, String> {
     srp.to_params()
         .map(|_| srp.variant.clone())
         .map_err(|error| format!("{error:#}"))
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 async fn check_apis(report: &mut Report, cfg: &config::Config, live: bool) {
     for (name, api) in &cfg.resources.api {
         let resource = match check_api(api) {
@@ -1270,6 +1289,7 @@ async fn check_apis(report: &mut Report, cfg: &config::Config, live: bool) {
     }
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 async fn check_databases(report: &mut Report, cfg: &config::Config, live: bool) {
     for (name, connection) in &cfg.resources.db {
         match db::check_dsn(connection) {
@@ -1290,6 +1310,7 @@ async fn check_databases(report: &mut Report, cfg: &config::Config, live: bool) 
     }
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 fn check_srp(report: &mut Report, cfg: &config::Config) {
     for (name, srp) in &cfg.resources.srp {
         match check_srp_resource(srp) {

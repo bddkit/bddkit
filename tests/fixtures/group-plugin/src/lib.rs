@@ -18,8 +18,16 @@
 //!   names that instance.
 //! - `BDDKIT_GROUP_FIXTURE_FAIL_SELECT=1` (with `hooks`): `select_instance`
 //!   answers `ok: false`.
+//! - `BDDKIT_GROUP_FIXTURE_HOST_GROUPS=1`: the manifest claims `api`, `srp` and
+//!   `db` instead, with `eager_init: ["db"]` and `deprecated: {"connection":
+//!   "db"}`, one more step reads the selected `api` instance and another takes
+//!   a built-in's text, `the response code is <n>`: what only a `dev-unreserve`
+//!   build of the host accepts.
 //! - `BDDKIT_GROUP_FIXTURE_LOG=<path>`: every `init`, `select`, `reset` and
 //!   `drop` appends one line, so a test sees the calls from outside.
+//!
+//! An instance body with a `refuse` key is refused by `validate_config`, with
+//! that key's value as the error.
 //!
 //! The cargo feature `hooks` adds `bddkit_reset_scenario`,
 //! `bddkit_select_instance` and `bddkit_failure_context`.
@@ -104,6 +112,10 @@ fn guard(kind: &str, body: impl FnOnce() -> String) -> *mut c_char {
     }
 }
 
+fn host_groups() -> bool {
+    std::env::var_os("BDDKIT_GROUP_FIXTURE_HOST_GROUPS").is_some()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_abi_version() -> u32 {
     4
@@ -122,6 +134,11 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
             "eager_init": if per_worker { vec![] } else { vec!["gone"] },
             "deprecated": { "oldswitch": "gone" }
         });
+        if host_groups() {
+            manifest["groups"] = serde_json::json!(["api", "srp", "db"]);
+            manifest["eager_init"] = serde_json::json!(["db"]);
+            manifest["deprecated"] = serde_json::json!({ "connection": "db" });
+        }
         match std::env::var("BDDKIT_GROUP_FIXTURE_BREAK").as_deref() {
             Ok("target") => {
                 manifest["deprecated"] = serde_json::json!({ "oldswitch": "elsewhere" })
@@ -142,21 +159,40 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_list_steps() -> *mut c_char {
     guard("envelope", || {
-        serde_json::json!([
-            { "pattern": r#"^I set the group value to "([^"]*)"$"#, "group": "gone", "kind": "action" },
-            { "pattern": r#"^I read the group value into "([^"]*)"$"#, "group": "gone", "kind": "action" },
-            { "pattern": r#"^I read the selected instance into "([^"]*)"$"#, "group": "gone", "kind": "action" },
-            { "pattern": r#"^I read the group handle into "([^"]*)"$"#, "group": "gone", "kind": "action" },
-            { "pattern": r#"^I wait at the group barrier for (\d+) parties$"#, "group": "gone", "kind": "action" },
-            { "pattern": r#"^I read the gtwo handle into "([^"]*)"$"#, "group": "gtwo", "kind": "action" }
-        ])
-        .to_string()
+        let (first, second) = if host_groups() {
+            ("db", "srp")
+        } else {
+            ("gone", "gtwo")
+        };
+        let mut steps = serde_json::json!([
+            { "pattern": r#"^I set the group value to "([^"]*)"$"#, "group": first, "kind": "action" },
+            { "pattern": r#"^I read the group value into "([^"]*)"$"#, "group": first, "kind": "action" },
+            { "pattern": r#"^I read the selected instance into "([^"]*)"$"#, "group": first, "kind": "action" },
+            { "pattern": r#"^I read the group handle into "([^"]*)"$"#, "group": first, "kind": "action" },
+            { "pattern": r#"^I wait at the group barrier for (\d+) parties$"#, "group": first, "kind": "action" },
+            { "pattern": r#"^I read the gtwo handle into "([^"]*)"$"#, "group": second, "kind": "action" }
+        ]);
+        if host_groups() {
+            steps.as_array_mut().expect("an array").push(serde_json::json!(
+                { "pattern": r#"^I read the selected api instance into "([^"]*)"$"#, "group": "api", "kind": "action" }
+            ));
+            steps.as_array_mut().expect("an array").push(serde_json::json!(
+                { "pattern": r#"^the response code is (\d+)$"#, "group": "api", "kind": "assertion" }
+            ));
+        }
+        steps.to_string()
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn bddkit_validate_config(_request: *const c_char) -> *mut c_char {
-    guard("envelope", || r#"{"ok":true}"#.to_string())
+pub extern "C" fn bddkit_validate_config(request: *const c_char) -> *mut c_char {
+    guard("envelope", move || {
+        let value: serde_json::Value = serde_json::from_str(&input(request)).unwrap_or_default();
+        match value["config"]["refuse"].as_str() {
+            Some(reason) => serde_json::json!({"ok": false, "error": reason}).to_string(),
+            None => r#"{"ok":true}"#.to_string(),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -238,7 +274,8 @@ pub extern "C" fn bddkit_dispatch(
                 return serde_json::json!({"status": "passed"}).to_string();
             }
             1 => state.value.clone(),
-            2 => instance,
+            2 | 6 => instance,
+            7 => return serde_json::json!({"status": "passed"}).to_string(),
             3 | 5 => format!("{handle}/{}", state.instances),
             other => {
                 return serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 fn default_concurrency() -> usize {
     8
 }
+#[cfg(not(feature = "dev-unreserve"))]
 fn default_timeout() -> u64 {
     20
 }
@@ -26,10 +27,13 @@ pub struct Config {
     pub macro_paths: Vec<PathBuf>,
     pub paths: Vec<PathBuf>,
     pub resources: Resources,
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub default_api: Option<String>,
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub default_db: Option<String>,
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub default_srp: Option<String>,
     #[serde(default)]
@@ -62,10 +66,13 @@ pub struct Config {
 /// of them by name.
 #[derive(Debug, Deserialize)]
 pub struct Resources {
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub api: BTreeMap<String, ApiConfig>,
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub db: BTreeMap<String, Connection>,
+    #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub srp: BTreeMap<String, SrpConfig>,
     /// Groups the host does not serve. The value is kept verbatim: validating
@@ -139,6 +146,7 @@ impl Scalar {
 /// and a `#[serde(skip)]` field is not a config key at all. `bddkit resource
 /// fields` prints these beside what a plugin says about its own group, so the
 /// three host kinds answer the same question the plugins do.
+#[cfg(not(feature = "dev-unreserve"))]
 pub const API_FIELDS: &[(&str, bool, &str, Scalar)] = &[
     (
         "base_url",
@@ -178,6 +186,7 @@ pub const API_FIELDS: &[(&str, bool, &str, Scalar)] = &[
     ),
 ];
 
+#[cfg(not(feature = "dev-unreserve"))]
 #[derive(Debug, Deserialize)]
 pub struct ApiConfig {
     pub base_url: String,
@@ -205,6 +214,7 @@ pub struct ApiConfig {
 /// does not do is carry on, so a whole-map call would return at the first dead
 /// DSN and never probe the second.
 /// What a `resources.db.<name>` body takes. See `API_FIELDS`.
+#[cfg(not(feature = "dev-unreserve"))]
 pub const DB_FIELDS: &[(&str, bool, &str, Scalar)] = &[
     (
         "dsn",
@@ -226,6 +236,7 @@ pub const DB_FIELDS: &[(&str, bool, &str, Scalar)] = &[
     ),
 ];
 
+#[cfg(not(feature = "dev-unreserve"))]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Connection {
     pub dsn: String,
@@ -240,6 +251,7 @@ pub struct Connection {
 /// SRP parameters. Everything except `variant` has a sensible default: the
 /// RFC 5054 4096-bit group, generator 5, SHA-256.
 /// What a `resources.srp.<name>` body takes. See `API_FIELDS`.
+#[cfg(not(feature = "dev-unreserve"))]
 pub const SRP_FIELDS: &[(&str, bool, &str, Scalar)] = &[
     ("variant", true, "hex-string or rfc5054", Scalar::Str),
     (
@@ -273,13 +285,17 @@ pub const SRP_FIELDS: &[(&str, bool, &str, Scalar)] = &[
 /// apart needs the loaded plugins the caller has and this module does not.
 pub fn host_fields(kind: &str) -> Option<&'static [(&'static str, bool, &'static str, Scalar)]> {
     match kind {
+        #[cfg(not(feature = "dev-unreserve"))]
         "api" => Some(API_FIELDS),
+        #[cfg(not(feature = "dev-unreserve"))]
         "db" => Some(DB_FIELDS),
+        #[cfg(not(feature = "dev-unreserve"))]
         "srp" => Some(SRP_FIELDS),
         _ => None,
     }
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 #[derive(Debug, Deserialize)]
 pub struct SrpConfig {
     pub variant: String,
@@ -295,6 +311,7 @@ pub struct SrpConfig {
     pub effective_options: Options,
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 impl SrpConfig {
     pub fn to_params(&self) -> Result<crate::srp::SrpParams> {
         use crate::srp::{HashAlg, RFC5054_4096_PRIME_HEX, SrpParams, Variant};
@@ -336,6 +353,7 @@ impl Config {
             .apply(&self.options)
             .map_err(anyhow::Error::msg)?;
         self.effective_options = global.clone();
+        #[cfg(not(feature = "dev-unreserve"))]
         for (name, resource) in &mut self.resources.api {
             resource.effective_options = global
                 .apply(&resource.options)
@@ -356,11 +374,13 @@ impl Config {
             )?;
             resource.effective_sensitive_headers = headers;
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         for (name, resource) in &mut self.resources.db {
             resource.effective_options = global
                 .apply(&resource.options)
                 .map_err(|error| anyhow::anyhow!("resources.db.{name}: {error}"))?;
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         for (name, resource) in &mut self.resources.srp {
             resource.effective_options = global
                 .apply(&resource.options)
@@ -388,6 +408,7 @@ impl Config {
 
     /// The default API name. `None` if no APIs are declared at all — that's
     /// legal, HTTP steps then fail on first use (see `resolve_default_db`).
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn resolve_default_api(&self) -> Result<Option<String>> {
         resolve_default(
             "default_api",
@@ -399,6 +420,7 @@ impl Config {
 
     /// The default connection name. `None` if no DBs are declared at all —
     /// that's legal, DB steps then fail on first use.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn resolve_default_db(&self) -> Result<Option<String>> {
         resolve_default(
             "default_db",
@@ -410,6 +432,7 @@ impl Config {
 
     /// The default SRP resource name. `None` if no SRP is declared at all —
     /// that's legal, SRP steps then fail on first use.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn resolve_default_srp(&self) -> Result<Option<String>> {
         resolve_default(
             "default_srp",
@@ -426,7 +449,11 @@ impl Config {
     /// The groups a default can be set for: the built-in three, declared or not,
     /// then the plugin groups the config declares.
     pub fn all_group_names(&self) -> Vec<String> {
-        ["api", "db", "srp"]
+        #[cfg(not(feature = "dev-unreserve"))]
+        let built_in = ["api", "db", "srp"];
+        #[cfg(feature = "dev-unreserve")]
+        let built_in: [&str; 0] = [];
+        built_in
             .into_iter()
             .map(String::from)
             .chain(self.group_names().cloned())
@@ -439,8 +466,11 @@ impl Config {
     /// `apply` runs next).
     pub fn set_default(&mut self, group: &str, name: &str) -> Result<()> {
         match group {
+            #[cfg(not(feature = "dev-unreserve"))]
             "api" => self.default_api = Some(name.to_string()),
+            #[cfg(not(feature = "dev-unreserve"))]
             "db" => self.default_db = Some(name.to_string()),
+            #[cfg(not(feature = "dev-unreserve"))]
             "srp" => self.default_srp = Some(name.to_string()),
             _ if self.resources.groups.contains_key(group) => {
                 self.extra.insert(
@@ -497,7 +527,11 @@ impl Config {
             };
             // api/db/srp are typed fields and never reach `extra`; listed so a
             // future untyped one cannot be reported as a typo.
-            if matches!(group, "api" | "db" | "srp") || self.resources.groups.contains_key(group) {
+            #[cfg(not(feature = "dev-unreserve"))]
+            if matches!(group, "api" | "db" | "srp") {
+                continue;
+            }
+            if self.resources.groups.contains_key(group) {
                 continue;
             }
             let declared: Vec<&str> = self.resources.groups.keys().map(String::as_str).collect();
@@ -855,11 +889,15 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     let mut cfg: Config = serde_yaml_ng::from_str(&expanded).context("failed to parse config")?;
     // Resolve the defaults right away: an ambiguous config should fail at
     // startup, not at the first step that reaches for them.
+    #[cfg(not(feature = "dev-unreserve"))]
     cfg.resolve_default_api()?;
+    #[cfg(not(feature = "dev-unreserve"))]
     cfg.resolve_default_db()?;
+    #[cfg(not(feature = "dev-unreserve"))]
     cfg.resolve_default_srp()?;
     cfg.resolve_options()?;
     // The values of the headers a resource calls sensitive are known only now.
+    #[cfg(not(feature = "dev-unreserve"))]
     privacy::record(
         &resolved_privacy(&cfg.privacy),
         cfg.resources.api.values().flat_map(|api| {
@@ -896,6 +934,7 @@ fn record_secrets(document: &serde_yaml_ng::Value) {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "dev-unreserve"))]
     const SAMPLE: &str = "\
 concurrency: 8
 paths: [features]
@@ -918,6 +957,7 @@ resources:
     /// What it deliberately does not catch is a field added to the struct and
     /// forgotten in the table — the benign direction: the key still works, it
     /// is only undocumented.
+    #[cfg(not(feature = "dev-unreserve"))]
     fn check_table<T: serde::de::DeserializeOwned + std::fmt::Debug>(
         table: &[(&str, bool, &str, Scalar)],
         doc: &[(&str, &str)],
@@ -942,6 +982,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn the_api_field_table_matches_the_api_struct() {
         check_table::<ApiConfig>(
             API_FIELDS,
@@ -956,6 +997,7 @@ resources:
         );
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     fn sensitive_headers(body: &str) -> Result<Vec<String>> {
         let cfg = parse(&format!(
             "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://x\n{body}"
@@ -964,6 +1006,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn sensitive_headers_extend_the_default_list_without_case() {
         let headers = sensitive_headers("      sensitive_headers: [X-Api-Key]\n").unwrap();
         assert_eq!(
@@ -975,6 +1018,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn sensitive_headers_only_replaces_and_an_empty_list_leaves_no_header() {
         let headers = sensitive_headers("      sensitive_headers_only: [x-api-key]\n").unwrap();
         assert_eq!(headers, ["x-api-key"]);
@@ -995,6 +1039,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn a_default_header_value_is_recorded_only_while_its_header_is_sensitive() {
         load_api_with("      default_headers: { Authorization: 'Bearer kept-secret-1' }\n");
         load_api_with(
@@ -1018,6 +1063,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn both_header_lists_in_one_resource_are_refused_naming_the_resource() {
         let error =
             sensitive_headers("      sensitive_headers: [a]\n      sensitive_headers_only: [b]\n")
@@ -1030,6 +1076,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn a_sensitive_header_must_be_a_valid_header_name() {
         let error = sensitive_headers("      sensitive_headers: [\"not a header\"]\n")
             .unwrap_err()
@@ -1038,6 +1085,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn the_db_field_table_matches_the_connection_struct() {
         check_table::<Connection>(
             DB_FIELDS,
@@ -1050,6 +1098,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn the_srp_field_table_matches_the_srp_struct() {
         check_table::<SrpConfig>(
             SRP_FIELDS,
@@ -1064,6 +1113,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn resources_api_is_optional() {
         let cfg = parse("paths: [f]\nresources: {}\n").expect("no api key is fine");
         assert!(cfg.resources.api.is_empty());
@@ -1122,24 +1172,28 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn reads_api_resources() {
         let c = parse(SAMPLE).expect("config parses");
         assert_eq!(c.resources.api["review"].base_url, "http://review.local");
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn timeout_defaults_to_twenty_seconds() {
         let c = parse(SAMPLE).expect("config parses");
         assert_eq!(c.resources.api["review"].timeout_secs, 20);
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn timeout_can_be_set_per_api_resource() {
         let c = parse(SAMPLE).expect("config parses");
         assert_eq!(c.resources.api["billing"].timeout_secs, 5);
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn options_cascade_from_root_to_each_resource_kind() {
         let c = parse(
             "options:\n  polling:\n    timeout_secs: 10\n    interval_ms: 200\nresources:\n  api:\n    jobs:\n      base_url: http://jobs.local\n      options:\n        polling:\n          timeout_secs: 30\n  db:\n    reporting:\n      dsn: postgres://u:p@db/reporting\n      options:\n        polling:\n          interval_ms: 500\n  srp:\n    login:\n      variant: hex-string\n      options: {}\npaths: [features]\n",
@@ -1201,10 +1255,13 @@ resources:
     fn expands_environment_variables() {
         unsafe { std::env::set_var("BDDKIT_TEST_HOST", "example.test") };
         let c = parse(
-            "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://${BDDKIT_TEST_HOST}\n",
+            "paths: [f]\nresources:\n  s3:\n    a:\n      endpoint: http://${BDDKIT_TEST_HOST}\n",
         )
         .expect("config parses");
-        assert_eq!(c.resources.api["a"].base_url, "http://example.test");
+        assert_eq!(
+            c.resources.groups["s3"]["a"]["endpoint"],
+            "http://example.test"
+        );
     }
 
     #[test]
@@ -1362,6 +1419,7 @@ resources:
         }
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     mod resolve_default_api {
         use super::*;
 
@@ -1414,6 +1472,7 @@ resources:
         }
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     mod resolve_default_db {
         use super::*;
 
@@ -1697,6 +1756,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn load_rejects_an_ambiguous_default_api() {
         let path = std::env::temp_dir().join("bddkit_cfg_load_rejects_ambiguous.yaml");
         std::fs::write(
@@ -1715,6 +1775,7 @@ resources:
     /// file. This is what lets `resource add` check the exact bytes it is about to
     /// write, with the `.env` layers of the real config's directory.
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn load_str_validates_text_that_was_never_a_file() {
         let raw = "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n";
         load_str(raw, Path::new("."), None).expect("one API needs no default_api");
@@ -1730,6 +1791,7 @@ resources:
     /// host serves must be reachable by name and must say which keys no flag can
     /// express.
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn host_fields_names_the_type_each_key_takes() {
         let api = host_fields("api").expect("api is a host kind");
         let by_name = |key: &str| {
@@ -1749,6 +1811,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn srp_defaults_to_the_4096_bit_group_with_sha256() {
         let cfg = SrpConfig {
             variant: "hex-string".into(),
@@ -1769,6 +1832,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn srp_accepts_an_explicit_group_and_hash() {
         let cfg = SrpConfig {
             variant: "rfc5054".into(),
@@ -1786,6 +1850,7 @@ resources:
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn an_unknown_variant_is_rejected_by_name() {
         let cfg = SrpConfig {
             variant: "srp7".into(),
@@ -1821,11 +1886,13 @@ resources:
             std::fs::write(dir.join(".env"), "DB_PASS=secret\n").expect("write .env");
             let path = write_config(
                 &dir,
-                "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                 db:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
+                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
             );
             let c = load(&path, None).expect("config loads with .env");
-            assert_eq!(c.resources.db["main"].dsn, "postgres://u:secret@db/x");
+            assert_eq!(
+                c.resources.groups["s3"]["main"]["dsn"],
+                "postgres://u:secret@db/x"
+            );
         }
 
         #[test]
@@ -1836,11 +1903,13 @@ resources:
                 .expect("write .env.prod");
             let path = write_config(
                 &dir,
-                "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                 db:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
+                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
             );
             let c = load(&path, Some("prod")).expect("config loads with --env=prod");
-            assert_eq!(c.resources.db["main"].dsn, "postgres://u:prod_secret@db/x");
+            assert_eq!(
+                c.resources.groups["s3"]["main"]["dsn"],
+                "postgres://u:prod_secret@db/x"
+            );
         }
 
         #[test]
@@ -1850,12 +1919,14 @@ resources:
             std::fs::write(dir.join(".env.dev"), "DB_PASS=dev_secret\n").expect("write .env.dev");
             let path = write_config(
                 &dir,
-                "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                 db:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
+                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
             );
             if std::env::var("APP_ENV").is_err() {
                 let c = load(&path, None).expect("config loads without --env");
-                assert_eq!(c.resources.db["main"].dsn, "postgres://u:dev_secret@db/x");
+                assert_eq!(
+                    c.resources.groups["s3"]["main"]["dsn"],
+                    "postgres://u:dev_secret@db/x"
+                );
             }
         }
 
@@ -1867,11 +1938,13 @@ resources:
                 .expect("write .env.local");
             let path = write_config(
                 &dir,
-                "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                 db:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
+                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
             );
             let c = load(&path, None).expect("config loads");
-            assert_eq!(c.resources.db["main"].dsn, "postgres://u:local_secret@db/x");
+            assert_eq!(
+                c.resources.groups["s3"]["main"]["dsn"],
+                "postgres://u:local_secret@db/x"
+            );
         }
     }
 
@@ -1903,7 +1976,11 @@ default_widget: backups
         // instance body through untouched and let the plugin judge it.
         let cfg = parse(WITH_GROUP).expect("parses");
         let names: Vec<&String> = cfg.group_names().collect();
+        #[cfg(not(feature = "dev-unreserve"))]
         assert_eq!(names, vec!["widget"]);
+        // No typed `api` field here: the flattened map takes it.
+        #[cfg(feature = "dev-unreserve")]
+        assert_eq!(names, vec!["api", "widget"]);
         let instance = cfg
             .plugin_instances
             .iter()

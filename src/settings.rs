@@ -23,12 +23,15 @@ pub struct SettingsArgs {
     #[arg(long = "macro-paths", value_delimiter = ',')]
     pub macro_paths: Option<Vec<PathBuf>>,
     /// The API a scenario starts on [default: $BDDKIT_DEFAULT_API, else the config's `default_api`]
+    #[cfg(not(feature = "dev-unreserve"))]
     #[arg(long = "default-api")]
     pub default_api: Option<String>,
     /// The database connection a scenario starts on [default: $BDDKIT_DEFAULT_DB, else the config's `default_db`]
+    #[cfg(not(feature = "dev-unreserve"))]
     #[arg(long = "default-db")]
     pub default_db: Option<String>,
     /// The SRP configuration the SRP steps use [default: $BDDKIT_DEFAULT_SRP, else the config's `default_srp`]
+    #[cfg(not(feature = "dev-unreserve"))]
     #[arg(long = "default-srp")]
     pub default_srp: Option<String>,
     /// The instance a resource group starts on, as `<group>=<name>`, for any group; repeatable, one group per use [default: $BDDKIT_DEFAULT_<GROUP>, else the config's `default_<group>`]
@@ -89,6 +92,7 @@ pub fn resolve(
 ) -> Result<Overrides> {
     let get = |name: &str| get(name).filter(|value| !value.is_empty());
     let mut defaults = BTreeMap::new();
+    #[cfg(not(feature = "dev-unreserve"))]
     let spelled = [
         ("api", &args.default_api),
         ("db", &args.default_db),
@@ -97,6 +101,8 @@ pub fn resolve(
     .into_iter()
     .filter_map(|(group, name)| Some((group.to_string(), name.clone()?)))
     .chain(args.default.iter().cloned());
+    #[cfg(feature = "dev-unreserve")]
+    let spelled = args.default.iter().cloned();
     for (group, name) in spelled {
         if defaults.insert(group.clone(), name).is_some() {
             anyhow::bail!(
@@ -194,8 +200,11 @@ impl Config {
         if let Some(v) = &o.tags {
             self.tags = v.clone();
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         self.resolve_default_api()?;
+        #[cfg(not(feature = "dev-unreserve"))]
         self.resolve_default_db()?;
+        #[cfg(not(feature = "dev-unreserve"))]
         self.resolve_default_srp()?;
         self.resolve_options()
     }
@@ -289,19 +298,31 @@ mod tests {
 
     #[test]
     fn apply_replaces_lists_and_keeps_the_half_of_polling_nobody_set() {
-        let mut cfg = config();
+        let raw = "paths: [f]\nresources:\n  s3:\n    a:\n      options: { polling: { timeout_secs: 9 } }\n";
+        let mut cfg = crate::config::load_str(raw, std::path::Path::new("."), None).unwrap();
         cfg.apply(&Overrides {
             tags: Some(vec!["smoke".into()]),
             polling_interval_ms: Some(50),
-            defaults: [("api".to_string(), "b".to_string())].into(),
             ..Default::default()
         })
         .unwrap();
         assert_eq!(cfg.tags, ["smoke"]);
-        assert_eq!(cfg.default_api.as_deref(), Some("b"));
         // The global timeout is still the default; the resource's own wins over it.
         assert_eq!(cfg.effective_options.polling.timeout.as_secs(), 5);
         assert_eq!(cfg.effective_options.polling.interval.as_millis(), 50);
+        assert_eq!(cfg.plugin_instances[0].options.polling.timeout.as_secs(), 9);
+    }
+
+    #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
+    fn apply_sets_a_built_in_default_and_keeps_its_resource_options() {
+        let mut cfg = config();
+        cfg.apply(&Overrides {
+            defaults: [("api".to_string(), "b".to_string())].into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.default_api.as_deref(), Some("b"));
         assert_eq!(
             cfg.resources.api["a"]
                 .effective_options
@@ -327,6 +348,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn a_default_comes_from_the_flag_then_the_variable_for_every_group() {
         let args = SettingsArgs {
             default: vec![("my-group".into(), "flag".into())],
@@ -376,6 +398,17 @@ mod tests {
 
     #[test]
     fn one_group_given_twice_on_the_command_line_is_refused() {
+        let args = SettingsArgs {
+            default: vec![("g".into(), "a".into()), ("g".into(), "b".into())],
+            ..Default::default()
+        };
+        let error = resolve(&args, &[], &env(&[])).unwrap_err().to_string();
+        assert!(error.contains("\"g\""), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
+    fn a_built_in_flag_and_default_for_one_group_are_refused() {
         let args = SettingsArgs {
             default: vec![("api".into(), "a".into())],
             default_api: Some("b".into()),

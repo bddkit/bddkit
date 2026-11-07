@@ -9,6 +9,7 @@ macro_rules! debug_eprintln {
 mod annotate;
 mod artifacts;
 mod config;
+#[cfg(not(feature = "dev-unreserve"))]
 mod db;
 mod diagnostic;
 mod dirs;
@@ -16,7 +17,9 @@ mod doctor;
 mod events;
 mod failure;
 mod feature;
+#[cfg(not(feature = "dev-unreserve"))]
 mod hawk;
+#[cfg(not(feature = "dev-unreserve"))]
 mod http;
 mod include;
 mod init;
@@ -29,6 +32,7 @@ mod report;
 mod resource;
 mod runner;
 mod settings;
+#[cfg(not(feature = "dev-unreserve"))]
 mod srp;
 mod steps;
 mod telemetry;
@@ -553,7 +557,11 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
 }
 
 fn list_fields(args: FieldsArgs) -> Result<i32> {
+    #[cfg(not(feature = "dev-unreserve"))]
     let mut kinds = resource::host_kinds();
+    // A `dev-unreserve` build serves no kind itself.
+    #[cfg(feature = "dev-unreserve")]
+    let mut kinds = Vec::new();
 
     // A plugin's field list lives inside its `cdylib`, so reading it means
     // loading the plugin — which is why `--config` is optional here, exactly
@@ -924,6 +932,7 @@ fn list_steps(args: ListArgs) -> Result<i32> {
 async fn main() {
     // Every path that can build a pool runs through here first — `AnyPool`
     // panics rather than erroring if a driver is not installed.
+    #[cfg(not(feature = "dev-unreserve"))]
     sqlx::any::install_default_drivers();
     // The default hook prints the payload as it is, and a payload can hold a
     // value (an `unwrap` on a parsed secret). Same text, masked.
@@ -1473,7 +1482,9 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     probe.concurrency = cfg.concurrency.clamp(1, chains.len().max(1)) as u64;
 
     probe.stage = Some(telemetry::payload::Stage::Resources);
+    #[cfg(not(feature = "dev-unreserve"))]
     let mut by_name = std::collections::HashMap::new();
+    #[cfg(not(feature = "dev-unreserve"))]
     for (name, api) in &cfg.resources.api {
         let headers = api
             .default_headers
@@ -1491,6 +1502,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
             .with_sensitive_headers(api.effective_sensitive_headers.clone()),
         );
     }
+    #[cfg(not(feature = "dev-unreserve"))]
     let apis = Arc::new(http::Apis::new(by_name, cfg.resolve_default_api()?)?);
 
     // Every declared SRP resource, not only the default: a malformed
@@ -1501,6 +1513,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     // Before the pools: this costs microseconds, and connecting can cost
     // thirty seconds against a database that is down. A suite with both faults
     // should learn about both on the first attempt, not one per attempt.
+    #[cfg(not(feature = "dev-unreserve"))]
     for (name, srp) in &cfg.resources.srp {
         srp.to_params()
             .with_context(|| format!("resources.srp.{name}"))?;
@@ -1508,6 +1521,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
 
     // Pools are created once per run, sized to the worker pool's own
     // concurrency so every worker can hold a connection at once.
+    #[cfg(not(feature = "dev-unreserve"))]
     let db = if cfg.resources.db.is_empty() {
         None
     } else {
@@ -1517,13 +1531,16 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
                 .map_err(anyhow::Error::msg)?,
         ))
     };
+    #[cfg(not(feature = "dev-unreserve"))]
     if let Some(db) = &db {
         probe.resources.db = db.engines().fold(Default::default(), |mut engines, name| {
             telemetry::payload::Engines::add(&mut engines, name);
             engines
         });
     }
+    #[cfg(not(feature = "dev-unreserve"))]
     let default_db = cfg.resolve_default_db()?.unwrap_or_default();
+    #[cfg(not(feature = "dev-unreserve"))]
     let srp = match cfg.resolve_default_srp()? {
         Some(name) => Some(Arc::new(cfg.resources.srp[&name].to_params()?)),
         None => None,
@@ -1583,11 +1600,15 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     }
     let mut ctx = runner::RunContext::new(
         reg,
+        #[cfg(not(feature = "dev-unreserve"))]
         apis,
         generator.clone(),
         filter,
+        #[cfg(not(feature = "dev-unreserve"))]
         db,
+        #[cfg(not(feature = "dev-unreserve"))]
         default_db,
+        #[cfg(not(feature = "dev-unreserve"))]
         srp,
         plugins.clone(),
         cfg.effective_options.clone(),

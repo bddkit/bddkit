@@ -1,3 +1,5 @@
+#![cfg(not(feature = "dev-unreserve"))]
+
 //! Proves `I have "<table>" with …` fills `last_insert_*` correctly on MySQL,
 //! which has no `RETURNING` — the bug this task fixes. Runs the compiled
 //! binary as a subprocess, like `tests/db.rs`, against MySQL and MariaDB

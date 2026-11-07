@@ -19,7 +19,11 @@ use std::sync::Mutex;
 /// `connection` is the built-in step word for the `db` group (`I use "<conn>"
 /// connection`) — a plugin claiming it would build a group-switch step that
 /// exactly overlaps the built-in one, so it is refused for the same reason.
+#[cfg(not(feature = "dev-unreserve"))]
 const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
+/// A `dev-unreserve` build has no built-ins to shadow: a plugin may claim them.
+#[cfg(feature = "dev-unreserve")]
+const HOST_GROUPS: &[&str] = &[];
 
 /// How a plugin step reaches the registry.
 #[derive(Debug, Clone)]
@@ -1797,6 +1801,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn a_plugin_claiming_a_host_group_is_refused() {
         // docs/plugin-authoring.md promises these four names are reserved;
         // nothing pinned that promise before this test.
@@ -1891,7 +1896,11 @@ pub(crate) mod tests {
 
         let odd = words(&[("", "gone")]);
         check_deprecated_words(&[("a", &odd)], &groups).expect_err("an empty word");
-        for word in ["other", "db", "connection"] {
+        #[cfg(not(feature = "dev-unreserve"))]
+        let refused = ["other", "db", "connection"];
+        #[cfg(feature = "dev-unreserve")]
+        let refused = ["other"];
+        for word in refused {
             let bad = words(&[(word, "gone")]);
             let error = check_deprecated_words(&[("a", &bad)], &groups).expect_err("refused");
             assert!(format!("{error}").contains(&format!("{word:?}")), "{error}");

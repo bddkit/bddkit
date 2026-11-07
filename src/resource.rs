@@ -241,6 +241,7 @@ pub struct Field {
 
 /// The three kinds the host serves itself, always available: they need no
 /// config, and describing them cannot fail.
+#[cfg(not(feature = "dev-unreserve"))]
 pub fn host_kinds() -> Vec<Kind> {
     [
         ("api", crate::config::API_FIELDS),
@@ -665,9 +666,13 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
                 .as_ref()
                 .is_some_and(|plugins| plugins.group_names().iter().any(|g| g == input.group));
             if !serves {
+                #[cfg(not(feature = "dev-unreserve"))]
+                let served = "bddkit serves api, db and srp, and ";
+                #[cfg(feature = "dev-unreserve")]
+                let served = "";
                 return refuse(
                     &format!(
-                        "no such resource kind {:?}: bddkit serves api, db and srp, and no installed plugin serves that group",
+                        "no such resource kind {:?}: {served}no installed plugin serves that group",
                         input.group
                     ),
                     None,
@@ -736,6 +741,7 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
 /// the prospective text and would work at run time; what cannot be done is
 /// checking it under the name being written, and this command's contract is
 /// exit 0 or 1 — never a panic.
+#[cfg(not(feature = "dev-unreserve"))]
 fn under_the_name<'a, T>(
     map: &'a std::collections::BTreeMap<String, T>,
     input: &AddInput<'_>,
@@ -758,6 +764,7 @@ async fn check_new_resource(
     config_path: &std::path::Path,
 ) -> Result<(), String> {
     match input.group {
+        #[cfg(not(feature = "dev-unreserve"))]
         "api" => {
             let api = under_the_name(&cfg.resources.api, input)?;
             let (resource, _) = crate::doctor::check_api(api)?;
@@ -771,6 +778,7 @@ async fn check_new_resource(
                 )
             );
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         "db" => {
             let connection = under_the_name(&cfg.resources.db, input)?;
             crate::db::check_dsn(connection)?;
@@ -779,6 +787,7 @@ async fn check_new_resource(
             }
             crate::doctor::probe_db(input.name, connection).await?;
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         "srp" => {
             crate::doctor::check_srp_resource(under_the_name(&cfg.resources.srp, input)?)?;
         }
@@ -815,6 +824,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn every_host_kind_is_described_and_marks_its_required_keys() {
         let kinds = host_kinds();
         let out = render(&kinds);
@@ -833,6 +843,7 @@ mod tests {
     /// the host will actually do with it — not left blank, which would read as
     /// "unknown" for a question that always has an answer.
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn each_field_shows_the_type_its_flag_value_becomes() {
         let out = render(&host_kinds());
         let line = |key: &str| -> String {
@@ -905,7 +916,15 @@ mod tests {
     }
 
     fn api_fields() -> Fields {
-        Fields::host("api").expect("api is a host kind")
+        let field = |name: &str, scalar| FieldDef {
+            name: name.to_string(),
+            scalar,
+        };
+        Fields::Known(vec![
+            field("base_url", Scalar::Str),
+            field("timeout_secs", Scalar::Num),
+            field("default_headers", Scalar::NonScalar),
+        ])
     }
 
     #[test]
