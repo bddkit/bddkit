@@ -61,6 +61,14 @@ impl<'a> Polling<'a> {
         }
     }
 
+    /// Takes the timeout and interval of other options. The deadline stays
+    /// counted from the poll's start.
+    pub fn retarget(&mut self, options: &PollingOptions) {
+        self.deadline = self.started + options.timeout;
+        self.timeout = options.timeout;
+        self.interval = options.interval;
+    }
+
     /// Sleeps before the next attempt, or fails once the deadline has passed.
     /// The failure keeps the class of the last attempt's: an assertion that
     /// never held is `assertion`, a server that stayed down is `transport`.

@@ -369,6 +369,12 @@ pub struct DispatchRequest<'a> {
     /// The file's variables, for a step whose spec says `wants_vars`; `{}`
     /// for every other step.
     pub vars: BTreeMap<String, VarJson>,
+    /// 1-based within the current eventual assertion; `1` for a step that is
+    /// not polled.
+    pub attempt: u64,
+    /// The absolute directory of the file the step is written in: the feature
+    /// file, the included file, or the macro file for a macro body.
+    pub source_dir: String,
 }
 
 /// One variable as a plugin that asked for them sees it.
@@ -436,6 +442,21 @@ pub struct DispatchResult {
     pub scan: Vec<crate::diagnostic::ScanItem>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The failure class, on `fatal` and `not_yet`. Kept as JSON: a value the
+    /// host does not know counts as absent and must not fail the parse.
+    #[serde(default)]
+    pub class: Option<serde_json::Value>,
+    /// On a `not_yet`: the instance whose polling options govern the poll.
+    #[serde(default)]
+    pub options_instance: Option<String>,
+    /// What the host prints to stderr, kept as JSON for the same reason as
+    /// `Diagnostic.content`: an item that does not fit is refused by
+    /// `plugin::reply` without quoting it.
+    #[serde(default)]
+    pub output: Vec<serde_json::Value>,
+    /// Written like `set variable … global`, after `vars`; only on `passed`.
+    #[serde(default)]
+    pub global_vars: BTreeMap<String, String>,
 }
 
 impl DispatchResult {
@@ -480,6 +501,10 @@ impl DispatchResult {
             secrets,
             scan,
             error: Some(message),
+            class: None,
+            options_instance: None,
+            output: Vec::new(),
+            global_vars: BTreeMap::new(),
         })
     }
 
@@ -787,6 +812,8 @@ mod tests {
             options: OptionsJson::from(&crate::options::Options::default()),
             evidence: true,
             vars: BTreeMap::new(),
+            attempt: 1,
+            source_dir: "/suite".into(),
         };
         let value = serde_json::to_value(&request).expect("serialises");
         // `serde_json::Value::Object` is a `BTreeMap` (no `preserve_order`
@@ -803,6 +830,8 @@ mod tests {
             "workspace_dir",
             "debug",
             "options",
+            "attempt",
+            "source_dir",
             "evidence",
             "vars",
         ];

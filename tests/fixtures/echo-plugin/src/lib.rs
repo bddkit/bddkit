@@ -176,7 +176,11 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
               "reads": ["slot:{slot}"], "sets_vars": ["{name}"],
               "description": "publishes the variable it names, read out of a named slot" },
             { "pattern": r#"^the echo answers:$"#, "group": "echo", "kind": "assertion",
-              "description": "replies with its doc string verbatim, whatever it holds: a structured diagnostic, a scan item, any status" }
+              "description": "replies with its doc string verbatim, whatever it holds: a structured diagnostic, a scan item, any status" },
+            { "pattern": r#"^the echo answers by attempt:$"#, "group": "echo", "kind": "assertion",
+              "description": "its doc string is a JSON list of replies, one per attempt, the last one repeating; every reply carries the request's attempt as its error, and a passing one as echo_attempt" },
+            { "pattern": r#"^I echo the source directory as "(?P<mode>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "description": "publishes the request's source_dir as echo_source_dir; its validate_step refuses it, quoting source_dir, for the mode refuse" }
         ])
         .to_string()
     })
@@ -491,6 +495,22 @@ pub extern "C" fn bddkit_dispatch(
                 serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
             }
             26 => value["docstring"].as_str().unwrap_or_default().trim().to_string(),
+            27 => {
+                let attempt = value["attempt"].as_u64().unwrap_or(0);
+                let script: Vec<serde_json::Value> =
+                    serde_json::from_str(value["docstring"].as_str().unwrap_or_default().trim())
+                        .unwrap_or_default();
+                let index = (attempt as usize).saturating_sub(1).min(script.len().saturating_sub(1));
+                let mut reply = script.get(index).cloned().unwrap_or_default();
+                reply["error"] = format!("attempt {attempt}").into();
+                reply["vars"] = serde_json::json!({"echo_attempt": attempt.to_string()});
+                reply.to_string()
+            }
+            28 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_source_dir": value["source_dir"]},
+            })
+            .to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
@@ -511,6 +531,10 @@ pub extern "C" fn bddkit_validate_step(step_index: u32, request: *const c_char) 
             (16, Some("malformed")) => "not json".to_string(),
             (16, Some("noerror")) => r#"{"ok":false}"#.to_string(),
             (19, Some("13")) => refuse("the echo refuses 13"),
+            (28, Some("refuse")) => refuse(&format!(
+                "source_dir={}",
+                value["source_dir"].as_str().unwrap_or_default()
+            )),
             (17, _) if doc.contains("<<") => {
                 refuse("the doc string reached validation uninterpolated")
             }
