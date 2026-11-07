@@ -387,3 +387,30 @@ fn a_manifest_the_host_cannot_accept_is_exit_2_and_names_the_culprit() {
         assert!(text(&out).contains(wants), "{case}\n{}", text(&out));
     }
 }
+
+#[test]
+fn the_context_is_asked_before_the_reset_of_the_next_scenario() {
+    let p = project(
+        "context-order",
+        true,
+        1,
+        &[(
+            "a.feature",
+            r#"Feature: context
+  Scenario: fails after using the handle
+    When I read the group handle into "h"
+    Then variable "h" should be equal to "never"
+
+  Scenario: the next one resets
+    When I read the group handle into "h"
+"#,
+        )],
+        "",
+    );
+    let out = p.bddkit("run", PER_WORKER);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    let calls = p.calls();
+    assert_eq!(count(&calls, "context"), 1, "{calls:?}");
+    let at = |prefix: &str| calls.iter().position(|c| c.starts_with(prefix)).unwrap();
+    assert!(at("context") < at("reset"), "{calls:?}");
+}

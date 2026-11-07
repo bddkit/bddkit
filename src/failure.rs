@@ -63,6 +63,11 @@ pub struct StepError {
     /// `message` so a polled assertion's `attempt` event and the timeout text
     /// quote the mismatch alone, and it survives `wrap`.
     pub diagnostics: Vec<String>,
+    /// The plugin handle (library index, handle) whose reply caused this
+    /// failure, so the failure dump asks every OTHER handle of the scenario
+    /// for its context, and this one too when the reply showed nothing. Kept
+    /// through `wrap` and a polling timeout like `diagnostics`.
+    pub handle: Option<(usize, u64)>,
 }
 
 impl StepError {
@@ -71,7 +76,14 @@ impl StepError {
             kind,
             message: message.into(),
             diagnostics: Vec::new(),
+            handle: None,
         }
+    }
+
+    /// The same error, blamed on the plugin handle that replied.
+    pub fn with_handle(mut self, handle: Option<(usize, u64)>) -> Self {
+        self.handle = handle;
+        self
     }
 
     /// The same error with the diagnostics of the reply that caused it.

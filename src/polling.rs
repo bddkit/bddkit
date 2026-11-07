@@ -84,7 +84,8 @@ impl<'a> Polling<'a> {
                     self.assertion, self.timeout, self.interval, self.attempts, elapsed, last
                 ),
             )
-            .with_diagnostics(last.diagnostics.clone()));
+            .with_diagnostics(last.diagnostics.clone())
+            .with_handle(last.handle));
         }
         tokio::time::sleep((self.deadline - now).min(self.interval)).await;
         Ok(())
@@ -136,5 +137,20 @@ mod tests {
         assert!(error.message.contains("4 attempts"), "{error}");
         assert!(error.message.contains("still missing"), "{error}");
         assert_eq!(error.kind, crate::failure::FailureKind::Assertion);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timeout_keeps_the_handle_and_diagnostics_of_the_last_attempt() {
+        let options = PollingOptions {
+            timeout: Duration::ZERO,
+            interval: Duration::from_millis(100),
+        };
+        let mut polling = Polling::new("echo assertion", &options);
+        let last = StepError::assertion("missing")
+            .with_diagnostics(vec!["dump".into()])
+            .with_handle(Some((1, 7)));
+        let error = polling.after_not_yet(&last).await.unwrap_err();
+        assert_eq!(error.handle, Some((1, 7)));
+        assert_eq!(error.diagnostics, ["dump"]);
     }
 }

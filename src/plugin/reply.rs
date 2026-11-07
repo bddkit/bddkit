@@ -12,6 +12,7 @@ use crate::diagnostic::{HttpDiagnostic, SqlDiagnostic};
 use crate::events::Trace;
 use crate::failure::FailureKind;
 use crate::privacy::Redactor;
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 
@@ -312,4 +313,81 @@ pub fn publish_vars(world: &mut World, result: &mut DispatchResult) {
         // Infallible: `set_variable` returns a `Result` for the step table.
         let _ = crate::steps::vars::set_variable(world, &name, &value, true);
     }
+}
+
+/// The reply of `bddkit_failure_context`: the dispatch reply's diagnostics,
+/// `secrets` and `scan`, and the envelope's `ok`/`error` a plugin's panic guard
+/// answers with.
+#[derive(Deserialize)]
+struct ContextReply {
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    diagnostics: Vec<Diagnostic>,
+    #[serde(default)]
+    secrets: Vec<String>,
+    #[serde(default)]
+    scan: Vec<crate::diagnostic::ScanItem>,
+}
+
+/// The dump texts the plugins' failure contexts add, in order. What a reply
+/// reveals is registered like a dispatch reply's, and nothing is emitted: a
+/// context is console text, never evidence. A reply that is NULL, malformed,
+/// an error or of a shape that does not fit becomes one line and never
+/// changes the failure; the line quotes none of the reply except an error the
+/// plugin states in its own envelope, which the caller masks.
+pub fn context_dumps(
+    replies: Vec<(String, Result<String, String>)>,
+    redactor: &Redactor,
+) -> Vec<String> {
+    let mut dumps = Vec::new();
+    for (name, reply) in replies {
+        let unavailable =
+            |why: &str| format!("failure context of plugin {name:?} unavailable: {why}");
+        let text = match reply {
+            Ok(text) => text,
+            Err(why) => {
+                dumps.push(unavailable(&why));
+                continue;
+            }
+        };
+        let Ok(parsed) = serde_json::from_str::<ContextReply>(&text) else {
+            // Its secrets still count, though nothing else of it is shown.
+            if let Some(salvaged) = DispatchResult::salvage(&text, String::new()) {
+                let _ = absorb(&salvaged, redactor, "");
+            }
+            dumps.push(unavailable("the reply is malformed"));
+            continue;
+        };
+        // Registered first, error or not: the plugin's own `error` is shown
+        // below and may quote what the same reply declares secret.
+        let result = DispatchResult {
+            status: super::abi::Status::Passed,
+            vars: Default::default(),
+            diagnostics: parsed.diagnostics,
+            secrets: parsed.secrets,
+            scan: parsed.scan,
+            error: None,
+            class: None,
+            options_instance: None,
+            output: Vec::new(),
+            global_vars: Default::default(),
+        };
+        let absorbed = absorb(&result, redactor, "");
+        if parsed.ok == Some(false) || parsed.error.is_some() {
+            let why = parsed
+                .error
+                .as_deref()
+                .unwrap_or("the plugin reported a failure");
+            dumps.push(unavailable(why));
+            continue;
+        }
+        match absorbed {
+            Ok(shown) => dumps.extend(self::dumps(&shown, redactor)),
+            Err(why) => dumps.push(unavailable(&why)),
+        }
+    }
+    dumps
 }

@@ -12,9 +12,9 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [features]
-# Exports `bddkit_reset_scenario` and `bddkit_select_instance`. A cdylib's
-# symbols are fixed at build time and an environment switch cannot hide one,
-# so the build that must load `shared` at concurrency 2 is a different build.
+# Exports `bddkit_reset_scenario`, `bddkit_select_instance` and
+# `bddkit_failure_context`. A cdylib's symbols are fixed at build time and an
+# environment switch cannot hide one, so the build that must load `shared` at concurrency 2 is a different build.
 hooks = []
 
 [dependencies]
