@@ -558,6 +558,38 @@ pub extern "C" fn bddkit_reset_scenario(handle: u64) -> *mut c_char {
     })
 }
 
+/// What this instance adds to a failure dump. `BDDKIT_ECHO_FIXTURE_CONTEXT`
+/// (set on the CHILD by a test) picks a bad reply instead: `panic`, `null`,
+/// `malformed` (valid JSON of the wrong shape, still declaring a secret),
+/// `empty` (no diagnostics), `error` (an envelope that says it failed).
+#[unsafe(no_mangle)]
+pub extern "C" fn bddkit_failure_context(handle: u64) -> *mut c_char {
+    let mode = std::env::var("BDDKIT_ECHO_FIXTURE_CONTEXT").unwrap_or_default();
+    if mode == "null" {
+        return std::ptr::null_mut();
+    }
+    guard("envelope", move || {
+        let guard = INSTANCES.lock().expect("instances");
+        let prefix = guard
+            .as_ref()
+            .and_then(|instances| instances.get(&handle))
+            .map_or_else(String::new, |instance| instance.prefix.clone());
+        match mode.as_str() {
+            "panic" => panic!("the echo context exploded"),
+            "malformed" => r#"{"diagnostics":"nope","secrets":["context-malformed-secret"]}"#
+                .to_string(),
+            "empty" => r#"{"diagnostics":[]}"#.to_string(),
+            "error" => r#"{"ok":false,"error":"the echo context refused context-error-secret","secrets":["context-error-secret"]}"#.to_string(),
+            _ => serde_json::json!({"diagnostics": [
+                {"title": "echo context", "kind": "text", "content": format!("context of {prefix}")},
+                {"title": "echo context json", "kind": "json",
+                 "content": r#"{"password":"context-pass-123"}"#},
+            ]})
+            .to_string(),
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_drop_instance(handle: u64) -> *mut c_char {
     guard("envelope", move || {

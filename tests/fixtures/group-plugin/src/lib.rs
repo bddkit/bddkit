@@ -21,8 +21,8 @@
 //! - `BDDKIT_GROUP_FIXTURE_LOG=<path>`: every `init`, `select`, `reset` and
 //!   `drop` appends one line, so a test sees the calls from outside.
 //!
-//! The cargo feature `hooks` adds `bddkit_reset_scenario` and
-//! `bddkit_select_instance`.
+//! The cargo feature `hooks` adds `bddkit_reset_scenario`,
+//! `bddkit_select_instance` and `bddkit_failure_context`.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char};
@@ -72,7 +72,9 @@ fn log(line: String) {
             .append(true)
             .open(path)
     {
-        let _ = writeln!(file, "{line}");
+        // One write: with `writeln!` the line and its newline are two, and
+        // two workers' lines interleave.
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
@@ -253,6 +255,15 @@ pub extern "C" fn bddkit_reset_scenario(handle: u64) -> *mut c_char {
     guard("envelope", move || {
         log(format!("reset {handle}"));
         r#"{"ok":true}"#.to_string()
+    })
+}
+
+#[cfg(feature = "hooks")]
+#[unsafe(no_mangle)]
+pub extern "C" fn bddkit_failure_context(handle: u64) -> *mut c_char {
+    guard("envelope", move || {
+        log(format!("context {handle}"));
+        r#"{"diagnostics":[]}"#.to_string()
     })
 }
 

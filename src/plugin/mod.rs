@@ -187,6 +187,12 @@ impl Plugins {
                 lib.has_reset_scenario(),
                 concurrency,
             )?;
+            library::check_failure_context(
+                &lib.name,
+                lib.manifest.concurrency,
+                lib.has_failure_context(),
+                concurrency,
+            )?;
             let index = libs.len();
             check_host_groups(&lib.name, &lib.manifest.groups)?;
             for group in &lib.manifest.groups {
@@ -762,6 +768,30 @@ impl Plugins {
         self.registry.lock().expect("plugin registry").len()
     }
 
+    /// What each named handle's plugin adds to a failure dump, in the order
+    /// given: the plugin's name and its raw reply, or why there is none. A
+    /// plugin that exports no `bddkit_failure_context` is skipped without a
+    /// word. The reply is parsed by the caller (`reply::context_dumps`), which
+    /// holds the redactor.
+    pub fn failure_contexts(
+        &self,
+        handles: &[(usize, u64)],
+    ) -> Vec<(String, Result<String, String>)> {
+        handles
+            .iter()
+            .filter_map(|(lib, handle)| {
+                let library = &self.libs[*lib];
+                let reply = library.failure_context(*handle)?;
+                // The anyhow text names the call and the plugin and holds no
+                // reply, but the line is stable and quotes nothing.
+                Some((
+                    library.name.clone(),
+                    reply.map_err(|_| "it returned nothing".to_string()),
+                ))
+            })
+            .collect()
+    }
+
     /// Resets exactly the instances the caller names, and nothing else.
     ///
     /// This is what stops the reset being a broadcast. It used to walk every
@@ -940,6 +970,9 @@ pub struct PluginState {
     /// `shared` handle appears in `used` but never here — it outlives the file
     /// and is swept by `Plugins::shutdown`.
     owned: Vec<(usize, u64)>,
+    /// The handles the CURRENT scenario has dispatched to, in first-use order
+    /// (`used` is file-wide and unordered), for `bddkit_failure_context`.
+    scenario: Vec<(usize, u64)>,
 }
 
 impl PluginState {
@@ -961,6 +994,7 @@ impl PluginState {
             defaults,
             used: BTreeMap::new(),
             owned: Vec::new(),
+            scenario: Vec::new(),
         }
     }
 
@@ -1019,6 +1053,11 @@ impl PluginState {
     /// created it and must therefore drop it — that is, when the plugin
     /// declares `per_worker`.
     pub fn record(&mut self, group: &str, instance: &str, lib: usize, handle: u64, owned: bool) {
+        // Before the early return below: `used` outlives the scenario, so a
+        // handle an earlier scenario created must still be listed here.
+        if !self.scenario.contains(&(lib, handle)) {
+            self.scenario.push((lib, handle));
+        }
         let key = self.key(group, instance);
         // A second record for one instance is always the same handle: the cache
         // is consulted before every dispatch, and a dispatch that fails after
@@ -1036,6 +1075,12 @@ impl PluginState {
         self.used.values().copied().collect()
     }
 
+    /// The handles this scenario has dispatched to, in the order it first
+    /// used them.
+    pub fn scenario_handles(&self) -> &[(usize, u64)] {
+        &self.scenario
+    }
+
     /// Only what this file created, for the end of the file.
     pub fn to_drop(&self) -> Vec<(usize, u64)> {
         self.owned.clone()
@@ -1045,6 +1090,7 @@ impl PluginState {
     /// are file state, not scenario state, so `used`/`owned` survive.
     pub fn reset(&mut self) {
         self.current = self.defaults.clone();
+        self.scenario.clear();
     }
 }
 

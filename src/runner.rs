@@ -510,13 +510,15 @@ async fn run_step(
                 // (`plugin::reply::absorb`): the error, a diagnostic or a
                 // `not_yet` message may quote it.
                 let mut result = result;
+                let blamed = Some((lib, handle));
                 let shown = crate::plugin::reply::absorb(&result, &world.redactor, &instance)
-                    .map_err(StepError::plugin)?;
+                    .map_err(|why| StepError::plugin(why).with_handle(blamed))?;
                 // Read before anything is written, so a reply whose `output` is
                 // refused changes nothing and its diagnostics still show.
                 let output = crate::plugin::reply::outputs(&result).map_err(|why| {
                     StepError::plugin(why)
                         .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                        .with_handle(blamed)
                 })?;
                 if matches!(result.status, Status::Passed) {
                     // Variables are published only on success: an
@@ -545,7 +547,9 @@ async fn run_step(
                 // The failing reply's diagnostics ride on the error, apart
                 // from its text.
                 let failure = |error: StepError| {
-                    error.with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                    error
+                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                        .with_handle(blamed)
                 };
 
                 match result.status {
@@ -933,6 +937,37 @@ impl RunContext {
     }
 }
 
+/// What the plugins add to a failing step's dump: the context of every handle
+/// the scenario dispatched to, in first-use order. The failing reply's own
+/// handle is left out when the reply already showed something in the dump, and
+/// asked like any other when it showed nothing (an assertion that sent no
+/// request). Called here, once, with the innermost step's error, so a macro or
+/// an include shows each context once.
+async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) -> Vec<String> {
+    // An interrupt's cleanup may already have dropped the handles.
+    let Some(plugins) = ctx.plugins.clone().filter(|_| !ctx.interrupted()) else {
+        return Vec::new();
+    };
+    let covered = error.handle.filter(|_| !error.diagnostics.is_empty());
+    let handles: Vec<_> = world
+        .plugins
+        .scenario_handles()
+        .iter()
+        .copied()
+        .filter(|handle| Some(*handle) != covered)
+        .collect();
+    if handles.is_empty() {
+        return Vec::new();
+    }
+    let replies = match tokio::task::spawn_blocking(move || plugins.failure_contexts(&handles))
+        .await
+    {
+        Ok(replies) => replies,
+        Err(_) => return vec!["failure context unavailable: the plugin task failed".to_string()],
+    };
+    crate::plugin::reply::context_dumps(replies, &world.redactor)
+}
+
 /// Runs one feature file. The variable frame is shared for the file; HTTP
 /// state is recreated for each scenario; the Background reruns before each
 /// one. Arguments are owned (`Arc`), not borrowed: a file is one `tokio`
@@ -1051,6 +1086,11 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         .and_then(|ex| ex.diagnostic(None).dump(&world.redactor))
                     {
                         msg.push_str(&format!("\n\n{dump}"));
+                    }
+                    // Before the next scenario's reset: the plugins' state is
+                    // still the failing one's.
+                    for dump in failure_contexts(&world, &ctx, &e).await {
+                        msg.push_str(&format!("\n\n{}", world.redactor.mask(&dump)));
                     }
                     failure = Some((msg, e.kind));
                     StepStatus::Failed

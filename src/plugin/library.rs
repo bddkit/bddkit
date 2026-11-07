@@ -37,6 +37,7 @@ pub struct Library {
     probe_config: Option<JsonFn>,
     validate_step: Option<StepValidateFn>,
     select_instance: Option<SelectInstanceFn>,
+    failure_context: Option<HandleFn>,
     free_string: FreeFn,
     _library: libloading::Library,
 }
@@ -138,6 +139,12 @@ impl Library {
                 .ok()
                 .map(|symbol| *symbol);
 
+        // Optional: a plugin that adds nothing to a failure's dump exports
+        // nothing.
+        let failure_context: Option<HandleFn> = unsafe { library.get(b"bddkit_failure_context\0") }
+            .ok()
+            .map(|symbol| *symbol);
+
         // SAFETY: `manifest_fn` takes no arguments, and the pointer it returns
         // is handed straight back to this same plugin's `free_string` inside
         // `take` — the host never frees plugin memory itself.
@@ -174,6 +181,7 @@ impl Library {
             probe_config,
             validate_step,
             select_instance,
+            failure_context,
             free_string,
             _library: ManuallyDrop::into_inner(library),
         })
@@ -185,6 +193,18 @@ impl Library {
 
     pub fn has_select_instance(&self) -> bool {
         self.select_instance.is_some()
+    }
+
+    pub fn has_failure_context(&self) -> bool {
+        self.failure_context.is_some()
+    }
+
+    /// The raw reply of `bddkit_failure_context`; `None` when the plugin
+    /// exports no such symbol, which is not a failure. The caller parses it:
+    /// a malformed reply is quoted nowhere, and its `secrets` still count.
+    pub fn failure_context(&self, handle: u64) -> Option<Result<String>> {
+        let function = self.failure_context?;
+        Some(self.call_handle(function, handle, "failure_context"))
     }
 
     pub fn has_probe_config(&self) -> bool {
@@ -598,6 +618,22 @@ pub fn check_select_instance(
         "bddkit_select_instance",
         exports_select,
         "the selection is per feature file and a shared handle is not",
+        concurrency,
+    )
+}
+
+pub fn check_failure_context(
+    name: &str,
+    concurrency_mode: Concurrency,
+    exports_context: bool,
+    concurrency: usize,
+) -> Result<()> {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_failure_context",
+        exports_context,
+        "the scenario's handles are listed per feature file and a shared handle is not",
         concurrency,
     )
 }
@@ -1035,5 +1071,18 @@ mod tests {
         check_select_instance("db", Concurrency::Shared, true, 1).expect("sequential");
         check_select_instance("api", Concurrency::PerWorker, true, 8).expect("per_worker");
         check_select_instance("db", Concurrency::Shared, false, 8).expect("no export");
+    }
+
+    #[test]
+    fn a_shared_plugin_with_a_failure_context_is_refused_in_parallel_only() {
+        let error =
+            check_failure_context("api", Concurrency::Shared, true, 2).expect_err("refused");
+        assert!(
+            format!("{error}").contains("bddkit_failure_context"),
+            "{error}"
+        );
+        check_failure_context("api", Concurrency::Shared, true, 1).expect("sequential");
+        check_failure_context("api", Concurrency::PerWorker, true, 8).expect("per_worker");
+        check_failure_context("db", Concurrency::Shared, false, 8).expect("no export");
     }
 }
