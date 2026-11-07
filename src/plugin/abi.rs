@@ -68,7 +68,7 @@ pub enum Concurrency {
     ///
     /// The value set is closed on purpose: a scheduling mode the host does not
     /// implement cannot be degraded into one it does, so a new mode comes with
-    /// an `ABI_VERSION` bump rather than with a tolerant parse.
+    /// an `ABI_MIN` bump rather than with a tolerant parse.
     PerWorker,
 }
 
