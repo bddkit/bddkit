@@ -58,6 +58,7 @@ inside it, and refusing a file name that arrived from a `.feature` file.
 | `bddkit_drop_instance` | `(u64) -> *mut c_char` | yes |
 | `bddkit_reset_scenario` | `(u64) -> *mut c_char` | no |
 | `bddkit_probe_config` | `(*const c_char) -> *mut c_char` | no |
+| `bddkit_select_instance` | `(u64, *const c_char) -> *mut c_char` | no |
 | `bddkit_validate_step` | `(u32, *const c_char) -> *mut c_char` | no |
 | `bddkit_free_string` | `(*mut c_char)` | yes |
 
@@ -99,6 +100,9 @@ Returns the ABI generation the plugin was built for (3 or 4; build new plugins f
 - `version` (string, required) — required so a manifest without one is a load failure; the host does not otherwise compare it against anything.
 - `groups` (array of strings, required, non-empty) — the `resources.<group>` sections this plugin serves. Two loaded plugins may not claim the same group, and section 8 lists the names that are reserved.
 - `concurrency` (string, optional, default `"shared"`) — see section 6.
+- `handle_scope` (string, optional, default `"instance"`) — how many instances of a group one handle serves. `"instance"` is one handle per declared instance. `"group"` is one handle for every instance of one group: one per feature file under `per_worker`, one per run under `shared`, and a plugin with two groups has two handles. Use it when state has to survive `I use "<other>" <group>` (the last HTTP response) or when one handle must hold every connection (a database step may name any connection in its table reference). The value set is closed. It applies to every group the manifest claims. See `bddkit_init_instance` for the request a group-scoped handle gets, and `bddkit_select_instance` for how it learns of a switch.
+- `eager_init` (array of group names, optional) — groups whose `shared` handle the host initialises at startup, after the config and the plugins load and before `run <id>` is printed, instead of at the first step. A failure is exit 2, so an unreachable resource stops the run before any scenario. A plain `doctor` never does this (`doctor --live` calls `bddkit_probe_config`). Declaring it without `"concurrency": "shared"`, or for a group the manifest does not claim, is refused at load. Only groups the config declares an instance of are initialised.
+- `deprecated` (object, optional) — former switch-step words, each mapped to the group that replaces it, such as `{"connection": "db"}`. The host generates `I use "<name>" <word>` beside `I use "<name>" <group>`, and it selects an instance of the target group exactly as the group's own step does, in feature files, includes and macro bodies alike. `bddkit doctor` lists every use with its replacement, as a hint that never fails the row; `run` says nothing. Refused at load, exit 2: a target the plugin does not claim, a word that is a resource group, a word that is another loaded plugin's deprecated word, and a word the host serves itself (`api`, `db`, `srp`, `connection`).
 - `fields` (object, optional) — what each group's `resources.<group>.<instance>` body accepts, keyed by group because one manifest may claim several. A key naming a group this manifest does not claim fails the load, for the same reason an unclaimed step group does: it would shadow the description of whichever plugin legitimately owns it. Describing nothing is fine, and is what a plugin written before this key existed does. This is what `bddkit resource fields --config <suite>` prints, beside the keys the host's own `api`, `db` and `srp` entries take.
 
 It also gates `bddkit resource add <group> <name> --<field> <value>`, which is the one place the host acts on this list rather than printing it, and three consequences follow for whoever writes the manifest. A `--<field>` naming a key this list does not declare is refused before anything is written, so a key `validate_config` accepts but the manifest omits cannot be set by a flag at all — only through `--json`. A group that declares no `fields` is the opposite: with no list to check against, every `--<field>` is accepted and passed through as a string, and refusing a bad key is left entirely to `bddkit_validate_config`. And a key named `config`, `env`, `json` or `no-check` can never be set by a flag, because those four long flags belong to the command itself — such a key is refused outright with a message naming `--json` as the way to set it, so a group that needs one of those names should expect its users to reach it only that way.
@@ -245,7 +249,23 @@ The `echo` fixture is the exception that proves the shape rather than the substa
 
 Called **lazily**: the first time a scenario runs a step of that group with that instance selected. Under `shared` that happens once for the whole run; under `per_worker` it happens once per feature file that reaches such a step, because each file gets its own instance — see section 6. A declared instance nobody uses is validated but never initialised. This is where you open connections, spawn processes, authenticate.
 
-Request: identical to `validate_config`.
+Request: identical to `validate_config`, plus the run's worker count:
+
+```json
+{ "group": "widget", "instance": "primary", "config": { }, "options": { }, "concurrency": 8 }
+```
+
+Under `"handle_scope": "group"` the request describes the whole group instead, and is sent once per handle:
+
+```json
+{
+  "group": "db",
+  "instances": { "main": { "config": { }, "options": { } }, "audit": { "config": { }, "options": { } } },
+  "concurrency": 8
+}
+```
+
+`instances` holds every declared instance of the group, the implicit one included. To refuse, name the instance that failed so the host can say which one: `{ "ok": false, "instance": "audit", "error": "connection refused" }` is reported as `resources.db.audit: connection refused`. Without `instance` the message names the group.
 
 Reply:
 
@@ -279,7 +299,8 @@ Request:
   "debug": false,
   "options": { "polling": { "timeout_secs": 30, "interval_ms": 100 } },
   "evidence": false,
-  "vars": {}
+  "vars": {},
+  "instance": "backups"
 }
 ```
 
@@ -336,6 +357,16 @@ A diagnostic is `{"title", "kind", "content", "path", "media_type", "resource", 
 #### Structured `http` and `sql` diagnostics
 
 For the kinds `http` and `sql`, `content` may instead be a JSON object, in the shapes of `docs/events-design.md` 9.3: `http` has `method`, `url`, `request` and `response` (each `{"headers": [[name, value], …], "body": "…"}`), `status` and `duration_us`; `sql` has `sql`, `binds` (`null` for SQL NULL) and `duration_us`. An `http` object also carries `sensitive_headers` (header names whose values are hidden, compared without case) and `request_form` (`form`, `multipart` or `raw`, default `raw`: how the request body is laid out). The host renders both with the renderer the built-in steps use, so the dump text is theirs, and hides values by position so that you never mask anything yourself: the listed headers by name; form and query fields named by `privacy.fields`; JSON fields in every `raw` request body and every response body, whatever the Content-Type. A body is cut to 600 characters in the dump, after masking. An `sql` diagnostic is masked by value only and is never in the dump. As evidence the host emits the built-in's event: `sensitive_headers`, `request_form`, `in_dump` and `resource` are not in `content` (`resource` is the event's field), and a long body goes to the artifact root as `request-body.*` / `response-body.*`. An object that does not fit its shape, or an object under another kind, fails the step with class `plugin` and a message that quotes no value from it, followed by the reply's own `error` if it had one; on a `not_yet` reply that ends polling at once. A reply the host cannot parse at all still has its `secrets`, its `scan` items and every diagnostic that fits registered before its text is quoted in the error.
+
+`instance` is the instance the group's selection names for this step. Under `"handle_scope": "group"` it is the only thing that says which instance a step is for, because the handle serves all of them; the host sends it for every plugin, whatever the scope.
+
+### `bddkit_select_instance`
+
+`bddkit_select_instance(handle, request)`, replying with an envelope. Optional, and only called on a group-scoped handle: when `I use "<name>" <group>` (or a deprecated word) runs and the file already holds the group's handle, the host calls it with `{"group": "api", "instance": "secondary"}`. Absent means the plugin needs no notice, because every dispatch carries `instance` anyway. When the file has no handle for the group yet, the host only records the selection and the first dispatch carries `instance`, so a plugin must not rely on this call arriving before the first step. A failing reply fails the step.
+
+The selection returns to the group's default at every scenario boundary and the plugin is not told, so treat `instance` in the dispatch request, not the last notice, as the truth.
+
+The selection is per feature file. A `shared` handle is one for the whole run, so a `shared` plugin that exports this symbol is refused at load when the run has `concurrency` above 1, for the reason `bddkit_reset_scenario` is. Declare `"per_worker"`, or do not export it.
 
 ### `bddkit_drop_instance`
 

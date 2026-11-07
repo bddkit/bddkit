@@ -7,7 +7,7 @@ pub mod reply;
 
 use crate::config::InstanceSpec;
 use crate::options::Options;
-use abi::{DispatchResult, InitRequest, OptionsJson};
+use abi::{DispatchResult, GroupInitRequest, GroupInstance, HandleScope, InitRequest, OptionsJson};
 use anyhow::{Context, Result, bail};
 use library::Library;
 use std::collections::BTreeMap;
@@ -78,6 +78,11 @@ pub struct Plugins {
     /// across plugins, so the key must carry the library index. This is what
     /// `shutdown` sweeps, including handles a panicking file never dropped.
     registry: Mutex<BTreeMap<(usize, u64), (String, String)>>,
+    /// The run's worker count, which an `init_instance` request carries.
+    concurrency: usize,
+    /// deprecated switch word -> the group that replaces it, over every
+    /// loaded plugin (`check_deprecated_words`).
+    words: BTreeMap<String, String>,
 }
 
 /// Shared across worker tasks behind an `Arc`, so losing either half has to
@@ -167,6 +172,12 @@ impl Plugins {
                     lib.manifest.name
                 );
             }
+            library::check_select_instance(
+                &lib.name,
+                lib.manifest.concurrency,
+                lib.has_select_instance(),
+                concurrency,
+            )?;
             library::check_reset_scenario(
                 &lib.name,
                 lib.manifest.concurrency,
@@ -186,6 +197,12 @@ impl Plugins {
             }
             libs.push(lib);
         }
+
+        let manifests: Vec<_> = libs
+            .iter()
+            .map(|lib| (lib.name.as_str(), &lib.manifest.deprecated))
+            .collect();
+        let words = check_deprecated_words(&manifests, &groups)?;
 
         let mut declared = BTreeMap::new();
         for spec in instances {
@@ -229,6 +246,8 @@ impl Plugins {
             details: BTreeMap::new(),
             shared: Mutex::new(BTreeMap::new()),
             registry: Mutex::new(BTreeMap::new()),
+            concurrency,
+            words,
         };
 
         // Eager, cheap, no connections opened: a typo in the config must exit 2
@@ -525,6 +544,95 @@ impl Plugins {
         }
     }
 
+    /// Whether one handle serves every instance of this plugin's groups.
+    pub fn is_group_scoped(&self, lib: usize) -> bool {
+        self.libs[lib].manifest.handle_scope == HandleScope::Group
+    }
+
+    /// What a handle is filed under, in `shared`, in a file's `used` and in
+    /// `registry`: the instance for `handle_scope: "instance"`, nothing for
+    /// `"group"`. Every lookup goes through here, so a switch between two
+    /// instances of a group-scoped group never finds a second handle and a
+    /// handle is reset and dropped once.
+    pub fn handle_key(&self, group: &str, instance: &str) -> (String, String) {
+        let scoped = self
+            .groups
+            .get(group)
+            .is_some_and(|lib| self.is_group_scoped(*lib));
+        (
+            group.to_string(),
+            if scoped {
+                String::new()
+            } else {
+                instance.to_string()
+            },
+        )
+    }
+
+    /// The group a switch word names: the group itself, or the group a
+    /// deprecated word maps to.
+    pub fn resolve_group<'a>(&'a self, word: &'a str) -> &'a str {
+        self.words.get(word).map_or(word, String::as_str)
+    }
+
+    pub fn deprecated_words(&self) -> impl Iterator<Item = &str> {
+        self.words.keys().map(String::as_str)
+    }
+
+    /// Tells a group-scoped handle which instance the file selected. Blocking
+    /// FFI, like `call_step`. A plugin without the export needs no notice.
+    pub fn select_instance(
+        &self,
+        lib: usize,
+        handle: u64,
+        group: &str,
+        instance: &str,
+    ) -> Result<(), String> {
+        let request = serde_json::json!({ "group": group, "instance": instance }).to_string();
+        match self.libs[lib].select_instance(handle, &request) {
+            Ok(result) => result,
+            Err(error) => Err(format!("{error:#}")),
+        }
+    }
+
+    /// Whether `I use "<name>" <group>` has to reach the plugin: only a
+    /// group-scoped plugin that exports the hook is told.
+    pub fn wants_selection(&self, group: &str) -> Option<usize> {
+        let lib = *self.groups.get(group)?;
+        (self.is_group_scoped(lib) && self.libs[lib].has_select_instance()).then_some(lib)
+    }
+
+    /// Groups the host initialises at startup: each `eager_init` group of a
+    /// plugin, if the config declares an instance of it.
+    pub fn eager_groups(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for lib in &self.libs {
+            for group in &lib.manifest.eager_init {
+                if self.has_instance(group) {
+                    out.push(group.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Creates the `shared` handle of each eager group now, so an unreachable
+    /// resource is a startup error. Any handle that already came up stays
+    /// registered for `shutdown`.
+    pub fn eager_init(&self) -> Result<(), String> {
+        for group in self.eager_groups() {
+            let lib = self.groups[&group];
+            // Every declared instance: a group-scoped handle is built by the
+            // first and found by the rest, an instance-scoped one needs each.
+            for (g, instance) in self.declared.keys() {
+                if *g == group {
+                    self.shared_handle(&group, instance, lib)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Whether this plugin's instances belong to one file rather than to the
     /// whole run. The manifest declares what the plugin cannot tolerate — "do
     /// not call one handle from two workers at once" — and a per-file instance
@@ -542,14 +650,23 @@ impl Plugins {
             .declared
             .get(&key)
             .ok_or_else(|| undeclared(group, instance))?;
-        let request = self
-            .init_request(spec)
-            .map_err(|error| format!("{error:#}"))?;
+        let scoped = self.is_group_scoped(lib);
+        let request = if scoped {
+            self.group_init_request(group)
+        } else {
+            self.init_request(spec)
+        }
+        .map_err(|error| format!("{error:#}"))?;
         let created = self.libs[lib]
             .init_instance(&request)
             .map_err(|error| format!("{error:#}"))?
-            .map_err(|error| format!("resources.{group}.{instance}: {error}"))?;
-        self.register(lib, created, group, instance);
+            .map_err(|failure| match (scoped, failure.instance) {
+                (_, Some(named)) => format!("resources.{group}.{named}: {}", failure.error),
+                (true, None) => format!("resources.{group}: {}", failure.error),
+                (false, None) => format!("resources.{group}.{instance}: {}", failure.error),
+            })?;
+        let (group, instance) = self.handle_key(group, instance);
+        self.register(lib, created, &group, &instance);
         Ok(created)
     }
 
@@ -558,7 +675,7 @@ impl Plugins {
     /// build one, and the loser drops its own rather than serialising every
     /// worker behind a lock held across a network round trip.
     fn shared_handle(&self, group: &str, instance: &str, lib: usize) -> Result<u64, String> {
-        let key = (group.to_string(), instance.to_string());
+        let key = self.handle_key(group, instance);
         {
             let shared = self.shared.lock().expect("plugin instances");
             if let Some(handle) = shared.get(&key) {
@@ -610,7 +727,8 @@ impl Plugins {
                     eprintln!(
                         "{}",
                         crate::privacy::mask_text(&format!(
-                            "warning: dropping {group}.{instance} failed: {error}"
+                            "warning: dropping {} failed: {error}",
+                            label(&group, &instance)
                         ))
                     )
                 }
@@ -618,7 +736,8 @@ impl Plugins {
                     eprintln!(
                         "{}",
                         crate::privacy::mask_text(&format!(
-                            "warning: dropping {group}.{instance} failed: {error:#}"
+                            "warning: dropping {} failed: {error:#}",
+                            label(&group, &instance)
                         ))
                     )
                 }
@@ -661,7 +780,10 @@ impl Plugins {
                 // The call itself failed: a malformed reply, a NUL byte.
                 Err(error) => format!("{error:#}"),
             };
-            failure.get_or_insert(format!("resetting {group}.{instance} failed: {error}"));
+            failure.get_or_insert(format!(
+                "resetting {} failed: {error}",
+                label(&group, &instance)
+            ));
         }
         match failure {
             Some(error) => Err(error),
@@ -700,8 +822,34 @@ impl Plugins {
             instance: &spec.name,
             config: &spec.config,
             options: OptionsJson::from(&spec.options),
+            concurrency: self.concurrency,
         })
         .with_context(|| format!("failed to encode resources.{}.{}", spec.group, spec.name))
+    }
+
+    /// The one `init_instance` request of a group-scoped handle: every
+    /// declared instance of the group, the implicit one included.
+    fn group_init_request(&self, group: &str) -> Result<String> {
+        let instances = self
+            .declared
+            .values()
+            .filter(|spec| spec.group == group)
+            .map(|spec| {
+                (
+                    spec.name.as_str(),
+                    GroupInstance {
+                        config: &spec.config,
+                        options: OptionsJson::from(&spec.options),
+                    },
+                )
+            })
+            .collect();
+        serde_json::to_string(&GroupInitRequest {
+            group,
+            instances,
+            concurrency: self.concurrency,
+        })
+        .with_context(|| format!("failed to encode resources.{group}"))
     }
 }
 
@@ -716,6 +864,50 @@ fn check_host_groups(name: &str, groups: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A handle's name in a message: `group` for a group-scoped one, whose key
+/// carries no instance.
+fn label(group: &str, instance: &str) -> String {
+    if instance.is_empty() {
+        group.to_string()
+    } else {
+        format!("{group}.{instance}")
+    }
+}
+
+/// A deprecated switch word may not be a group, a word the host serves, or
+/// another plugin's word: any of them would build a switch step that overlaps
+/// another. Needs every plugin loaded, so it lives here and not in
+/// `Library::load`.
+fn check_deprecated_words(
+    manifests: &[(&str, &BTreeMap<String, String>)],
+    groups: &BTreeMap<String, usize>,
+) -> Result<BTreeMap<String, String>> {
+    let mut words: BTreeMap<String, (&str, String)> = BTreeMap::new();
+    for (plugin, deprecated) in manifests {
+        for (word, target) in *deprecated {
+            if word.is_empty() || word.contains(|c: char| c.is_whitespace() || c == '"') {
+                bail!(
+                    "plugin {plugin:?} declares the deprecated word {word:?}, which is not a single word"
+                );
+            }
+            if groups.contains_key(word) {
+                bail!(
+                    "plugin {plugin:?} declares the deprecated word {word:?}, which is a resource group"
+                );
+            }
+            if HOST_GROUPS.contains(&word.as_str()) {
+                bail!(
+                    "plugin {plugin:?} declares the deprecated word {word:?}, which bddkit serves itself"
+                );
+            }
+            if let Some((other, _)) = words.insert(word.clone(), (plugin, target.clone())) {
+                bail!("plugins {other:?} and {plugin:?} both declare the deprecated word {word:?}");
+            }
+        }
+    }
+    Ok(words.into_iter().map(|(w, (_, g))| (w, g)).collect())
 }
 
 fn undeclared(group: &str, instance: &str) -> String {
@@ -798,18 +990,24 @@ impl PluginState {
         self.current.insert(group.to_string(), name.to_string());
     }
 
+    /// The key a handle is filed under (`Plugins::handle_key`).
+    fn key(&self, group: &str, instance: &str) -> (String, String) {
+        match &self.plugins {
+            Some(plugins) => plugins.handle_key(group, instance),
+            None => (group.to_string(), instance.to_string()),
+        }
+    }
+
     /// The handle this file already holds for an instance, if any.
     pub fn handle_for(&self, group: &str, instance: &str) -> Option<(usize, u64)> {
-        self.used
-            .get(&(group.to_string(), instance.to_string()))
-            .copied()
+        self.used.get(&self.key(group, instance)).copied()
     }
 
     /// Records an instance this file has used. `owned` is true when the file
     /// created it and must therefore drop it — that is, when the plugin
     /// declares `per_worker`.
     pub fn record(&mut self, group: &str, instance: &str, lib: usize, handle: u64, owned: bool) {
-        let key = (group.to_string(), instance.to_string());
+        let key = self.key(group, instance);
         // A second record for one instance is always the same handle: the cache
         // is consulted before every dispatch, and a dispatch that fails after
         // creating a handle drops it rather than leaving a second one behind.
@@ -1615,6 +1813,38 @@ pub(crate) mod tests {
             state.current("echo").expect("selected"),
             "a",
             "a failed switch must not change the selection"
+        );
+    }
+
+    fn words(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(word, group)| (word.to_string(), group.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_deprecated_word_may_not_be_a_group_a_host_word_or_another_plugins_word() {
+        let groups: BTreeMap<String, usize> =
+            [("gone".to_string(), 0), ("other".to_string(), 1)].into();
+        let own = words(&[("oldswitch", "gone")]);
+        let ok = check_deprecated_words(&[("a", &own)], &groups).expect("a free word");
+        assert_eq!(ok.get("oldswitch").map(String::as_str), Some("gone"));
+
+        let odd = words(&[("", "gone")]);
+        check_deprecated_words(&[("a", &odd)], &groups).expect_err("an empty word");
+        for word in ["other", "db", "connection"] {
+            let bad = words(&[(word, "gone")]);
+            let error = check_deprecated_words(&[("a", &bad)], &groups).expect_err("refused");
+            assert!(format!("{error}").contains(&format!("{word:?}")), "{error}");
+        }
+
+        let error = check_deprecated_words(&[("a", &own), ("b", &own)], &groups)
+            .expect_err("two plugins, one word");
+        let error = format!("{error}");
+        assert!(
+            error.contains("\"a\"") && error.contains("\"b\"") && error.contains("oldswitch"),
+            "{error}"
         );
     }
 }

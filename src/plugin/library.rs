@@ -2,8 +2,8 @@
 //! `String -> String` calls and typed payloads.
 
 use super::abi::{
-    ABI_MIN, ABI_VERSION, Concurrency, ConfigReply, DispatchResult, Envelope, InitResponse,
-    Manifest, StepSpec,
+    ABI_MIN, ABI_VERSION, Concurrency, ConfigReply, DispatchResult, Envelope, InitFailure,
+    InitResponse, Manifest, StepSpec,
 };
 use anyhow::{Context, Result, bail};
 use std::ffi::{CStr, CString, c_char};
@@ -17,6 +17,7 @@ type DispatchFn = unsafe extern "C" fn(u64, u32, *const c_char) -> *mut c_char;
 type HandleFn = unsafe extern "C" fn(u64) -> *mut c_char;
 type FreeFn = unsafe extern "C" fn(*mut c_char);
 type StepValidateFn = unsafe extern "C" fn(u32, *const c_char) -> *mut c_char;
+type SelectInstanceFn = unsafe extern "C" fn(u64, *const c_char) -> *mut c_char;
 
 /// One loaded plugin binary.
 ///
@@ -35,6 +36,7 @@ pub struct Library {
     reset_scenario: Option<HandleFn>,
     probe_config: Option<JsonFn>,
     validate_step: Option<StepValidateFn>,
+    select_instance: Option<SelectInstanceFn>,
     free_string: FreeFn,
     _library: libloading::Library,
 }
@@ -129,6 +131,13 @@ impl Library {
                 .ok()
                 .map(|symbol| *symbol);
 
+        // Optional: a plugin that needs no notice of `I use "<name>" <group>`
+        // exports nothing.
+        let select_instance: Option<SelectInstanceFn> =
+            unsafe { library.get(b"bddkit_select_instance\0") }
+                .ok()
+                .map(|symbol| *symbol);
+
         // SAFETY: `manifest_fn` takes no arguments, and the pointer it returns
         // is handed straight back to this same plugin's `free_string` inside
         // `take` — the host never frees plugin memory itself.
@@ -150,6 +159,8 @@ impl Library {
         check_field_types(name, &manifest)?;
         check_implicit_groups(name, &manifest)?;
         check_secret_groups(name, &steps)?;
+        check_eager_init(name, &manifest)?;
+        check_deprecated_targets(name, &manifest)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -162,6 +173,7 @@ impl Library {
             reset_scenario,
             probe_config,
             validate_step,
+            select_instance,
             free_string,
             _library: ManuallyDrop::into_inner(library),
         })
@@ -169,6 +181,10 @@ impl Library {
 
     pub fn has_reset_scenario(&self) -> bool {
         self.reset_scenario.is_some()
+    }
+
+    pub fn has_select_instance(&self) -> bool {
+        self.select_instance.is_some()
     }
 
     pub fn has_probe_config(&self) -> bool {
@@ -208,7 +224,7 @@ impl Library {
         Some(verdict.map_or_else(|e| Err(format!("{e:#}")), Envelope::into_result))
     }
 
-    pub fn init_instance(&self, request: &str) -> Result<Result<u64, String>> {
+    pub fn init_instance(&self, request: &str) -> Result<Result<u64, InitFailure>> {
         let reply = self.call_json(self.init_instance, request, "init_instance")?;
         let response: InitResponse = serde_json::from_str(&reply)
             .with_context(|| self.malformed("init_instance", &reply))?;
@@ -239,6 +255,22 @@ impl Library {
             DispatchResult::salvage(&reply, message.clone())
                 .ok_or_else(|| anyhow::Error::new(error).context(message))
         })
+    }
+
+    /// `I use "<instance>" <group>` on a group-scoped handle. Absent symbol:
+    /// nothing to tell, so `Ok`.
+    pub fn select_instance(&self, handle: u64, request: &str) -> Result<Result<(), String>> {
+        let Some(function) = self.select_instance else {
+            return Ok(Ok(()));
+        };
+        let reply = self.call_with("select_instance", request, |argument| {
+            // SAFETY: `function` was resolved from this library with this
+            // exact signature, and the plugin only reads from `argument`.
+            unsafe { function(handle, argument) }
+        })?;
+        let envelope: Envelope = serde_json::from_str(&reply)
+            .with_context(|| self.malformed("select_instance", &reply))?;
+        Ok(envelope.into_result())
     }
 
     pub fn drop_instance(&self, handle: u64) -> Result<Result<(), String>> {
@@ -507,30 +539,102 @@ fn check_field_types(name: &str, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// A `shared` instance serves every worker at once, so its per-scenario reset
-/// cannot be scoped to the worker whose scenario just ended: one worker's
-/// boundary would clear state another is mid-scenario in — the reviewer saw
-/// both an assertion that never passed because its counter kept being zeroed,
-/// and a file with no plugin steps at all failing on another file's instance.
-/// `per_worker` has no such problem — its instances belong to one file — so it
-/// is allowed at any concurrency, and declaring it is the remedy this message
-/// offers.
+/// A `shared` handle serves every worker at once, so a per-worker notion
+/// cannot be scoped to one: a per-scenario reset would clear state another
+/// worker is mid-scenario in (the reviewer saw both an assertion that never
+/// passed because its counter kept being zeroed, and a file with no plugin
+/// steps failing on another file's instance), and an instance selection is
+/// per file, which a shared handle is not. `per_worker` has no such problem,
+/// so it is allowed at any concurrency, and declaring it is the remedy the
+/// message offers.
 ///
-/// A free function over already-parsed data, so it is reachable from a unit
-/// test without building a cdylib per rejection case.
+/// `symbol` is the export that cannot be kept (`bddkit_reset_scenario`,
+/// `bddkit_select_instance`), `what` says why. A free function over
+/// already-parsed data, so it is reachable from a unit test without building a
+/// cdylib per rejection case.
+pub fn check_per_file_symbol(
+    name: &str,
+    concurrency_mode: Concurrency,
+    symbol: &str,
+    exported: bool,
+    why: &str,
+    concurrency: usize,
+) -> Result<()> {
+    if exported && concurrency_mode == Concurrency::Shared && concurrency > 1 {
+        bail!(
+            "plugin {name:?} declares concurrency \"shared\" and exports \
+             {symbol}, but this run has concurrency {concurrency}: {why}. Declare \
+             \"per_worker\" in the manifest, or set concurrency: 1"
+        );
+    }
+    Ok(())
+}
+
 pub fn check_reset_scenario(
     name: &str,
     concurrency_mode: Concurrency,
     exports_reset: bool,
     concurrency: usize,
 ) -> Result<()> {
-    if exports_reset && concurrency_mode == Concurrency::Shared && concurrency > 1 {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_reset_scenario",
+        exports_reset,
+        "a shared instance cannot have its per-scenario reset scoped to one worker",
+        concurrency,
+    )
+}
+
+pub fn check_select_instance(
+    name: &str,
+    concurrency_mode: Concurrency,
+    exports_select: bool,
+    concurrency: usize,
+) -> Result<()> {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_select_instance",
+        exports_select,
+        "the selection is per feature file and a shared handle is not",
+        concurrency,
+    )
+}
+
+/// `eager_init` names groups whose `shared` handle the host builds at startup:
+/// a group the manifest does not claim has no handle, and a `per_worker` one
+/// belongs to a file that does not exist yet.
+fn check_eager_init(name: &str, manifest: &Manifest) -> Result<()> {
+    if manifest.eager_init.is_empty() {
+        return Ok(());
+    }
+    if manifest.concurrency != Concurrency::Shared {
         bail!(
-            "plugin {name:?} declares concurrency \"shared\" and exports \
-             bddkit_reset_scenario, but this run has concurrency {concurrency}: a shared \
-             instance cannot have its per-scenario reset scoped to one worker. Declare \
-             \"per_worker\" in the manifest, or set concurrency: 1"
+            "plugin {name:?} declares eager_init but not concurrency \"shared\": only a shared \
+             handle exists before the first file"
         );
+    }
+    for group in &manifest.eager_init {
+        if !manifest.groups.contains(group) {
+            bail!(
+                "plugin {name:?} declares eager_init for the group {group:?}, which it does not claim"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A deprecated word maps to a group this plugin claims; clashes with other
+/// plugins and the host are checked once every plugin is loaded
+/// (`Plugins::check_deprecated_words`).
+fn check_deprecated_targets(name: &str, manifest: &Manifest) -> Result<()> {
+    for (word, target) in &manifest.deprecated {
+        if !manifest.groups.contains(target) {
+            bail!(
+                "plugin {name:?} maps the deprecated word {word:?} to the group {target:?}, which it does not claim"
+            );
+        }
     }
     Ok(())
 }
@@ -919,5 +1023,17 @@ mod tests {
         )
         .expect("manifest parses");
         check_field_groups("widget", &manifest).expect("its own group is fine");
+    }
+
+    #[test]
+    fn a_shared_plugin_with_a_select_instance_is_refused_in_parallel_only() {
+        let error = check_select_instance("db", Concurrency::Shared, true, 2).expect_err("refused");
+        assert!(
+            format!("{error}").contains("bddkit_select_instance"),
+            "{error}"
+        );
+        check_select_instance("db", Concurrency::Shared, true, 1).expect("sequential");
+        check_select_instance("api", Concurrency::PerWorker, true, 8).expect("per_worker");
+        check_select_instance("db", Concurrency::Shared, false, 8).expect("no export");
     }
 }

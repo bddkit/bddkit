@@ -67,6 +67,20 @@ pub enum Concurrency {
     PerWorker,
 }
 
+/// How many instances of a group one handle serves. The closed value set is
+/// deliberate, as for `Concurrency`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleScope {
+    /// One handle per declared instance: the model of ABI 3.
+    #[default]
+    Instance,
+    /// One handle serves every instance of one group, so state that must
+    /// survive `I use "<other>" <group>` (the last response) or a handle that
+    /// holds every connection can exist.
+    Group,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub name: String,
@@ -95,6 +109,17 @@ pub struct Manifest {
     /// group. Same claim rule as `fields` (`library::check_implicit_groups`).
     #[serde(default)]
     pub implicit_instance: BTreeMap<String, serde_json::Value>,
+    /// See `HandleScope`. Applies to every group the manifest claims.
+    #[serde(default)]
+    pub handle_scope: HandleScope,
+    /// Groups whose `shared` handle the host initialises at startup, before
+    /// the first scenario (`library::check_eager_init`).
+    #[serde(default)]
+    pub eager_init: Vec<String>,
+    /// Former switch-step words, each mapped to the group that replaces it
+    /// (`plugin::check_deprecated`).
+    #[serde(default)]
+    pub deprecated: BTreeMap<String, String>,
 }
 
 /// One key of a group's instance config, as the plugin describes it.
@@ -302,10 +327,31 @@ pub struct InitRequest<'a> {
     pub instance: &'a str,
     pub config: &'a serde_json::Value,
     pub options: OptionsJson,
+    /// The run's worker count.
+    pub concurrency: usize,
+}
+
+/// What `init_instance` receives under `handle_scope: "group"`: every declared
+/// instance of the group, not one.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInitRequest<'a> {
+    pub group: &'a str,
+    pub instances: BTreeMap<&'a str, GroupInstance<'a>>,
+    pub concurrency: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInstance<'a> {
+    pub config: &'a serde_json::Value,
+    pub options: OptionsJson,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DispatchRequest<'a> {
+    /// The instance the group's selection names. Authoritative: under
+    /// `handle_scope: "group"` the handle does not say which instance a step
+    /// is for.
+    pub instance: &'a str,
     pub args: &'a [String],
     pub docstring: Option<&'a String>,
     pub table: Option<&'a Vec<Vec<String>>>,
@@ -520,17 +566,33 @@ pub struct InitResponse {
     pub handle: Option<u64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The instance that failed, under `handle_scope: "group"`.
+    #[serde(default)]
+    pub instance: Option<String>,
+}
+
+/// Why `init_instance` refused, and for which instance when the handle serves
+/// a whole group.
+#[derive(Debug, Clone)]
+pub struct InitFailure {
+    pub instance: Option<String>,
+    pub error: String,
 }
 
 impl InitResponse {
-    pub fn into_result(self) -> Result<u64, String> {
+    pub fn into_result(self) -> Result<u64, InitFailure> {
         if self.ok {
-            self.handle
-                .ok_or_else(|| "the plugin reported ok with no handle".to_string())
+            self.handle.ok_or_else(|| InitFailure {
+                instance: None,
+                error: "the plugin reported ok with no handle".to_string(),
+            })
         } else {
-            Err(self
-                .error
-                .unwrap_or_else(|| "the plugin refused to create the instance".to_string()))
+            Err(InitFailure {
+                instance: self.instance,
+                error: self
+                    .error
+                    .unwrap_or_else(|| "the plugin refused to create the instance".to_string()),
+            })
         }
     }
 }
@@ -706,7 +768,7 @@ mod tests {
         // back handle 0 and let a later step fail confusingly instead.
         let r: InitResponse = serde_json::from_str(r#"{"ok":true}"#).expect("init response parses");
         let err = r.into_result().unwrap_err();
-        assert!(err.contains("handle"), "{err}");
+        assert!(err.error.contains("handle"), "{err:?}");
     }
 
     #[test]
@@ -715,6 +777,7 @@ mod tests {
         // renaming one is a breaking change no deserialise-side test would catch.
         let args = vec!["report.pdf".to_string()];
         let request = DispatchRequest {
+            instance: "primary",
             args: &args,
             docstring: None,
             table: None,
@@ -732,6 +795,7 @@ mod tests {
         let mut keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
         keys.sort();
         let mut expected = [
+            "instance",
             "args",
             "docstring",
             "table",
@@ -785,14 +849,56 @@ mod tests {
             instance: "primary",
             config: &config,
             options: OptionsJson::from(&crate::options::Options::default()),
+            concurrency: 4,
         };
         let value = serde_json::to_value(&request).expect("serialises");
         let mut keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
         keys.sort();
-        let mut expected = ["group", "instance", "config", "options"];
+        let mut expected = ["group", "instance", "config", "options", "concurrency"];
         expected.sort();
         assert_eq!(keys, expected);
         assert_eq!(value["config"], config);
+    }
+
+    #[test]
+    fn the_new_manifest_keys_default_to_the_abi_3_model() {
+        let plain: Manifest =
+            serde_json::from_str(r#"{"name":"w","version":"1","groups":["w"]}"#).expect("parses");
+        assert_eq!(plain.handle_scope, HandleScope::Instance);
+        assert!(plain.eager_init.is_empty() && plain.deprecated.is_empty());
+        let grouped: Manifest = serde_json::from_str(
+            r#"{"name":"w","version":"1","groups":["w"],"handle_scope":"group",
+                "eager_init":["w"],"deprecated":{"old":"w"}}"#,
+        )
+        .expect("parses");
+        assert_eq!(grouped.handle_scope, HandleScope::Group);
+        assert_eq!(grouped.deprecated.get("old").map(String::as_str), Some("w"));
+        serde_json::from_str::<Manifest>(
+            r#"{"name":"w","version":"1","groups":["w"],"handle_scope":"pool"}"#,
+        )
+        .expect_err("a scope the host does not know is refused, not degraded");
+    }
+
+    #[test]
+    fn a_group_init_request_carries_every_instance() {
+        let config = serde_json::json!({"dsn": "x"});
+        let request = GroupInitRequest {
+            group: "db",
+            instances: [(
+                "main",
+                GroupInstance {
+                    config: &config,
+                    options: OptionsJson::from(&crate::options::Options::default()),
+                },
+            )]
+            .into(),
+            concurrency: 2,
+        };
+        let value = serde_json::to_value(&request).expect("serialises");
+        assert_eq!(value["group"], "db");
+        assert_eq!(value["concurrency"], 2);
+        assert_eq!(value["instances"]["main"]["config"], config);
+        assert!(value["instances"]["main"]["options"].is_object());
     }
 
     #[test]

@@ -134,6 +134,7 @@ jobs:
           cargo fmt --check
           cargo fmt --check --manifest-path tests/fixtures/echo-plugin/Cargo.toml
           cargo fmt --check --manifest-path tests/fixtures/worker-plugin/Cargo.toml
+          cargo fmt --check --manifest-path tests/fixtures/group-plugin/Cargo.toml
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings

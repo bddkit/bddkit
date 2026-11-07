@@ -938,7 +938,12 @@ impl Registry {
                 }
             }
         }
-        registry.add_use_group_step(plugin_groups)?;
+        // A deprecated word switches exactly as the group it names does.
+        let mut words = plugin_groups.to_vec();
+        if let Some(plugins) = &registry.plugins {
+            words.extend(plugins.deprecated_words().map(str::to_string));
+        }
+        registry.add_use_group_step(&words)?;
         registry.check_plugin_conflicts(&expressions)?;
         registry.validate_macros()?;
         Ok(registry)
@@ -1063,6 +1068,23 @@ impl Registry {
     /// The macro definitions, with their bodies, in declaration order.
     pub fn macros(&self) -> &[MacroDef] {
         &self.macros
+    }
+
+    /// `(word, name, replacement group)` when `text` is `I use "<name>" <word>`
+    /// with a plugin's deprecated word, for `doctor`'s hint. `run` never asks.
+    pub fn deprecated_switch(&self, text: &str) -> Option<(String, String, String)> {
+        let Ok(Some((
+            StepTarget::Builtin {
+                id: StepId::UsePluginInstance,
+                ..
+            },
+            caps,
+        ))) = self.find(text)
+        else {
+            return None;
+        };
+        let group = self.plugins.as_ref()?.resolve_group(&caps[1]).to_string();
+        (group != caps[1]).then(|| (caps[1].clone(), caps[0].clone(), group))
     }
 
     pub fn macro_def(&self, index: usize) -> &MacroDef {
@@ -1534,9 +1556,7 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
         }
         StepId::EncryptWithAes => vars::encrypt_with_aes(w, a.cap(0), a.cap(1), a.cap(2)),
         StepId::UseApi => api::use_api(w, a.cap(0)),
-        StepId::UsePluginInstance => {
-            plugin::use_instance(w, a.cap(1), a.cap(0)).map_err(StepError::input)
-        }
+        StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)).await,
         StepId::UseConnection => db::use_connection(w, a.cap(0)),
         StepId::DebugOn => debug::debug_on(w),
         StepId::DebugOff => debug::debug_off(w),
