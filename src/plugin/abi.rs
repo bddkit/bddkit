@@ -37,7 +37,12 @@ use std::sync::LazyLock;
 ///
 /// 4: the first generation of the range (#205). It adds nothing by itself;
 /// every later optional key of the phase builds on it: a step spec's
-/// `expression`, `reads`, `writes` and `sets_vars` (#206).
+/// `expression`, `reads`, `writes` and `sets_vars` (#206), structured
+/// diagnostics and `scan` (#207), the dispatch keys `instance`, `attempt`,
+/// `source_dir`, `class`, `options_instance`, `output` and `global_vars`
+/// (#208), `handle_scope`, `eager_init`, `deprecated` and
+/// `bddkit_select_instance` (#209), `bddkit_failure_context` (#210), and
+/// `secrets` and `detail` in the config replies (#211).
 pub const ABI_VERSION: u32 = 4;
 
 /// The oldest ABI generation this host still loads.
@@ -63,7 +68,7 @@ pub enum Concurrency {
     ///
     /// The value set is closed on purpose: a scheduling mode the host does not
     /// implement cannot be degraded into one it does, so a new mode comes with
-    /// an `ABI_VERSION` bump rather than with a tolerant parse.
+    /// an `ABI_MIN` bump rather than with a tolerant parse.
     PerWorker,
 }
 
