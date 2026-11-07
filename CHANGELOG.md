@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/bddkit/bddkit/compare/v0.4.0...v0.4.1) - 2026-11-04
+
+### Added
+
+- upgrade keeps plugins the staged binary still accepts
+- resolve the version of plugin install owner/repo through the plugin index
+- one doctor row per plugin instance, and every refused instance reported
+- --default <group>=<name> and BDDKIT_DEFAULT_<GROUP> for every resource group
+- install the plugins a suite needs from its config
+- accept an empty resources.<group> that no plugin serves
+- *(plugins)* list the script plugin in the index (bddkit/bddkit#55)
+
+### Other
+
+- Merge pull request #201 from bddkit/feat/issue-191-doctor-plugin-rows
+- let the validation loop reject an instance in an unserved group
+- say an empty unserved group is accepted; fix a displaced test doc comment
+- render HTTP and SQL diagnostics from structured data
+- run the core's tests without the built-in HTTP API and databases
+- add a barrier step to the worker fixture and a one-evidence step to the echo fixture
+- move the debug-mode steps and the variable check helpers out of the API and DB step files
+- move the JSON matcher into the bddkit-crate-json crate
+- update the plugin index's ABI map
+- Merge pull request #175 from sergeym/docs/upgrade-force-abi
+- split CLAUDE.md into cascading per-subsystem files
+- say what upgrade --force leaves behind across an ABI bump (bddkit/bddkit#173)
+
 ## [0.4.0](https://github.com/bddkit/bddkit/compare/v0.3.4...v0.4.0) - 2026-10-30
 
 ### Added
