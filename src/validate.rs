@@ -110,6 +110,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         &caps,
                         step.docstring.as_deref(),
                         step.table.as_deref(),
+                        &base_dir,
                     );
                     if let Err(message) = checked {
                         problems.push(Problem {
@@ -328,6 +329,33 @@ pub(crate) fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), Str
     }
 }
 
+/// The absolute directory a plugin step's file sits in, from the directory the
+/// run knows it by. A file given as `a.feature` has the parent `""`, which
+/// stands for the working directory, and an included `../inc/x.feature` leaves
+/// a `..` in it, which is collapsed by name. No symlink is resolved:
+/// `canonicalize` would, and adds `\\?\` on Windows.
+// ponytail: `..` is dropped lexically, so a directory reached through a
+// symlink may differ from the real parent; `canonicalize` if that ever bites.
+pub(crate) fn source_dir(dir: &Path) -> String {
+    use std::path::Component;
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut clean = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other),
+        }
+    }
+    clean.display().to_string()
+}
+
 /// A plugin step is checked by its plugin, on the RAW step: no variable has a
 /// value yet, so captures, doc string and table are as written. One function
 /// for the three places a step can sit (a feature file, an include body, a
@@ -339,11 +367,15 @@ pub(crate) fn check_plugin_step(
     caps: &[String],
     docstring: Option<&str>,
     table: Option<&[Vec<String>]>,
+    base_dir: &Path,
 ) -> Result<(), String> {
     let (&StepTarget::Plugin { lib, step, .. }, Some(plugins)) = (target, reg.plugins()) else {
         return Ok(());
     };
-    let request = serde_json::json!({"args": caps, "docstring": docstring, "table": table});
+    let request = serde_json::json!({
+        "args": caps, "docstring": docstring, "table": table,
+        "source_dir": source_dir(base_dir),
+    });
     plugins
         .validate_step(lib, step, &request.to_string())
         .unwrap_or(Ok(()))
@@ -398,6 +430,7 @@ fn check_include_body_step(
             &caps,
             step.docstring.as_deref(),
             step.table.as_deref(),
+            base_dir,
         ),
         Ok(None) => Err(format!(
             "unknown step: {:?}{}",
@@ -418,6 +451,20 @@ fn render_chain(stack: &[(PathBuf, String)]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_dir_is_absolute_and_collapses_dots_without_touching_the_disk() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(source_dir(Path::new("")), cwd.display().to_string());
+        assert_eq!(
+            source_dir(Path::new("a/../b")),
+            cwd.join("b").display().to_string()
+        );
+        assert_eq!(
+            source_dir(Path::new("/x/y/../z")),
+            Path::new("/x/z").display().to_string()
+        );
+    }
+
     use super::*;
     use crate::feature::LoadedFeature;
     use crate::macros::MacroCatalog;

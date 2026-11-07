@@ -143,6 +143,43 @@ fn highlight_inner(code: &str, extension: &str, colorize: bool) -> String {
     out
 }
 
+/// A text as the debug prints show it. `json` is expected pretty-printed
+/// already and is masked by position and by value; `xml` and `html` are masked
+/// by value, then beautified; any other syntax is masked by value and kept as
+/// is. Masked before highlighting: colour codes may split what a masked value
+/// would otherwise match whole.
+pub(crate) fn render_text(
+    redactor: &crate::privacy::Redactor,
+    syntax: Option<&str>,
+    text: &str,
+) -> String {
+    match syntax {
+        Some("json") => highlight(&redactor.mask_json(text), "json"),
+        Some(markup @ ("xml" | "html")) => {
+            highlight(&beautify_markup(&redactor.mask(text)), markup)
+        }
+        _ => redactor.mask(text),
+    }
+}
+
+/// A title line and the headers under it, aligned; a name listed as
+/// sensitive shows `***` whatever the value's length.
+pub(crate) fn render_headers(
+    redactor: &crate::privacy::Redactor,
+    title: &str,
+    headers: &[(String, String)],
+    sensitive_headers: &[String],
+) -> String {
+    let shown: Vec<_> = headers
+        .iter()
+        .map(|(name, value)| {
+            let value = crate::diagnostic::shown_header(sensitive_headers, name, value, redactor);
+            (name.clone(), value)
+        })
+        .collect();
+    format!("{title}\n{}", headers_table(&shown))
+}
+
 pub fn print_body(w: &World) -> Result<(), String> {
     let ex = super::assert::last(w)?;
     match markup::classify(markup::content_type(&ex.resp_headers)) {
@@ -150,20 +187,12 @@ pub fn print_body(w: &World) -> Result<(), String> {
             let v = ex.json()?;
             let pretty = serde_json::to_string_pretty(&v)
                 .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            // Masked before highlighting: colour codes may split what a
-            // masked value would otherwise match whole.
-            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
+            debug_eprintln!(w, "{}", render_text(&w.redactor, Some("json"), &pretty));
         }
-        BodyKind::Xml => debug_eprintln!(
-            w,
-            "{}",
-            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "xml")
-        ),
-        BodyKind::Html => debug_eprintln!(
-            w,
-            "{}",
-            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "html")
-        ),
+        BodyKind::Xml => debug_eprintln!(w, "{}", render_text(&w.redactor, Some("xml"), &ex.body)),
+        BodyKind::Html => {
+            debug_eprintln!(w, "{}", render_text(&w.redactor, Some("html"), &ex.body))
+        }
         BodyKind::Plain => debug_eprintln!(w, "{}", ex.body),
     }
     Ok(())

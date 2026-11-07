@@ -1251,6 +1251,10 @@ impl Registry {
                             step.docstring.as_deref(),
                             // A macro body step has no table.
                             None,
+                            definition
+                                .source
+                                .parent()
+                                .unwrap_or(std::path::Path::new(".")),
                         )
                         .map_err(|e| {
                             format!(

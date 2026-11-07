@@ -416,10 +416,12 @@ async fn run_step(
             } else {
                 None
             };
-            let effective = match &layer {
+            let mut effective = match &layer {
                 Some(layer) => base.apply(layer).map_err(StepError::input)?,
                 None => base,
             };
+            let source_dir =
+                crate::validate::source_dir(source.parent().unwrap_or(std::path::Path::new("")));
             let shown = reg.display_text(&step.text, &world.redactor);
             let mut polling = layer
                 .as_ref()
@@ -459,6 +461,8 @@ async fn run_step(
                     } else {
                         Default::default()
                     },
+                    attempt: attempts + 1,
+                    source_dir: source_dir.clone(),
                 })
                 .map_err(|error| {
                     StepError::plugin(format!("failed to encode the plugin request: {error}"))
@@ -508,14 +512,30 @@ async fn run_step(
                 let mut result = result;
                 let shown = crate::plugin::reply::absorb(&result, &world.redactor, &instance)
                     .map_err(StepError::plugin)?;
+                // Read before anything is written, so a reply whose `output` is
+                // refused changes nothing and its diagnostics still show.
+                let output = crate::plugin::reply::outputs(&result).map_err(|why| {
+                    StepError::plugin(why)
+                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                })?;
                 if matches!(result.status, Status::Passed) {
                     // Variables are published only on success: an
                     // intermediate observation must not leak into the
                     // scenario.
-                    for (name, value) in std::mem::take(&mut result.vars) {
-                        world.vars.set(&name, value);
-                    }
+                    crate::plugin::reply::publish_vars(world, &mut result);
                 }
+                // Printed once per reply, after everything it revealed is
+                // registered, its variables included: a passing reply may
+                // quote a value it just stored under a sensitive name. A
+                // polled step prints once per attempt.
+                crate::plugin::reply::print_output(&output, &world.redactor);
+                let class = if matches!(result.status, Status::Passed) {
+                    None
+                } else {
+                    let (class, note) = crate::plugin::reply::class(&result, &plugins);
+                    world.warnings.extend(note);
+                    class
+                };
                 // Whatever the status: the console shows diagnostics only of
                 // a failure, the stream of every reply.
                 for diagnostic in &shown {
@@ -531,22 +551,50 @@ async fn run_step(
                 match result.status {
                     Status::Passed => return Ok(()),
                     Status::Fatal => {
-                        return Err(failure(StepError::plugin(result.message())));
+                        return Err(failure(StepError::new(
+                            class.unwrap_or(FailureKind::Plugin),
+                            result.message(),
+                        )));
                     }
                     Status::NotYet if !assertion => {
-                        return Err(failure(StepError::plugin(format!(
-                            "a plugin action answered not_yet, which only an assertion may do: {}",
-                            result.message()
-                        ))));
+                        return Err(failure(StepError::new(
+                            class.unwrap_or(FailureKind::Plugin),
+                            format!(
+                                "a plugin action answered not_yet, which only an assertion may do: {}",
+                                result.message()
+                            ),
+                        )));
                     }
                     Status::NotYet => match &mut polling {
                         // Without an armed modifier there is no second
                         // attempt, so not_yet is simply a failure.
                         None => {
-                            return Err(failure(StepError::assertion(result.message())));
+                            return Err(failure(StepError::new(
+                                class.unwrap_or(FailureKind::Assertion),
+                                result.message(),
+                            )));
                         }
                         Some(polling) => {
-                            let error = failure(StepError::assertion(result.message()));
+                            let error = failure(StepError::new(
+                                class.unwrap_or(FailureKind::Assertion),
+                                result.message(),
+                            ));
+                            // `options_instance` is read from the first `not_yet` only.
+                            if attempts == 0
+                                && let Some(name) = &result.options_instance
+                            {
+                                // Before the first wait, so it already sleeps
+                                // this instance's interval.
+                                let base = plugins
+                                    .options_for(&group, name)
+                                    .map_err(|e| failure(StepError::plugin(e)))?;
+                                effective = match &layer {
+                                    Some(layer) => base.apply(layer),
+                                    None => Ok(base.clone()),
+                                }
+                                .map_err(|e| failure(StepError::plugin(e)))?;
+                                polling.retarget(&effective.polling);
+                            }
                             attempts += 1;
                             world.trace.attempt(attempts, &error.message);
                             polling.after_not_yet(&error).await?

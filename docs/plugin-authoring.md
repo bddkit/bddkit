@@ -179,10 +179,10 @@ If your pattern also matches a bddkit built-in step, another plugin's step, or a
 Request:
 
 ```json
-{ "args": ["report.pdf", "backups"], "docstring": null, "table": null }
+{ "args": ["report.pdf", "backups"], "docstring": null, "table": null, "source_dir": "/home/me/suite/features" }
 ```
 
-All three keys are always present, and nothing is interpolated: the captures (one value per parameter of an `expression`), doc string and table are as written in the feature file (after a Scenario Outline's `<column>` placeholders are substituted), `<<variable>>` slots included. A step in a macro body has `table: null`, and its captures may hold the macro's own `<<param>>` slots. Check what can be checked without one — a script's syntax, a literal that is not a number — and accept anything that holds a slot.
+All four keys are always present, and `source_dir` is the absolute directory of the file the step is written in: the feature file, the included file, or the macro file for a macro body (a run started with a relative path still gets an absolute one; `..` is collapsed by name, no symlink is resolved). Nothing is interpolated: the captures (one value per parameter of an `expression`), doc string and table are as written in the feature file (after a Scenario Outline's `<column>` placeholders are substituted), `<<variable>>` slots included. A step in a macro body has `table: null`, and its captures may hold the macro's own `<<param>>` slots. Check what can be checked without one — a script's syntax, a literal that is not a number — and accept anything that holds a slot.
 
 Reply: the same envelope as `bddkit_validate_config`, `{"ok": true}` or `{"ok": false, "error": "…"}`. Write `error` so it reads after the step's file and line. Do not quote a `secret_groups` argument or a `{name:secret}` parameter in it: validation errors are printed without the secret filter.
 
@@ -300,11 +300,13 @@ Request:
   "options": { "polling": { "timeout_secs": 30, "interval_ms": 100 } },
   "evidence": false,
   "vars": {},
-  "instance": "backups"
+  "instance": "backups",
+  "attempt": 1,
+  "source_dir": "/home/me/suite/features"
 }
 ```
 
-All nine keys are always present; `docstring` and `table` are `null` when the step carries neither.
+All twelve keys are always present; `docstring` and `table` are `null` when the step carries neither.
 
 - `args` — the regex capture groups in order, or one value per parameter of an `expression`, **already interpolated**: `<<variable>>`, `<<unique()>>` and `<<null>>` have been resolved before the payload was built. A plugin never sees raw step text and never sees bddkit's variable syntax.
 - `docstring` — the step's doc string, interpolated, or `null`.
@@ -314,6 +316,8 @@ All nine keys are always present; `docstring` and `table` are `null` when the st
 - `debug` — true while the scenario is inside `I am in debug mode`. It resets at the scenario boundary.
 - `evidence` — true when this step's evidence may be kept: always under `bddkit run --events <path> --evidence` (`all`), for a marked step under `--evidence=marked`, and for every step under `--evidence=failures`, where it is held and written only if the scenario fails (a file the plugin wrote, or the host's copy of one named outside the artifact root, stays on disk either way). So a plugin may attach a screenshot or a response that nobody would read otherwise. When it is false, a `passed` reply's diagnostics are dropped, and producing them is wasted work. Sent on every attempt of a polled assertion.
 - `vars` — the variables visible to a `wants_vars` step (`{}` for any other), taken again on every dispatch (so on each attempt of a polled step), `{name: {"value": string|null, "secret": bool}}`. The nearest definition of a name wins (a macro frame over the frames below it, those over the file's globals); inside an `I include`d scenario only that scenario's own variables are visible. `value` is `null` for a variable holding `<<null>>`. `secret` is true when the name contains a privacy word (by default only `secret`), the value is already in the file's secret set, or the variable was bound from a `{name:secret}` macro parameter, so a plugin can keep it out of what it prints. Under `--reveal` (`privacy.reveal`) it is false for everything. Example: `"vars": {"token": {"value": "abc", "secret": true}, "city": {"value": "Riga", "secret": false}}`.
+- `attempt` — 1-based within the current eventual assertion: `1` on the first dispatch of a polled step, `2` on the next, and `1` for a step that is not polled.
+- `source_dir` — the absolute directory of the file the step is written in, as for `bddkit_validate_step`. Resolve a relative path a tester wrote against it.
 - `options` — the polling options resolved for this instance, after the global → instance cascade and after any armed eventual-assertion modifier. Informational: **the retry loop is the host's**, see section 5.
 
 Reply:
@@ -345,6 +349,10 @@ Reply:
 - `secrets` (optional, default `[]`) — strings the host adds to its privacy filter, **on every status**: a failing reply is where a value is most likely to be quoted. They are registered before anything else in the reply is read, so `error`, the diagnostics and a `not_yet` message are masked too. The filter's `privacy.min_length` applies as to any value: a shorter one is not added (only position can hide it). Use it for what you know is sensitive and the host cannot — a signed URL, an access key you generated.
 - `scan` (optional, default `[]`) — text the host checks for sensitive field names, on every status; it registers what it finds and prints nothing. An item is `{"kind": "json", "content": "…"}`, or `{"kind": "form" | "query", "pairs": [[name, value], …]}`. A `json` item is tried as JSON whatever its origin, and every string under a sensitive name joins the set. The pairs of a `form` or `query` item are raw, not encoded, so a value holding `&`, `=`, `+` or `%XX` is registered whole; send the text parts of a multipart body as `form`. Use it for what a step set before the request leaves (a body with a `password` field) and for the response after it arrives, whether or not evidence is on. Any other `kind` fails the step with class `plugin`.
 - `error` (optional, default `null`) — the failure message. See section 5.
+- `class` (optional) — the failure class of a `fatal` or `not_yet` reply: `assertion`, `transport`, `db_connection`, `db_statement`, `input` or `unclassified`. It reaches the JUnit `type` and the stream's class. An unknown value counts as absent, and the host warns once per run naming it. When absent the class is `plugin` on a `fatal` and on an action's `not_yet`, and `assertion` on an assertion's `not_yet`, as for an ABI 3 plugin. A polled assertion that runs out keeps the class of its last attempt, so a service that stayed down ends as `transport`.
+- `options_instance` (optional, on a `not_yet`) — the instance, of the same group, whose polling options govern this poll. The host reads it from the first `not_yet` of an eventual assertion, before the first wait: it takes that instance's options in place of the selected one's, applies the armed modifier's layer on top again, and keeps the deadline counted from the poll's start. An instance the group does not declare fails the step with class `plugin`. Use it when the step polls on behalf of another instance, as a response assertion does for the API the response came from.
+- `output` (optional) — lines the host prints to stderr when it has read the reply, on any status and once per attempt of a polled step. An item is `{"text": "…", "syntax": "json" | "xml" | "html" | null}` or `{"title": "…", "headers": [[name, value], …], "sensitive_headers": ["…"]}`. They are rendered as the debug prints are: `json` is pretty-printed and masked by position and by value, `xml` and `html` are masked by value and then beautified, `null` is masked by value and printed as is; each is highlighted when stderr is a terminal. A `headers` item prints its title and aligned `name : value` lines, `***` for a listed name whatever the length, revealed by `--reveal`. Values the same reply registers are masked in it. It never reaches stdout or a file's dump. An item of neither shape fails the step with class `plugin`.
+- `global_vars` (optional, default `{}`) — written like `set variable … global`, after `vars`, with the same warning when a file-level variable of the name shadows it. Kept only when `status` is `passed`. A name in both `vars` and `global_vars` ends as `global_vars` says.
 
 **The host filters what you send back.** `error` and every diagnostic pass through bddkit's privacy filter before they are printed or written, so a value the tester has marked as secret (a `secret` step parameter, a variable with a privacy word in its name, a sensitive header, a password in the config) appears as `***` — including inside a message you quote it in. A diagnostic whose `kind` is `json` is also masked by name: a string or number under a key with `password`, `secret` or `token` as a word is hidden where it stands, and the value joins the file's set. You still receive the real values in `args`, the docstring and the table; masking never changes what a plugin is given. Mark your own secrets with the reply's `secrets` and `scan`, and a step argument with the step's `secret_groups`.
 
@@ -431,7 +439,7 @@ Guard the trivial exports too. "Every export is guarded" is an invariant a reade
 
 **Never print to stdout.** bddkit composes a whole feature file's output into one string and writes it with a single `print!`, precisely so that parallel workers cannot interleave. A line your plugin prints lands in the middle of another file's failure dump, attributed to the wrong test. Return `diagnostics` instead — they end up inside the dump, attached to the step that produced them.
 
-**stderr** is the escape hatch, and only for tracing while someone is debugging: bddkit's own debug steps use it, precisely because it is outside the per-file dump. It still interleaves between parallel workers, so gate it behind the request's `debug` flag and tell your users to set `concurrency: 1` when they turn it on. Nothing you write there ends up in the test report.
+**stderr** is for tracing while someone is debugging, and the way to reach it is the reply's `output`, not a `write` of your own: bddkit's own debug steps print to stderr precisely because it is outside the per-file dump, and `output` gives you the same print, masked and rendered as theirs, in one write. Return `output` only when the request's `debug` is true, unless the step exists to print. Two workers' blocks may still arrive in either order, so tell your users to set `concurrency: 1` when they turn debugging on. What you write to stderr yourself is neither masked nor kept apart from other workers' lines, and nothing there ends up in the test report.
 
 **`create_dir_all(artifacts_dir)` before writing into it.** The host allocates a fresh unique path per dispatch but does not create the directory, because most dispatches write nothing and a `mkdir` per step for the rare case is waste. `workspace_dir` is the opposite and the exception: the host creates that one before handing it over, because it is one directory per feature file rather than a fresh one per dispatch, and several writers share it. Do not `create_dir_all` it and do not delete it.
 
@@ -443,7 +451,7 @@ Guard the trivial exports too. "Every export is guarded" is an invariant a reade
 
 **Never sleep inside a plugin.** `not_yet` means "I looked, just now, and it was not there". The host owns the retry loop, the interval and the timeout — it is what the tester armed with `I expect the next assertion to pass within 30 seconds, checking every 500 milliseconds`, and what the `options.polling` cascade configures. A plugin that sleeps burns the host's budget from inside and makes the timeout mean nothing.
 
-Every attempt is a full `bddkit_dispatch` with a fresh `artifacts_dir`. Re-observe: query again, fetch again, list the bucket again. Do not cache the first answer.
+Every attempt is a full `bddkit_dispatch` with a fresh `artifacts_dir`. Re-observe: query again, fetch again, list the bucket again. The first answer may be the saved one, never a cached second.
 
 **Without an armed modifier there is no second attempt**, and `not_yet` is simply a failure. That is deliberate: an assertion is not implicitly eventual, the tester opts in per step.
 

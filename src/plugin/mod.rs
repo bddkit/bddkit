@@ -10,7 +10,7 @@ use crate::options::Options;
 use abi::{DispatchResult, GroupInitRequest, GroupInstance, HandleScope, InitRequest, OptionsJson};
 use anyhow::{Context, Result, bail};
 use library::Library;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -83,6 +83,9 @@ pub struct Plugins {
     /// deprecated switch word -> the group that replaces it, over every
     /// loaded plugin (`check_deprecated_words`).
     words: BTreeMap<String, String>,
+    /// Failure classes a reply named that the host does not know, so each is
+    /// warned about once per run.
+    unknown_classes: Mutex<BTreeSet<String>>,
 }
 
 /// Shared across worker tasks behind an `Arc`, so losing either half has to
@@ -248,6 +251,7 @@ impl Plugins {
             registry: Mutex::new(BTreeMap::new()),
             concurrency,
             words,
+            unknown_classes: Mutex::new(BTreeSet::new()),
         };
 
         // Eager, cheap, no connections opened: a typo in the config must exit 2
@@ -494,6 +498,14 @@ impl Plugins {
     pub fn is_declared(&self, group: &str, instance: &str) -> bool {
         self.declared
             .contains_key(&(group.to_string(), instance.to_string()))
+    }
+
+    /// True the first time this run sees `name` as a class no plugin may use.
+    pub fn first_unknown_class(&self, name: &str) -> bool {
+        self.unknown_classes
+            .lock()
+            .expect("unknown classes")
+            .insert(name.to_string())
     }
 
     pub fn options_for(&self, group: &str, instance: &str) -> Result<&Options, String> {
@@ -1190,7 +1202,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 27);
+        assert_eq!(plugins.step_count(), 29);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
