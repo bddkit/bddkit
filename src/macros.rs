@@ -316,7 +316,7 @@ mod tests {
     fn registry_rejects_a_conflict_through_an_alternation() {
         let path = fixture(
             "alternation-conflict",
-            "- step: 'the response code is 200/ok'\n  do: [Show all variables]\n",
+            "- step: 'I sleep 5/x seconds'\n  do: [Show all variables]\n",
         );
 
         let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();
@@ -371,7 +371,7 @@ mod tests {
     fn registry_matches_macro_and_captures_arguments() {
         let path = fixture(
             "registry-match",
-            "- step: 'I login as \"{email}\"'\n  do: [the response code is 200]\n",
+            "- step: 'I login as \"{email}\"'\n  do: [Show all variables]\n",
         );
         let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap();
 
@@ -387,7 +387,7 @@ mod tests {
         // longer group `index + 1`; `display_text` must go by the parameter's own.
         let path = fixture(
             "secret-after-optional",
-            "- step: 'I wait {n:uint} then log in with \"{pw:secret}\"'\n  do: [the response code is 200]\n",
+            "- step: 'I wait {n:uint} then log in with \"{pw:secret}\"'\n  do: [Show all variables]\n",
         );
         let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap();
         let redactor = crate::privacy::Redactor::new(
@@ -458,36 +458,36 @@ mod tests {
     fn registry_rejects_macro_conflicting_with_builtin() {
         let path = fixture(
             "builtin-conflict",
-            "- step: 'the response code is {code}'\n  do: [Show all variables]\n",
+            "- step: 'I sleep {n:uint} seconds'\n  do: [Show all variables]\n",
         );
 
         let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();
 
-        assert!(error.contains("the response code is"), "{error}");
+        assert!(error.contains("I sleep"), "{error}");
     }
 
     #[test]
     fn registry_rejects_partial_overlap_with_builtin() {
         let path = fixture(
             "partial-builtin-conflict",
-            "- step: 'the response code is 2{tail}'\n  do: [Show all variables]\n",
+            "- step: 'I sleep 2{tail} seconds'\n  do: [Show all variables]\n",
         );
 
         let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();
 
-        assert!(error.contains("the response code is"), "{error}");
+        assert!(error.contains("I sleep"), "{error}");
     }
 
     #[test]
     fn registry_rejects_unicode_digit_overlap_with_builtin() {
         let path = fixture(
             "unicode-digit-conflict",
-            "- step: 'the response code is ٢{tail}'\n  do: [Show all variables]\n",
+            "- step: 'I sleep ٢{tail} seconds'\n  do: [Show all variables]\n",
         );
 
         let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();
 
-        assert!(error.contains("the response code is"), "{error}");
+        assert!(error.contains("I sleep"), "{error}");
     }
 
     #[test]
@@ -543,7 +543,7 @@ mod tests {
     fn registry_accepts_nested_macros() {
         let path = fixture(
             "nested",
-            "- step: I do inner\n  do: [the response code is 200]\n- step: I do outer\n  do: [I do inner]\n",
+            "- step: I do inner\n  do: [Show all variables]\n- step: I do outer\n  do: [I do inner]\n",
         );
 
         let registry = Registry::with_macros(MacroCatalog::load(&[path]).unwrap());

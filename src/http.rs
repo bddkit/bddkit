@@ -1,4 +1,4 @@
-use crate::diagnostic::{BodyForm, HttpDiagnostic, HttpSide, truncate};
+use crate::diagnostic::{BodyForm, HttpDiagnostic, HttpSide, register_header, truncate};
 use crate::failure::StepError;
 use crate::hawk;
 use crate::options::Options;
@@ -655,34 +655,6 @@ impl HttpState {
             },
             api: recipe.api.clone(),
         })
-    }
-}
-
-/// Registers a sensitive header's value whole, and the part of it that travels
-/// on its own: the credential of `Authorization: Bearer <credential>`, each
-/// value of `Cookie`, the cookie value of `Set-Cookie` (not its attributes).
-pub(crate) fn register_header(redactor: &Redactor, name: &str, value: &str) {
-    redactor.secret(value);
-    let parts: Vec<&str> = match name.to_ascii_lowercase().as_str() {
-        "authorization" | "proxy-authorization" => {
-            value.split_once(' ').map(|(_, c)| c).into_iter().collect()
-        }
-        "cookie" => value
-            .split(';')
-            .filter_map(|pair| pair.split_once('='))
-            .map(|(_, v)| v)
-            .collect(),
-        "set-cookie" => value
-            .split(';')
-            .next()
-            .and_then(|pair| pair.split_once('='))
-            .map(|(_, v)| v)
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    };
-    for part in parts {
-        redactor.secret(part.trim());
     }
 }
 

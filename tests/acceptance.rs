@@ -1,10 +1,14 @@
 mod common;
 
 use std::process::Command;
+#[cfg(not(feature = "dev-unreserve"))]
 use std::sync::Arc;
+#[cfg(not(feature = "dev-unreserve"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(not(feature = "dev-unreserve"))]
 use axum::routing::post;
+#[cfg(not(feature = "dev-unreserve"))]
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
@@ -32,6 +36,7 @@ fn all_feature_files_pass() {
 // requests hang until timeout. A separate worker thread fixes this.
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn all_api_feature_files_pass_against_the_stub() {
     let base = common::spawn().await;
 
@@ -125,6 +130,8 @@ fn json_assertions_work_over_a_variable_a_plugin_published() {
     );
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 async fn spawn_eventual_post_stub(ready_on: Option<usize>) -> (String, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = calls.clone();
@@ -156,6 +163,8 @@ async fn spawn_eventual_post_stub(ready_on: Option<usize>) -> (String, Arc<Atomi
     (format!("http://{address}/"), calls)
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn write_eventual_post_project(base: &str, name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -193,6 +202,7 @@ fn write_eventual_post_project(base: &str, name: &str) -> std::path::PathBuf {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn eventual_post_response_replays_the_saved_method_and_body() {
     let (base, calls) = spawn_eventual_post_stub(Some(2)).await;
     let config = write_eventual_post_project(&base, "eventual-post-success");
@@ -215,6 +225,8 @@ async fn eventual_post_response_replays_the_saved_method_and_body() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 async fn spawn_eventual_absence_stub(ready_on: usize) -> String {
     let calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new().route(
@@ -245,6 +257,8 @@ async fn spawn_eventual_absence_stub(ready_on: usize) -> String {
     format!("http://{address}/")
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn write_eventual_absence_project(base: &str, name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -277,6 +291,7 @@ fn write_eventual_absence_project(base: &str, name: &str) -> std::path::PathBuf 
 /// Issue #22, item 7: "wait for absence" must be explicitly validated, not just
 /// assumed to work by composition with the existing polling mechanism.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn eventual_absence_polls_until_the_node_disappears() {
     let base = spawn_eventual_absence_stub(2).await;
     let config = write_eventual_absence_project(&base, "eventual-absence-success");
@@ -300,6 +315,7 @@ async fn eventual_absence_polls_until_the_node_disappears() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn eventual_post_timeout_reports_last_mismatch_and_final_exchange() {
     let (base, _calls) = spawn_eventual_post_stub(None).await;
     let config = write_eventual_post_project(&base, "eventual-post-timeout");
@@ -590,6 +606,7 @@ fn a_config_without_any_api_resource_runs_a_non_http_scenario() {
 /// failure happens as an ordinary step failure on first use, not a panic
 /// and not a startup rejection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_config_without_any_api_resource_fails_at_first_http_step() {
     let dir = std::env::temp_dir().join("bddkit-no-api-fail-test");
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -746,6 +763,7 @@ fn a_positional_path_overrides_the_config_paths() {
 // moves-to: api
 /// Gate M4: one scenario reaches two different APIs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn one_scenario_can_call_two_different_apis() {
     let primary = common::spawn().await;
     let secondary = common::spawn_secondary().await;
@@ -809,6 +827,7 @@ async fn one_scenario_can_call_two_different_apis() {
 // moves-to: api
 /// Gate: API switch inside an include persists after the include returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_api_switch_inside_an_include_stays_switched_after_it_returns() {
     let primary = common::spawn().await;
     let secondary = common::spawn_secondary().await;
@@ -1018,6 +1037,7 @@ fn print_table_aligns_interpolated_cells_on_stderr() {
 /// `Print response body as "<path>"` cannot work without structure: for
 /// text/plain this is an explicit error, not a silent degradation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn print_body_as_path_fails_for_plain_content_type() {
     let base = common::spawn().await;
     let dir = std::env::temp_dir().join(format!("bddkit-debug-plain-{}", std::process::id()));
@@ -1065,6 +1085,7 @@ async fn print_body_as_path_fails_for_plain_content_type() {
 /// HTML through the XML-only XPath engine and fail on anything but strict,
 /// fully-closed, fully-quoted XHTML. It must now succeed on real HTML.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn print_body_as_path_succeeds_on_real_world_html() {
     let base = common::spawn().await;
     let dir = std::env::temp_dir().join(format!("bddkit-debug-html-loose-{}", std::process::id()));
@@ -1253,6 +1274,7 @@ fn a_file_in_two_chains_fails_the_startup() {
 /// An unreachable DB — rejected BEFORE the first request, so code 2, not 1.
 /// Invariant 6: 1 is reserved for a failed scenario.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_unreachable_database_fails_the_startup_with_code_two() {
     let dir = std::env::temp_dir().join(format!("bddkit-startup-exit-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -1645,6 +1667,7 @@ fn doctor_reports_a_healthy_suite_and_exits_zero() {
 /// caller can plant a typo or a tag; an empty one writes no feature file at
 /// all. `extra` is appended after the API block — indented, it adds to
 /// `resources:`; at column 0 it adds a top-level key.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_write_doctor_project(
     name: &str,
     base: &str,
@@ -1800,10 +1823,13 @@ fn doctor_include_pair(name: &str, caller: &str, helper: &str) -> (Option<i32>, 
     )
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 const TEAM_CALLER: &str = "Feature: only\n  Scenario: one\n    Given I include \"helper.feature\"\n    And extract \"id\" from JSON as \"team_id\"\n";
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_include_hints_follow_with_prefix_and_ignore_an_outline_placeholder() {
     // `with prefix "a"` renames the export, so the extract is still a hint.
     let (code, stdout) = doctor_include_pair(
@@ -1826,6 +1852,7 @@ fn doctor_include_hints_follow_with_prefix_and_ignore_an_outline_placeholder() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_hints_at_an_extract_that_reads_the_response_an_include_left_behind() {
     let (code, stdout) = doctor_include_pair(
         "doctor-include-extract",
@@ -1851,6 +1878,7 @@ fn doctor_hints_at_an_export_the_helper_never_sets() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_stays_quiet_about_a_helper_that_exports_what_it_sets() {
     let (code, stdout) = doctor_include_pair(
         "doctor-include-quiet",
@@ -1878,6 +1906,7 @@ fn doctor_stays_quiet_about_a_helper_that_exports_what_it_sets() {
 /// the scenario, and `run` does not refuse the config — a `--tag` may keep the
 /// scenario out. `doctor` applies no filter, so it is the one place to say so.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
     let cfg = http_write_doctor_project(
         "doctor-unserved",
@@ -1906,6 +1935,7 @@ fn doctor_reports_a_step_whose_resource_kind_declares_nothing() {
 /// verdict on a train. The `base_url` here points at a closed port, and the
 /// static run must still come back clean.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_without_live_leaves_an_unreachable_base_url_alone() {
     let cfg = http_write_doctor_project(
         "doctor-offline",
@@ -1930,6 +1960,7 @@ fn doctor_without_live_leaves_an_unreachable_base_url_alone() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_live_reports_an_unreachable_base_url() {
     let cfg = http_write_doctor_project(
         "doctor-live",
@@ -1966,6 +1997,7 @@ fn doctor_live_reports_an_unreachable_base_url() {
 /// carries the same name, and an API pointed at a closed port would supply the
 /// exit code on its own, so a laxer test passes with the live probe deleted.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_live_reports_every_dead_connection_by_name() {
     let cfg = http_write_doctor_project(
         "doctor-dsn",
@@ -2010,6 +2042,7 @@ fn doctor_live_reports_every_dead_connection_by_name() {
 /// someone points `default_srp` at it — and `doctor`, which reports on every
 /// declared resource, would be stricter than the run it is meant to predict.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
     let cfg = http_write_doctor_project(
         "run-srp",
@@ -2042,6 +2075,7 @@ fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
 /// offline. The invariant is the pairing, not either message: whatever `run`
 /// refuses statically, a static `doctor` must refuse too.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
     let cfg = http_write_doctor_project(
         "doctor-baddsn",
@@ -2169,6 +2203,7 @@ fn doctor_json_carries_the_env_the_status_and_every_check() {
 /// A static run reports the probe of an API resource it did not make.
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_json_reports_the_api_probe_a_static_run_did_not_make() {
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
         .args(["doctor", "--config", "tests/api/acceptance.yaml", "--json"])
@@ -2221,6 +2256,7 @@ fn the_run_subcommand_is_how_a_suite_is_started() {
 /// plus exactly the inserted block. Reordered keys, a requoted scalar or a
 /// swallowed final newline all fail here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn resource_add_inserts_exactly_the_block_and_probes_the_new_api() {
     let base = common::spawn().await;
     let cfg = http_write_doctor_project(
@@ -2265,6 +2301,7 @@ async fn resource_add_inserts_exactly_the_block_and_probes_the_new_api() {
 /// The probe is on by default here — the resource being added is what the
 /// invocation is about — and a resource that cannot answer is not written.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_writes_nothing_when_the_probe_fails() {
     let cfg = http_write_doctor_project(
         "resource-add-dead",
@@ -2307,6 +2344,7 @@ fn resource_add_writes_nothing_when_the_probe_fails() {
 /// `--no-check` skips the probe and nothing else: the same closed port, and
 /// the resource is written.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_no_check_writes_a_resource_that_is_not_up_yet() {
     let cfg = http_write_doctor_project(
         "resource-add-nocheck",
@@ -2344,6 +2382,7 @@ fn resource_add_no_check_writes_a_resource_that_is_not_up_yet() {
 /// Insert only, and the refusal is what a script reads: exit 1, the block on
 /// stdout, the file untouched.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_refuses_a_name_that_is_already_taken() {
     let cfg = http_write_doctor_project(
         "resource-add-taken",
@@ -2377,6 +2416,7 @@ fn resource_add_refuses_a_name_that_is_already_taken() {
 /// A typo in a field name is an error, not a silently stored key — the whole
 /// reason the flags are checked against a list at all.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_names_a_field_that_does_not_exist() {
     let cfg = http_write_doctor_project(
         "resource-add-typo",
@@ -2423,6 +2463,7 @@ fn resource_add_names_a_field_that_does_not_exist() {
 /// config under the name being written. That is a refusal like any other —
 /// looking it up by index made the process panic with exit 101.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_refuses_a_name_that_expands_to_something_else() {
     let cfg = http_write_doctor_project(
         "resource-add-expanding-name",
@@ -2467,6 +2508,7 @@ fn resource_add_refuses_a_name_that_expands_to_something_else() {
 /// where the reader will paste it: under `resources:`, which means carrying the
 /// group key whenever the config does not have that group yet.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_prints_the_group_key_for_a_group_the_config_lacks() {
     let cfg = http_write_doctor_project(
         "resource-add-new-group",
@@ -2768,6 +2810,7 @@ fn steps_list_no_config_ignores_a_present_bddkit_yaml() {
 /// proof the flag actually skips loading `bddkit.yaml`.
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_fields_no_config_ignores_a_present_bddkit_yaml() {
     let dir = std::env::temp_dir().join(format!(
         "bddkit-resource-fields-no-config-{}",
@@ -2960,6 +3003,7 @@ fn run_junit_writes_a_well_formed_report_for_a_failing_run() {
 }
 
 // moves-to: api (helper: serves the tests that talk to the HTTP stub)
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_write_report_project(base: &str, name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -2996,6 +3040,7 @@ fn http_write_report_project(base: &str, name: &str) -> std::path::PathBuf {
 /// The failed request's exchange is part of the failure in the JUnit report.
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn the_junit_failure_holds_the_http_exchange() {
     let base = common::spawn().await;
     let config = http_write_report_project(&base, "junit-http");
@@ -3148,6 +3193,7 @@ fn an_unwritable_report_path_stops_the_run_before_any_step_and_doctor_reports_it
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_unwritable_report_path_is_a_startup_failure_and_doctor_reports_it() {
     let (base, calls) = spawn_eventual_post_stub(Some(1)).await;
     let config = write_eventual_post_project(&base, "unwritable-report");
@@ -3786,6 +3832,8 @@ fn steps_list_includes_both_include_steps() {
 
 /// Answers what an upload endpoint would care about: was it multipart, and
 /// did the file and the text field arrive.
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 async fn spawn_upload_stub() -> String {
     let app = Router::new().route(
         "/upload",
@@ -3814,6 +3862,8 @@ async fn spawn_upload_stub() -> String {
     format!("http://{address}/")
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 const UPLOAD_FEATURE: &str = r#"Feature: upload
   Scenario: a file and a field go out as multipart
     Given the request form parameters are:
@@ -3827,6 +3877,8 @@ const UPLOAD_FEATURE: &str = r#"Feature: upload
       """
 "#;
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn write_upload_fixture(cfg: &std::path::Path) {
     let fixtures = cfg.parent().expect("config dir").join("features/fixtures");
     std::fs::create_dir_all(&fixtures).expect("mkdir fixtures");
@@ -3835,6 +3887,7 @@ fn write_upload_fixture(cfg: &std::path::Path) {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_file_is_uploaded_as_multipart_with_its_form_fields() {
     let base = spawn_upload_stub().await;
     let cfg = http_write_doctor_project("upload-ok", &base, UPLOAD_FEATURE, "");
@@ -3856,6 +3909,7 @@ async fn a_file_is_uploaded_as_multipart_with_its_form_fields() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_missing_literal_attachment_stops_the_run_before_any_request_with_exit_two() {
     let cfg =
         http_write_doctor_project("upload-missing", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
@@ -3872,6 +3926,7 @@ fn a_missing_literal_attachment_stops_the_run_before_any_request_with_exit_two()
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_reports_a_missing_literal_attachment() {
     let cfg = http_write_doctor_project("upload-doctor", "http://127.0.0.1:1/", UPLOAD_FEATURE, "");
 
@@ -3887,6 +3942,7 @@ fn doctor_reports_a_missing_literal_attachment() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup() {
     let base = spawn_upload_stub().await;
     let feature = r#"Feature: upload
@@ -3914,6 +3970,7 @@ async fn a_missing_attachment_behind_a_variable_fails_the_step_not_the_startup()
 /// A project under a fresh directory, returning the config path. `features`
 /// are `(file name, content)` pairs; `macros` is one YAML file, if any. With a
 /// `base` the config declares one API; without, none.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_write_events_project(
     name: &str,
     base: &str,
@@ -4387,6 +4444,7 @@ fn validation_skips_the_rows_an_examples_tag_left_out() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_secret_in_a_description_is_masked_in_the_stream() {
     let base = common::spawn().await;
     let feature = "Feature: Secrets\n  Bearer cfg-secret-value-77 is in the feature description.\n  Scenario: first\n    Given set variable \"secret_note\" to \"stream-note-4321\"\n  Scenario: second\n    Quotes stream-note-4321 and Bearer cfg-secret-value-77 here.\n    Given set variable \"x\" to \"1\"\n";
@@ -5663,6 +5721,7 @@ fn an_unknown_key_under_privacy_is_refused() {
 // moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// A one-file project against the stub. `api_extra` is appended to the `stub`
 /// API resource (indented to sit inside it) and `top_extra` to the config.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_masking_project(
     name: &str,
     base: &str,
@@ -5737,6 +5796,8 @@ fn run_masking(
     )
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 const FAILING_WITH_AUTH: &str = r#"Feature: masking
   Scenario: a failing request
     Given the "Authorization" request header is "Bearer s3cr3t-token-value"
@@ -5747,6 +5808,7 @@ const FAILING_WITH_AUTH: &str = r#"Feature: masking
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_authorization_header_is_masked_in_the_failure_dump() {
     let base = common::spawn().await;
     let cfg = http_masking_project("mask-auth", &base, FAILING_WITH_AUTH, "", "");
@@ -5760,6 +5822,7 @@ async fn an_authorization_header_is_masked_in_the_failure_dump() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn the_junit_report_carries_the_masked_failure_text() {
     let base = common::spawn().await;
     let cfg = http_masking_project("mask-junit", &base, FAILING_WITH_AUTH, "", "");
@@ -5800,6 +5863,7 @@ fn reveal_on_a_variable_turns_masking_off_and_says_so() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn sensitive_headers_extend_the_default_list() {
     let base = common::spawn().await;
     let cfg = http_masking_project(
@@ -5817,6 +5881,7 @@ async fn sensitive_headers_extend_the_default_list() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn sensitive_headers_only_replaces_the_default_list() {
     let base = common::spawn().await;
     let cfg = http_masking_project(
@@ -5835,6 +5900,7 @@ async fn sensitive_headers_only_replaces_the_default_list() {
 /// The request never gets an answer, so only what was registered before it left
 /// can hide the token that an earlier step's text carries into the report.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_header_is_masked_in_the_report_even_when_the_request_never_connects() {
     let cfg = http_masking_project(
         "mask-refused",
@@ -5853,6 +5919,7 @@ fn a_header_is_masked_in_the_report_even_when_the_request_never_connects() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn reveal_turns_masking_off_and_says_so() {
     let base = common::spawn().await;
     let cfg = http_masking_project("mask-reveal", &base, FAILING_WITH_AUTH, "", "");
@@ -5962,6 +6029,7 @@ fn a_longer_secret_is_masked_before_one_it_contains() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_config_key_with_a_field_word_is_masked_wherever_its_value_appears() {
     let base = common::spawn().await;
     let feature = variable_feature(&[("note", "cfg-secret-value-1")], "note");
@@ -5978,6 +6046,7 @@ async fn a_config_key_with_a_field_word_is_masked_wherever_its_value_appears() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_secret_from_an_env_reference_is_masked_like_one_written_in_the_file() {
     let base = common::spawn().await;
     let feature = variable_feature(&[("note", "env-secret-value-2")], "note");
@@ -6026,6 +6095,8 @@ fn a_secret_saved_inside_an_include_is_masked_in_the_callers_failure() {
 /// quotes a DSN, but a config type error quotes the string it was given, so
 /// this is the one way to make the value appear in an error today; the tests
 /// guard against any future message that does.
+// moves-to: db
+#[cfg(not(feature = "dev-unreserve"))]
 fn dsn_project(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("features")).expect("mkdir");
@@ -6048,6 +6119,7 @@ fn dsn_project(name: &str) -> std::path::PathBuf {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_dsn_password_never_appears_in_a_connection_error() {
     let cfg = dsn_project("mask-dsn-run");
     let (code, stdout, stderr) = run_masking(&cfg, &[], &[]);
@@ -6063,6 +6135,7 @@ fn a_dsn_password_never_appears_in_a_connection_error() {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn doctor_masks_a_dsn_password_in_its_report_and_its_json() {
     let cfg = dsn_project("mask-dsn-doctor");
     for extra in [&[][..], &["--json"][..]] {
@@ -6101,6 +6174,7 @@ fn doctor_says_so_on_stderr_when_masking_is_off() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn resource_add_masks_the_block_it_prints() {
     let cfg = dsn_project("mask-resource-add");
     std::fs::write(
@@ -6141,6 +6215,7 @@ fn the_event_stream_carries_the_masked_failure_text() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn debug_output_on_stderr_is_masked() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6206,6 +6281,7 @@ fn a_secret_parameter_is_masked_in_the_failure_dump() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_slot_in_a_secret_parameter_stays_as_written_and_its_value_is_masked() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6331,6 +6407,8 @@ fn the_debug_line_of_a_macro_call_hides_a_short_literal_secret() {
 
 /// A POST to /echo with `body`, whose answer the next step contradicts so the
 /// dump is printed: the stub answers 201.
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn echo_feature(body: &str, extra_steps: &str) -> String {
     format!(
         "Feature: masking\n  Scenario: echo\n    Given the request body is:\n      \"\"\"\n      {body}\n      \"\"\"\n{extra_steps}    When I request \"/echo\" using HTTP POST\n    Then the response code is 200\n"
@@ -6339,6 +6417,7 @@ fn echo_feature(body: &str, extra_steps: &str) -> String {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() {
     let base = common::spawn().await;
     // The stub echoes the request body back, as a login answer would carry its token.
@@ -6356,6 +6435,7 @@ async fn a_token_in_a_login_response_is_masked_in_that_steps_own_failure_dump() 
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_sensitive_field_is_found_at_any_depth_and_in_any_naming_style() {
     let base = common::spawn().await;
     let body = r#"{"data": {"list": [{"refreshToken": "tok-camel-case-1"}, {"client-secret": "tok-kebab-case-2"}]}, "password": 12345678}"#;
@@ -6368,6 +6448,7 @@ async fn a_sensitive_field_is_found_at_any_depth_and_in_any_naming_style() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_field_that_only_contains_a_field_word_is_not_masked() {
     let base = common::spawn().await;
     let body = r#"{"tokenizer": "plain-tokenizer-value", "key": "plain-key-value"}"#;
@@ -6379,6 +6460,7 @@ async fn a_field_that_only_contains_a_field_word_is_not_masked() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_body_keeps_its_exact_text_around_a_masked_field() {
     let base = common::spawn().await;
     // Shorter than `min_length`: only the position can hide it.
@@ -6396,6 +6478,7 @@ async fn a_body_keeps_its_exact_text_around_a_masked_field() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_sensitive_form_field_and_query_parameter_are_masked() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6431,6 +6514,7 @@ async fn a_sensitive_form_field_and_query_parameter_are_masked() {
 // moves-to: api
 /// A refused connection puts the whole URL into reqwest's message.
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
     let feature = r#"Feature: masking
   Scenario: refused
@@ -6454,6 +6538,7 @@ fn a_query_secret_does_not_reach_the_error_of_a_refused_connection() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
     let base = common::spawn().await;
     // The secret starts 5 characters before the 600-character cut.
@@ -6476,6 +6561,7 @@ async fn a_secret_that_straddles_the_body_cut_is_masked_whole() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_empty_fields_only_list_switches_the_field_rule_off() {
     let base = common::spawn().await;
     let body = r#"{"access_token": "tok-visible-value-1"}"#;
@@ -6495,6 +6581,7 @@ async fn an_empty_fields_only_list_switches_the_field_rule_off() {
 /// cookie header that also carries it is off the list, so only the scan of the
 /// response body can hide it, here in the dump of the very step that received it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_token_only_the_response_carries_is_masked_by_the_response_scan() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6522,6 +6609,7 @@ async fn a_token_only_the_response_carries_is_masked_by_the_response_scan() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn print_response_body_hides_a_short_sensitive_value_by_position() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6545,6 +6633,7 @@ async fn print_response_body_hides_a_short_sensitive_value_by_position() {
 /// afterwards, not only in that request's dump: here in the text of a later,
 /// passed step that happens to repeat it. The answer does not echo it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_json_value_sent_under_a_sensitive_name_is_secret_everywhere_afterwards() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6663,6 +6752,7 @@ fn show_variables_hides_a_short_value_by_its_variables_name() {
 /// registering what the URL's query carries can hide it when a later, passed
 /// step repeats it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_literal_query_value_in_the_path_joins_the_set() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6683,6 +6773,7 @@ async fn a_literal_query_value_in_the_path_joins_the_set() {
 // moves-to: api
 /// Nothing is ever sent, so only registering at the step can hide the header.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6704,6 +6795,7 @@ async fn a_sensitive_header_set_by_a_step_is_secret_even_if_nothing_is_sent() {
 /// Decided (spec 7.5): a number under a sensitive name is hidden where it
 /// stands and never joins the set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_number_under_a_sensitive_name_is_hidden_in_place_and_never_joins_the_set() {
     let base = common::spawn().await;
     let feature = r#"Feature: masking
@@ -6745,6 +6837,7 @@ fn reveal_also_shows_a_literal_secret_parameter_in_step_text() {
 
 // moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// One scenario of `steps`, run with the evidence on; the stream it wrote.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_evidence_run(name: &str, base: &str, steps: &str, extra: &[&str]) -> Vec<Value> {
     let cfg = http_write_events_project(
         name,
@@ -6904,6 +6997,7 @@ fn a_secret_slot_is_masked_in_vars() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn an_http_exchange_is_evidence_of_the_step_that_sent_it() {
     let base = common::spawn().await;
     let stream = http_evidence_run(
@@ -6948,6 +7042,7 @@ async fn an_http_exchange_is_evidence_of_the_step_that_sent_it() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_masked_header_keeps_its_name_in_the_evidence() {
     let base = common::spawn().await;
     let stream = http_evidence_run(
@@ -6975,6 +7070,7 @@ async fn a_masked_header_keeps_its_name_in_the_evidence() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_sensitive_field_is_masked_in_the_evidence_of_the_step_that_received_it() {
     let base = common::spawn().await;
     let stream = http_evidence_run(
@@ -6994,6 +7090,7 @@ async fn a_sensitive_field_is_masked_in_the_evidence_of_the_step_that_received_i
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_polling_replay_is_a_new_exchange_and_an_attempt() {
     let (base, calls) = spawn_eventual_post_stub(Some(2)).await;
     let stream = http_evidence_run(
@@ -7047,6 +7144,8 @@ fn evidence_inside_a_macro_attaches_to_the_innermost_step() {
 
 /// A POST of `size` bytes to the stub, which echoes it, with the artifact root
 /// inside the project. The evidence event of the request, and the root.
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn long_body_run(name: &str, base: &str, size: usize) -> (Value, std::path::PathBuf) {
     let cfg = http_write_events_project(name, base, &[], None);
     std::fs::write(
@@ -7071,6 +7170,7 @@ fn long_body_run(name: &str, base: &str, size: usize) -> (Value, std::path::Path
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_body_over_the_limit_is_written_to_a_file_and_referenced() {
     let base = common::spawn().await;
     let (event, root) = long_body_run("evidence-long", &base, 20_000);
@@ -7095,6 +7195,7 @@ async fn a_body_over_the_limit_is_written_to_a_file_and_referenced() {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_referenced_file_is_complete_when_its_event_is_read() {
     let base = common::spawn().await;
     let (event, root) = long_body_run("evidence-complete", &base, 40_000);
@@ -7113,6 +7214,7 @@ async fn a_referenced_file_is_complete_when_its_event_is_read() {
 
 // moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// `features` against the stub, run with `--events` and then `args`.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_modes_run(
     name: &str,
     base: &str,
@@ -7316,6 +7418,7 @@ fn deferred_vars_arrive_as_a_vars_event() {
 
 // moves-to: api (helper: serves the tests that talk to the HTTP stub)
 /// A scenario that POSTs a body over the inline limit, then passes or fails.
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_long_deferred_run(
     name: &str,
     base: &str,
@@ -7348,6 +7451,8 @@ fn http_long_deferred_run(
     root
 }
 
+// moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn files_under(root: &std::path::Path) -> usize {
     std::fs::read_dir(root).map_or(0, |dirs| {
         dirs.flatten()
@@ -7358,6 +7463,7 @@ fn files_under(root: &std::path::Path) -> usize {
 
 // moves-to: api
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn a_long_body_of_a_passing_scenario_never_reaches_the_disk_under_the_buffer_cap() {
     let base = common::spawn().await;
     let root = http_long_deferred_run("deferred-long-pass", &base, false, &[]);
@@ -7669,6 +7775,7 @@ fn an_evidence_variable_refusal_empties_the_stream_and_an_unused_buffer_is_ignor
 /// Held evidence is emitted at the end of the scenario, so a value that
 /// became a secret after the step that sent it is masked there too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(feature = "dev-unreserve"))]
 async fn deferred_evidence_is_masked_with_the_secrets_known_when_it_is_written() {
     let base = common::spawn().await;
     let stream = http_modes_run(

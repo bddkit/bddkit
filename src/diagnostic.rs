@@ -245,7 +245,7 @@ impl HttpDiagnostic {
         };
         for (name, value) in self.request.headers.iter().chain(&self.response.headers) {
             if listed(name) {
-                crate::http::register_header(redactor, name, value);
+                register_header(redactor, name, value);
             }
         }
         redactor.register(&redactor.query_hits(&self.url));
@@ -318,6 +318,7 @@ impl ScanItem {
 impl SqlDiagnostic {
     /// A statement that ran for `elapsed` over `resource`; a bind holding the
     /// variables' `NULL` sentinel is SQL `NULL`.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn new(
         resource: &str,
         sql: &str,
@@ -353,6 +354,34 @@ impl SqlDiagnostic {
             content["duration_us"] = duration.into();
         }
         content
+    }
+}
+
+/// Registers a sensitive header's value whole, and the part of it that travels
+/// on its own: the credential of `Authorization: Bearer <credential>`, each
+/// value of `Cookie`, the cookie value of `Set-Cookie` (not its attributes).
+pub(crate) fn register_header(redactor: &Redactor, name: &str, value: &str) {
+    redactor.secret(value);
+    let parts: Vec<&str> = match name.to_ascii_lowercase().as_str() {
+        "authorization" | "proxy-authorization" => {
+            value.split_once(' ').map(|(_, c)| c).into_iter().collect()
+        }
+        "cookie" => value
+            .split(';')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(_, v)| v)
+            .collect(),
+        "set-cookie" => value
+            .split(';')
+            .next()
+            .and_then(|pair| pair.split_once('='))
+            .map(|(_, v)| v)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    for part in parts {
+        redactor.secret(part.trim());
     }
 }
 
@@ -496,6 +525,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn the_null_sentinel_bind_is_sql_null() {
         let binds = [
             Some(crate::vars::NULL_SENTINEL.to_string()),

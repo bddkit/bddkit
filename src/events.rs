@@ -833,6 +833,7 @@ impl Trace {
 
     /// One `http` diagnostic, rendered by the host: hidden by position, then
     /// by value, and only then is a body weighed against the limit.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn http(&self, diagnostic: &HttpDiagnostic) {
         self.http_in("api", diagnostic, None);
     }
@@ -854,6 +855,7 @@ impl Trace {
     }
 
     /// One `sql` diagnostic, after the statement ran.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn sql(&self, diagnostic: &SqlDiagnostic) {
         self.sql_in("db", diagnostic, None);
     }
@@ -1109,7 +1111,9 @@ mod tests {
         };
         trace.step_started("Given ", "s", origin, Path::new("a.feature"), Vec::new());
         assert!(trace.evidence_on(), "a plugin is told evidence is wanted");
-        trace.sql(&SqlDiagnostic::new("main", "select 1", &[], Duration::ZERO));
+        let statement = json!({"sql": "select 1", "binds": [], "duration_us": 0});
+        let statement = SqlDiagnostic::from_plugin(&statement, "main").expect("its shape");
+        trace.sql_in("db", &statement, None);
         trace.step_finished(Some(FailureKind::Assertion), Duration::ZERO, &[]);
         let failure = Some(("boom", FailureKind::Assertion));
         trace.scenario_finished(failure, Duration::ZERO, interrupted);

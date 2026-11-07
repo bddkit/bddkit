@@ -24,6 +24,7 @@ fn bddkit(dir: &Path, args: &[&str]) -> Output {
         .env("HOME", dir)
         .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("BDDKIT_PLUGIN_REGISTRY", dir.join("no-such-index.yaml"))
         .env_remove("BDDKIT_CONFIG")
         .env_remove("BDDKIT_DIR")
         .env_remove("CI")
@@ -45,6 +46,7 @@ fn config(dir: &Path) -> String {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn init_with_flags_writes_a_config_that_doctor_accepts() {
     let dir = temp("doctor");
     let out = bddkit(
@@ -79,6 +81,7 @@ fn init_with_flags_writes_a_config_that_doctor_accepts() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn the_example_feature_passes_without_a_network() {
     let dir = temp("example");
     // Nothing listens on this port: the request in the feature is a comment.
@@ -107,6 +110,7 @@ fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn an_empty_api_answer_writes_no_api_resource() {
     let dir = temp("no-api");
     let out = bddkit(&dir, &["init", "--no-api"]);
@@ -152,6 +156,7 @@ fn a_non_interactive_init_without_telemetry_writes_no_key() {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn mismatched_flags_are_refused() {
     for args in [
         &["init", "--dsn", "postgres://x/y"][..],
@@ -205,6 +210,7 @@ fn gitignore_gains_only_missing_lines_and_only_in_a_git_work_tree() {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
     // The config is `$`-expanded when it is read: `$$` must survive the
     // round trip, and a `${NAME}` reference must stay a reference.
@@ -239,6 +245,7 @@ fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_dsn_of_another_engine_is_refused() {
     let dir = temp("scheme");
     let out = bddkit(
@@ -327,6 +334,7 @@ fn payloads(dir: &Path) -> Vec<serde_json::Value> {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn an_init_that_ends_with_yes_sends_one_init_payload() {
     let dir = temp("telemetry-yes");
     let out = telemetry_init(
@@ -367,7 +375,7 @@ fn an_init_that_ends_with_yes_sends_one_init_payload() {
 fn an_init_answered_no_or_not_asked_sends_nothing() {
     for (name, flags) in [("no", vec!["--telemetry", "false"]), ("unanswered", vec![])] {
         let dir = temp(&format!("telemetry-answer-{name}"));
-        let mut args = vec!["--api-url", "http://127.0.0.1:8080"];
+        let mut args = vec!["--no-api"];
         args.extend(flags);
         let out = telemetry_init(&dir, &args, &[]);
         assert_eq!(out.status.code(), Some(0), "{name}: {}", text(&out));
@@ -376,14 +384,47 @@ fn an_init_answered_no_or_not_asked_sends_nothing() {
 }
 
 #[test]
+fn an_init_with_no_resource_that_ends_with_yes_sends_one_init_payload() {
+    let dir = temp("telemetry-yes-bare");
+    let out = telemetry_init(
+        &dir,
+        &["--no-api", "--parallel", "false", "--telemetry", "true"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let all = payloads(&dir);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["command"], "init");
+    assert_eq!(all[0]["exit"], 0);
+    assert_eq!(all[0]["init"]["settings"]["parallel"], true);
+}
+
+#[test]
 fn a_yes_in_the_config_still_loses_to_do_not_track() {
     let dir = temp("telemetry-dnt");
     let out = telemetry_init(
         &dir,
-        &["--api-url", "http://127.0.0.1:8080", "--telemetry", "true"],
+        &["--no-api", "--telemetry", "true"],
         &[("DO_NOT_TRACK", "1")],
     );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(config(&dir).contains("telemetry: true"));
     assert!(payloads(&dir).is_empty());
+}
+
+/// As on a core without the built-ins: `init` writes what it was told and goes
+/// down the plugin path, and the plugin that would serve `resources.api` is what
+/// `doctor` then reports missing.
+#[cfg(feature = "dev-unreserve")]
+#[test]
+fn an_api_url_needs_a_plugin_when_the_built_ins_are_left_out() {
+    let dir = temp("dev-unreserve");
+    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:8080"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(config(&dir).contains("base_url: http://127.0.0.1:8080"));
+    assert!(
+        text(&out).contains("no installed plugin serves the group \"api\""),
+        "{}",
+        text(&out)
+    );
 }

@@ -1,3 +1,5 @@
+#![cfg(not(feature = "dev-unreserve"))]
+
 mod common;
 
 use common::combined;

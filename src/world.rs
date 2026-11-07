@@ -1,5 +1,7 @@
 use crate::artifacts::Artifacts;
+#[cfg(not(feature = "dev-unreserve"))]
 use crate::db::DbHandle;
+#[cfg(not(feature = "dev-unreserve"))]
 use crate::http::{Apis, HttpState};
 use crate::options::{Options, OptionsLayer};
 use crate::privacy::Redactor;
@@ -60,7 +62,9 @@ impl Workspace {
 /// and debug mode live for the scenario. Asymmetry from Behat's behavior (spec §3).
 pub struct World {
     pub vars: VarStack,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub http: HttpState,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub db: DbHandle,
     pub debug: bool,
     pub generator: Arc<Generator>,
@@ -68,6 +72,7 @@ pub struct World {
     pending_options: Option<OptionsLayer>,
     /// Run-wide configuration, not scenario state: `reset_scenario`
     /// does not touch it.
+    #[cfg(not(feature = "dev-unreserve"))]
     pub srp: Option<Arc<crate::srp::SrpParams>>,
     /// Scenario state: which instance of each plugin group is selected.
     pub plugins: crate::plugin::PluginState,
@@ -91,10 +96,10 @@ pub struct World {
 
 impl World {
     pub fn new(
-        apis: Arc<Apis>,
+        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<Apis>,
         generator: Arc<Generator>,
-        db: DbHandle,
-        srp: Option<Arc<crate::srp::SrpParams>>,
+        #[cfg(not(feature = "dev-unreserve"))] db: DbHandle,
+        #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
         artifacts: Arc<Artifacts>,
@@ -102,10 +107,13 @@ impl World {
         let workspace = Workspace::new(generator.run_id());
         Self {
             vars: VarStack::new(),
+            #[cfg(not(feature = "dev-unreserve"))]
             http: HttpState::new(apis),
+            #[cfg(not(feature = "dev-unreserve"))]
             db,
             debug: false,
             generator,
+            #[cfg(not(feature = "dev-unreserve"))]
             srp,
             options,
             pending_options: None,
@@ -122,6 +130,7 @@ impl World {
     /// Hands the file's set to everything that registers into it.
     pub fn set_redactor(&mut self, redactor: Redactor) {
         self.vars.set_redactor(redactor.clone());
+        #[cfg(not(feature = "dev-unreserve"))]
         self.http.set_redactor(redactor.clone());
         self.trace.set_redactor(redactor.clone());
         self.redactor = redactor;
@@ -133,6 +142,7 @@ impl World {
         if !sources.any() {
             return;
         }
+        #[cfg(not(feature = "dev-unreserve"))]
         self.http.collect_evidence();
         self.trace
             .collect_evidence(self.artifacts.clone(), sources, cap);
@@ -141,6 +151,7 @@ impl World {
     /// Emits the exchanges stored since the last call as evidence of the
     /// innermost step in flight.
     pub fn flush_evidence(&mut self) {
+        #[cfg(not(feature = "dev-unreserve"))]
         for stored in self.http.take_evidence() {
             // The diagnostic copies the exchange: build it only for a step
             // whose evidence is kept.
@@ -166,7 +177,9 @@ impl World {
 
     /// At the scenario boundary: the request, connection, and debug flag reset; variables remain.
     pub fn reset_scenario(&mut self) {
+        #[cfg(not(feature = "dev-unreserve"))]
         self.http.reset();
+        #[cfg(not(feature = "dev-unreserve"))]
         self.db.reset();
         self.debug = false;
         self.pending_options = None;
@@ -177,12 +190,16 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "dev-unreserve"))]
     use crate::db::DbHandle;
+    #[cfg(not(feature = "dev-unreserve"))]
     use crate::http::ApiResource;
     use crate::unique::Generator;
+    #[cfg(not(feature = "dev-unreserve"))]
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    #[cfg(not(feature = "dev-unreserve"))]
     fn apis() -> Arc<Apis> {
         let mut by_name = HashMap::new();
         by_name.insert(
@@ -196,9 +213,12 @@ mod tests {
     #[test]
     fn reset_scenario_clears_debug() {
         let mut w = World::new(
+            #[cfg(not(feature = "dev-unreserve"))]
             apis(),
             Arc::new(Generator::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             DbHandle::new(None, String::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
             Options::default(),
@@ -228,9 +248,12 @@ mod tests {
     #[test]
     fn reset_scenario_resets_the_plugin_selection() {
         let mut w = World::new(
+            #[cfg(not(feature = "dev-unreserve"))]
             apis(),
             Arc::new(Generator::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             DbHandle::new(None, String::new()),
+            #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
             Options::default(),
@@ -247,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "dev-unreserve"))]
     fn srp_parameters_survive_a_scenario_boundary() {
         let params = Arc::new(crate::srp::SrpParams {
             variant: crate::srp::Variant::HexString,

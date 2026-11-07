@@ -96,6 +96,7 @@ impl StepError {
         Self::new(FailureKind::Assertion, message)
     }
 
+    #[cfg(not(feature = "dev-unreserve"))]
     pub fn transport(message: impl Into<String>) -> Self {
         Self::new(FailureKind::Transport, message)
     }

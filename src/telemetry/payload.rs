@@ -234,14 +234,18 @@ impl PrivacyFlags {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Resources {
+    #[cfg(not(feature = "dev-unreserve"))]
     pub api: u64,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub srp: u64,
+    #[cfg(not(feature = "dev-unreserve"))]
     pub db: Engines,
     /// Instances per official plugin name.
     pub plugins: BTreeMap<String, u64>,
     pub plugins_other: u64,
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Engines {
     pub postgres: u64,
@@ -249,6 +253,7 @@ pub struct Engines {
     pub mariadb: u64,
 }
 
+#[cfg(not(feature = "dev-unreserve"))]
 impl Engines {
     /// By the platform's own name; a name this binary does not know is not
     /// counted, rather than invented.

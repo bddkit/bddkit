@@ -59,6 +59,7 @@ fn summary(dir: &std::path::Path) -> String {
 
 /// `project` with an API at `base`, for the one test that needs a real request.
 // moves-to: api
+#[cfg(not(feature = "dev-unreserve"))]
 fn http_project(name: &str, base: &str, feature: &str) -> PathBuf {
     let dir = project(name, feature, None);
     let config = std::fs::read_to_string(dir.join("cfg.yaml")).expect("config");
@@ -72,6 +73,7 @@ fn http_project(name: &str, base: &str, feature: &str) -> PathBuf {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_refused_connection_is_a_transport_failure() {
     // Port 1 on loopback: nothing listens, the connection is refused.
     let dir = http_project(

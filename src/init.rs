@@ -752,7 +752,11 @@ fn init_payload(
             info.plugins_failed += 1;
         }
     }
-    info.resources.api = u64::from(answers.api_url.is_some());
+    #[cfg(not(feature = "dev-unreserve"))]
+    {
+        info.resources.api = u64::from(answers.api_url.is_some());
+    }
+    #[cfg(not(feature = "dev-unreserve"))]
     match answers.db {
         Db::None => {}
         Db::Postgres => info.resources.db.add("postgres"),

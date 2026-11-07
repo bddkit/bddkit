@@ -1,3 +1,5 @@
+#![cfg(not(feature = "dev-unreserve"))]
+
 //! Proves `Db::connect` picks the right `Platform` per connection, against
 //! real engines. Runs the compiled binary as a subprocess (like `tests/db.rs`)
 //! rather than calling `Db::connect` in-process: `bddkit` has no `[lib]`

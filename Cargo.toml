@@ -28,6 +28,12 @@ exclude = [
 name = "bddkit"
 path = "src/main.rs"
 
+# For plugin authors only: leaves the built-in API, SRP and databases out at
+# compile time, so `bddkit-api` and `bddkit-db` can run on a candidate that still
+# has them. See docs/plugin-authoring.md, section 8. Goes away with the built-ins.
+[features]
+dev-unreserve = []
+
 [dependencies]
 bddkit-crate-json = "0.1"
 base64 = "0.22"

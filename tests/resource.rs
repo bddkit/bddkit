@@ -17,6 +17,7 @@ fn resource(args: &[&str]) -> (String, Option<i32>) {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn the_listing_covers_every_kind_the_host_serves() {
     let (out, code) = resource(&["resource", "fields"]);
     assert_eq!(code, Some(0), "{out}");
@@ -34,6 +35,7 @@ fn the_listing_covers_every_kind_the_host_serves() {
 
 // moves-to: db
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn a_kind_argument_narrows_the_listing() {
     let (out, code) = resource(&["resource", "fields", "db"]);
     assert_eq!(code, Some(0), "{out}");
@@ -49,6 +51,7 @@ fn an_unknown_kind_is_a_nothing_listed_failure() {
 
 // moves-to: api
 #[test]
+#[cfg(not(feature = "dev-unreserve"))]
 fn json_carries_every_key_of_the_field_description() {
     let (out, code) = resource(&["resource", "fields", "api", "--json"]);
     assert_eq!(code, Some(0), "{out}");
