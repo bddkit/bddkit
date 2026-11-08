@@ -28,6 +28,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
       installers: ${{ steps.diff.outputs.installers }}
+      registry: ${{ steps.diff.outputs.registry }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,6 +40,7 @@ jobs:
           if [ -z "$BASE" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "installers=true" >> "$GITHUB_OUTPUT"
+            echo "registry=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           files=$(git diff --name-only "origin/$BASE...HEAD")
@@ -53,6 +55,25 @@ jobs:
           else
             echo "installers=false" >> "$GITHUB_OUTPUT"
           fi
+          if echo "$files" | grep -qE '^plugin-registry\.yaml$'; then
+            echo "registry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "registry=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The scheduled registry-abi.yml alone would never check a pull request that
+  # adds a plugin (bddkit/bddkit#229): this runs the same checks, writes nothing.
+  registry:
+    name: plugin index
+    needs: changes
+    if: needs.changes.outputs.registry == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - run: pip install pyyaml
+      - run: python3 .github/scripts/update_registry_abi.py --check
 
   lint-install-scripts:
     name: lint install scripts
