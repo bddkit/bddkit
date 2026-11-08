@@ -8,6 +8,10 @@ the whole file: it parses, and every listed release exists and declares the ABI
 it is listed under. Exit 1 on a failed check; the file is written only when the
 checks pass. A release without the asset is skipped, not guessed at.
 
+When the latest release's `bddkit-plugin.json` has `groups` (ABI 4 and newer),
+they must equal the entry's `groups` as a set (bddkit/bddkit#229); a release
+without `groups` is not checked. `--check` runs every check and writes nothing.
+
 The registry is edited as text, not re-dumped, so its comments survive.
 """
 import json
@@ -40,9 +44,14 @@ def latest(repo):
     return got[0].rsplit("/tag/", 1)[1].removeprefix("v")
 
 
-def declared_abi(repo, version):
+def manifest(repo, version):
     got = fetch(f"{GITHUB}/{repo}/releases/download/v{version}/bddkit-plugin.json")
-    return None if got is None else int(json.loads(got[1])["abi"])
+    return None if got is None else json.loads(got[1])
+
+
+def declared_abi(repo, version):
+    m = manifest(repo, version)
+    return None if m is None else int(m["abi"])
 
 
 def splice(text, name, abi_map):
@@ -58,19 +67,26 @@ def splice(text, name, abi_map):
     return "".join(lines[:start] + block + lines[end:])
 
 
-def main(path):
+def main(path, check=False):
     text = open(path).read()
     problems = []
     for entry in yaml.safe_load(text)["plugin"]:
         name, repo = entry["name"], entry["repo"]
         abi_map = {str(k): str(v) for k, v in (entry.get("abi") or {}).items()}
         version = latest(repo)
-        abi = declared_abi(repo, version) if version else None
+        m = manifest(repo, version) if version else None
+        abi = int(m["abi"]) if m else None
         if abi is None:
             print(f"{name}: latest release of {repo} has no bddkit-plugin.json, not recorded")
         else:
             abi_map[str(abi)] = version
             text = splice(text, name, abi_map)
+            listed = entry.get("groups") or []
+            if "groups" in m and (not isinstance(m["groups"], list) or set(m["groups"]) != set(listed)):
+                problems.append(
+                    f"{name} {version}: bddkit-plugin.json groups {m['groups']}, "
+                    f"plugin-registry.yaml groups {sorted(listed)}"
+                )
 
     # Checks run on the text that would be written, not on the old file.
     for entry in yaml.safe_load(text)["plugin"]:
@@ -83,9 +99,11 @@ def main(path):
     if problems:
         print("\n".join(problems), file=sys.stderr)
         return 1
-    open(path, "w").write(text)
+    if not check:
+        open(path, "w").write(text)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "plugin-registry.yaml"))
+    args = [a for a in sys.argv[1:] if a != "--check"]
+    sys.exit(main(args[0] if args else "plugin-registry.yaml", "--check" in sys.argv))
