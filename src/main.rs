@@ -1418,8 +1418,12 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     )?);
     let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
     probe.stage = Some(telemetry::payload::Stage::Plugins);
-    let plugins = load_plugins(&config_path, &cfg, &env)?;
+    // Non-strict, so the refusal of an instance is told apart from a plugin
+    // that never loaded: the first is a resource the host cannot build.
+    let plugins = load_plugins_collecting(&config_path, &cfg, &env, false)?;
+    probe.stage = Some(telemetry::payload::Stage::Resources);
     if let Some(plugins) = &plugins {
+        plugins.ensure_valid()?;
         (probe.resources.plugins, probe.resources.plugins_other) = plugins.instance_counts();
     }
 
