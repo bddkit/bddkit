@@ -36,7 +36,7 @@ pass before the first request. Exit code `2` means "run not started", so CI
 can tell a broken suite from a failing one. Pattern collisions fail loudly
 instead of silently shadowing each other.
 
-**Checking the database shouldn't mean leaving the feature file.** DB steps introspect the real schema — PostgreSQL, MySQL or MariaDB, the same step text on each: primary keys fill themselves the way the column declares them, values coerce to real column types, and a missing `NOT NULL` column fails by name at the step rather than as a driver error. Hawk signing, SRP-6a, and AES are steps too, so a login handshake stays declarative.
+**Checking the database shouldn't mean leaving the feature file.** The steps of the official [`db` plugin](https://github.com/bddkit/bddkit-db) introspect the real schema — PostgreSQL, MySQL or MariaDB, the same step text on each: primary keys fill themselves the way the column declares them, values coerce to real column types, and a missing `NOT NULL` column fails by name at the step rather than as a driver error. Hawk signing, SRP-6a, and AES are steps too, so a login handshake stays declarative.
 
 **Async systems shouldn't need sleep loops.** Prefix any assertion with `I expect the next assertion to pass within 10 seconds` and it retries — re-sending the request or re-running the query — until it holds.
 
@@ -83,7 +83,7 @@ Nothing checks for a newer release on its own: `run` and `doctor` open no socket
 bddkit init
 ```
 
-`init` asks a few questions, in this order: the base URL of the API under test (an empty answer means none), a database (none, PostgreSQL, MySQL or MariaDB, with a DSN — prefer an environment reference such as `${BDDKIT_DB_DSN}` over a literal password), which plugins of the official index to install (nothing is ticked: arrows move, Space ticks, Enter accepts), whether they are for you on this machine or vendored into `.bddkit/` for everyone with the repository, whether scenarios of different files may run at the same time (`concurrency` 8, which is safe only when every scenario brings its own data, see `<<unique()>>`; otherwise 1), and last whether to allow anonymous usage counts. Every list is built without a preselected answer, so nothing is chosen that you did not choose; Ctrl-C at any question, and Esc at a list, leaves without writing anything (exit `130`); a text question has no Esc.
+`init` asks a few questions, in this order: the base URL of the API under test (an empty answer means none), a database (none, PostgreSQL, MySQL or MariaDB, with a DSN — prefer an environment reference such as `${BDDKIT_DB_DSN}` over a literal password; the `db` plugin that serves it is installed with the others), which plugins of the official index to install (nothing is ticked: arrows move, Space ticks, Enter accepts), whether they are for you on this machine or vendored into `.bddkit/` for everyone with the repository, whether scenarios of different files may run at the same time (`concurrency` 8, which is safe only when every scenario brings its own data, see `<<unique()>>`; otherwise 1), and last whether to allow anonymous usage counts. Every list is built without a preselected answer, so nothing is chosen that you did not choose; Ctrl-C at any question, and Esc at a list, leaves without writing anything (exit `130`); a text question has no Esc.
 
 Then it writes `bddkit.yaml` (a comment above each key), `features/example.feature` (one scenario that passes without a network, with a commented-out request to your API that the report shows as a disabled step), the missing lines of `.gitignore` (`.bddkit/*.local.yaml` and `.env.local`, only inside a git work tree), installs the plugins one at a time, prints for each plugin group that needs a resource the `bddkit resource add …` command that declares it, and ends with the `doctor` report. A plugin that fails to install does not stop the others or undo the config, and neither does an environment reference such as `${BDDKIT_DB_DSN}` that is not exported yet: the closing `doctor` report fails on it (exit `1`) until it is. `init` never overwrites a config: when `bddkit.yaml` (or `bddkit.yml`, or the file `--config` names) exists it refuses with exit `2` and points at `bddkit resource add` and `bddkit plugin install`, which extend a suite.
 
@@ -118,15 +118,9 @@ instance seeded from `examples/mocks/api-server.yaml`, so it runs offline and
 its responses are fixed by a file in this repo. Smocker's web UI is on
 <http://localhost:8081>.
 
-The database examples are a second suite with its own config and its own
-container:
+The database examples live with the [`db` plugin](https://github.com/bddkit/bddkit-db).
 
-```bash
-docker compose up -d db
-./target/release/bddkit run --config examples/db.yaml
-```
-
-`examples/README.md` covers both suites, what each feature file demonstrates,
+`examples/README.md` covers the suite, what each feature file demonstrates,
 and how to narrow a run to one file or one tag.
 
 `bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast[=<bool>]`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports, `--artifacts-dir <dir>` (also `$BDDKIT_ARTIFACTS_DIR`, the flag wins) to root the evidence files plugins write — one `<dir>/<six-digit counter>/` per plugin step, `<temp dir>/bddkit-<run id>` when unset, never cleaned up by bddkit, so give each run its own directory when you archive (a second run into the same one starts counting at `000000` again and overwrites); the per-file workspace stays under the temporary directory either way — `--events <path>` (or `$BDDKIT_EVENTS`) for a live stream of the run, and `--evidence[=<sources>]` to put what the steps did into it (see "Following a run live" below). Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, including when no config is given and none of the above is found, and `128` plus the signal number when the run was interrupted — `130` for SIGINT/Ctrl-C, `143` for SIGTERM, `129` for SIGHUP (see "Interrupting a run" below).
@@ -212,14 +206,12 @@ APP_ENV: dev
   ✓ scheduling            4 chain(s)
   ✓ api main              https://api.example.test (20s timeout)
   - api main              live probe skipped
-  ✓ db primary            postgres
-  - db primary            live probe skipped
 
 2 problem(s)
 static checks only — pass --live to also probe the resources
 ```
 
-A bare `doctor` opens no socket: it is fast, offline and deterministic, so it works on a train and a `base_url` pointing at a closed port is not a finding. `--live` adds the one class of check a run does not have — whether the resources the config names actually answer: a `GET` at each `base_url` (any status means reachable), a real connection to each database, and each declared plugin instance asked to probe its own resource, every one named individually so one dead DSN says which. A plugin that exports no probe is reported as skipped, never as a failure — a check that never ran has proved nothing. Every declared plugin instance has a row of its own with its resource group as the stage and the instance as the target (`echo main`), and every instance its plugin refuses is reported, not only the first; a refused instance is not probed.
+A bare `doctor` opens no socket: it is fast, offline and deterministic, so it works on a train and a `base_url` pointing at a closed port is not a finding. `--live` adds the one class of check a run does not have — whether the resources the config names actually answer: a `GET` at each `base_url` (any status means reachable), and each declared plugin instance asked to probe its own resource (a database connection, a bucket), every one named individually so one dead DSN says which. A plugin that exports no probe is reported as skipped, never as a failure — a check that never ran has proved nothing. Every declared plugin instance has a row of its own with its resource group as the stage and the instance as the target (`echo main`), and every instance its plugin refuses is reported, not only the first; a refused instance is not probed.
 
 `bddkit doctor` flags: `[--config <path>]` (same default as `run`: `$BDDKIT_CONFIG`, else `./bddkit.yaml`/`./bddkit.yml`), `--env` to pick a `.env.<name>` layer, `--live`, `--json`, and `run`'s `--junit`/`--cucumber-json` to check that a report path can be written. Exit codes: `0` clean, `1` anything was reported — never `2`, so a script's rule is simply "0 or fix something"; a config that cannot be found at all is reported the same way, as a failed `config` row.
 
@@ -232,17 +224,16 @@ The header states which `APP_ENV` layer was selected, which is the first thing t
 `bddkit steps list` prints the whole vocabulary as templates, grouped by resource, with no config and no regex:
 
 ```console
-$ bddkit steps list db
-db:
-  I use "<name>" connection
-  I have "<table>" where:
-  I have "<table>" with "<pairs>"
-  I have:
-  I update "<table>" with "<pairs>" where "<condition>"
+$ bddkit steps list vars
+vars:
+  set variable "<name>" to "<value>" global
+  set variable "<name>" to "<value>"
+  extract "<path>" from JSON as "<name>" global
+  extract "<path>" from JSON as "<name>"
   ...
 ```
 
-Narrow it with a positional resource (`api`, `db`, `srp`, `vars`, `debug`, `general`, or a plugin's group) and with `--filter <text>`, a case-insensitive substring match. `-v` adds a one-line description under each step — filtering down to one step and adding `-v` is the help-for-one-step path, so there is no separate `describe` command:
+Narrow it with a positional resource (`api`, `srp`, `vars`, `debug`, `general`, or a plugin's group such as `db`) and with `--filter <text>`, a case-insensitive substring match. `-v` adds a one-line description under each step — filtering down to one step and adding `-v` is the help-for-one-step path, so there is no separate `describe` command:
 
 ```console
 $ bddkit steps list --filter "response code" -v
@@ -390,16 +381,18 @@ A literal `(`, `)`, `/`, `\` or `{` in a template must be escaped. Unescaped, a 
 `bddkit resource fields` prints the keys each kind of `resources` entry accepts, which key is mandatory, what value it takes, and what it is for:
 
 ```console
-$ bddkit resource fields db
-db:
-  dsn               string    required  connection string; its scheme selects the engine (postgres://, mysql://)
-  search_path       nonscalar           Postgres schema search path; refused on MySQL and MariaDB, which have no session equivalent
-  options           nonscalar           polling.timeout_secs / polling.interval_ms for eventual assertions against this connection
+$ bddkit resource fields srp
+srp:
+  variant           string    required  hex-string or rfc5054
+  prime             string              group prime in hexadecimal (default: the RFC 5054 4096-bit group)
+  generator         string              generator as a decimal number (default 5)
+  hash              string              sha-1, sha-256 or sha-512 (default sha-256)
+  options           nonscalar           polling.timeout_secs / polling.interval_ms for eventual assertions using this configuration
 ```
 
 The type column is the answer to "can I set this with a flag": `string`, `boolean` and `number` can, and `nonscalar` — a map or a list — is what `resource add --json` is for. A plugin's group is described by the plugin itself, and a field whose manifest declares no type is a string.
 
-Narrow it with a positional kind (`api`, `db`, `srp`, or a plugin's group). `[--config <path>]` also loads that suite's plugins, so the groups they serve are described too — by the plugins themselves, since only a plugin knows what its own group takes; resolved the same way as `steps list`'s, `bddkit.yaml`/`bddkit.yml` default included, with `--no-config` as the same escape hatch. A plugin whose manifest describes nothing says so and is not an error. `--json` emits the same listing machine-readably.
+Narrow it with a positional kind (`api`, `srp`, or a plugin's group such as `db`). `[--config <path>]` also loads that suite's plugins, so the groups they serve are described too — by the plugins themselves, since only a plugin knows what its own group takes; resolved the same way as `steps list`'s, `bddkit.yaml`/`bddkit.yml` default included, with `--no-config` as the same escape hatch. A plugin whose manifest describes nothing says so and is not an error. `--json` emits the same listing machine-readably.
 
 ### `bddkit resource add`
 
@@ -516,11 +509,11 @@ What masking does not do:
 
 ## Telemetry
 
-bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which kinds of resources suites use (APIs, which database engines, SRP, which official plugins) and where the steps spend their time.
+bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which kinds of resources suites use (APIs, SRP, which official plugins, the databases' `db` among them) and where the steps spend their time.
 
 **Sending.** While telemetry is on, each command writes its payload to `telemetry-last.json` in your user layer (`bddkit telemetry show` prints it), and to the file `BDDKIT_TELEMETRY_LOG` names if you set one, then sends it once as `POST https://telemetry.bddkit.dev/v1/run`. The request waits at most 500 ms to connect and 1.5 s in all, DNS included, so a dead network or a broken resolver costs a command at most 1.5 s; it is not retried, prints nothing and never changes the exit code, a run you interrupt sends nothing, and a signal while the request is out ends the command at once with its own exit code. `BDDKIT_TELEMETRY_URL` points it at a collector of your own. Since sending starts with this release, an existing yes now takes effect: turn it off with `bddkit telemetry off`, `BDDKIT_TELEMETRY=0`, `DO_NOT_TRACK=1` or `telemetry: false` in `bddkit.yaml`.
 
-**What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had and how many of those failures were of each class (`assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`), how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many APIs, SRP configurations and databases of which engine, how many instances of which official plugin, and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
+**What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had and how many of those failures were of each class (`assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`), how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many APIs and SRP configurations, how many instances of which official plugin, and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
 
 **What is never in it.** Addresses, host names, URLs, DSNs, file paths; the names of feature files, features, scenarios, tags, resources, connections, environments, macros and private plugins; step text, variable values, request or response bodies, headers, SQL; any config value; your user name, host name, repository or git remote; error and panic messages. There is no identifier of any kind: nothing links two runs.
 
@@ -553,23 +546,11 @@ bddkit telemetry on --layer shared  for every user of this machine (/etc/bddkit)
 
 ## Databases
 
-PostgreSQL, MySQL 8 and MariaDB, from **MariaDB 10.5** — the release that adds `RETURNING`, which bddkit uses to read a generated key back. Nothing refuses an older MariaDB at startup; it connects, and the first insert into a table with a primary key fails with a syntax error from the server. The engine comes from the DSN scheme (`postgres://`, `mysql://`), and because MySQL and MariaDB share one scheme they are told apart by a single `SELECT VERSION()` when the pool is built. Every DB step is spelled the same on all three — `examples/db-features-mysql/db.feature` is one file that passes unchanged against both MySQL and MariaDB.
-
-What does not carry over:
-
-- **Sequences.** MySQL has none, so `I get next value of sequence` fails naming the engine. Postgres and MariaDB both have them.
-- **`search_path`.** On MySQL and MariaDB a schema *is* a database, so there is no session-level search path. The key is refused at startup rather than quietly ignored: name the database in the DSN, or qualify a table as `database.table` in the step.
-- **`binary` and `varbinary` columns**, `binary(16)` UUIDs included. This layer binds and compares everything as text, and `UUID_TO_BIN`'s `swap_flag` — which decides the byte order — is recorded nowhere in `information_schema`, so bddkit would have to guess and could write bytes the service under test disagrees with. It refuses the column instead. Store the UUID as `char(36)` and bddkit fills it client-side.
-- **A primary key filled by a server-side `DEFAULT` that is not `AUTO_INCREMENT`**, on MySQL. There is no `RETURNING` there to read the value back with, so the step fails naming the column before it inserts anything — give the value explicitly.
-- **The text a value reads back as is the engine's own.** `I extract` is portable as a step and not as a value: `now()` reads back as `2026-08-29 15:11:50.884052+00` on Postgres and `2026-08-29 15:11:50` on MySQL and MariaDB, a boolean as `true` versus `1`, a bare `numeric` as `0` where `decimal(12,2)` is `0.00`. So `I extract` followed by `variable "x" should be equal to "..."` is portable over `varchar`-ish columns and nowhere else. A `where` against those same columns is unaffected — the engine coerces the bind back into its own type; it is only the extracted value that carries the engine's spelling.
-
-`examples/README.md` has the same ground as a per-engine table, with the workaround for each row.
-
-In debug mode, every DB step prints the query's duration right after its SQL and parameters (`TIME: 3.41 ms`), on a failing query too — a slow query that ends in an error is exactly what this is meant to diagnose. Under `concurrency` greater than 1 that number also includes the wait for a free pooled connection, so it can read higher than the query's own time; for an accurate measurement run with `concurrency: 1`.
+Databases are the official [`bddkit-db`](https://github.com/bddkit/bddkit-db) plugin, which serves the `db` group on PostgreSQL, MySQL 8 and MariaDB 10.5 and later. `bddkit plugin install` with no name installs it for a config that declares `resources.db`, and `bddkit init --db` does it when it writes one. Configs and feature files written for the built-in databases of earlier releases run unchanged: `default_db`, `--default-db` and `BDDKIT_DEFAULT_DB` select the connection, and `I use "<conn>" connection` still switches, with `bddkit doctor` pointing at its new spelling `I use "<conn>" db`. The steps, the engines and what does not carry over between them are in the plugin's README.
 
 ### Cleaning up what a run created
 
-Every `<<unique()>>` token is `u` followed by the run's own 12-character prefix and a counter, and `<<run_id>>` is that prefix. A `~` on the column name asks for SQL `LIKE` instead of `=`, so one step removes exactly the rows this run wrote — `examples/db-features/cleanup.feature` is it, working:
+Every `<<unique()>>` token is `u` followed by the run's own 12-character prefix and a counter, and `<<run_id>>` is that prefix. A `~` on the column name asks for SQL `LIKE` instead of `=`, so one step of the `db` plugin removes exactly the rows this run wrote — `examples/db-features/cleanup.feature` in its repository is it, working:
 
 ```gherkin
 @serial(demo) @priority(-100)
@@ -590,7 +571,7 @@ Four things to know about it:
 
 ## Plugins
 
-`api`, `db` and `srp` are the resource kinds built into the binary. Any **other** key under `resources:` is a group served by a plugin — a shared library bddkit loads at startup — so reaching an object store, a queue or a mailbox is the same move as reaching a second database:
+`api` and `srp` are the resource kinds built into the binary. Any **other** key under `resources:` is a group served by a plugin, `db` included — a shared library bddkit loads at startup — so reaching an object store, a queue or a mailbox is the same move as reaching a second database:
 
 ```yaml
 resources:
@@ -654,9 +635,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | Non-JSON responses, form login, file upload | `examples/features/content_types.feature` |
 | Polling an assertion until it passes | `examples/features/eventual.feature` |
 | The mock API behind all of it | `examples/mocks/api-server.yaml` |
-| Every DB step, worked through | `examples/db-features/db.feature` |
-| Cleaning up a run's data | `examples/db-features/cleanup.feature` |
-| The same on MySQL and MariaDB | `examples/db-features-mysql/db.feature` |
+| Every DB step, cleanup and the engines | [`bddkit-db`](https://github.com/bddkit/bddkit-db) and its `examples/` |
 | SRP handshake, Hawk signing | `tests/features/` |
 | Hiding secrets, and the design behind it | the Privacy section above, `docs/events-design.md` section 7 |
 | What the usage counts hold, field by field | the Telemetry section above, `docs/telemetry.md` |
@@ -679,7 +658,7 @@ connection and would never see uncommitted rows, so rolling back per scenario
 would break any test where a step writes and the API reads. Isolation comes
 from unique data instead.
 
-**Where this is going.** `api`, `db`, and `srp` are the resource kinds that ship, not the ceiling — any other key under `resources:` is a capability group a plugin serves, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
+**Where this is going.** `api` and `srp` are the resource kinds that ship in the binary, not the ceiling — any other key under `resources:` is a capability group a plugin serves, the databases' `db` among them, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
 
 ## Development
 
@@ -687,7 +666,7 @@ from unique data instead.
 cargo test
 ```
 
-Some tests need a database; `docker-compose.yml` brings up all three — PostgreSQL on `:5433` (schema from `examples/db/init.sql`), MySQL on `:3307` and MariaDB on `:3308` (both from `examples/db/init-mysql.sql`). The DB suite runs against Postgres by default; `BDDKIT_TEST_ENGINE=mysql` or `=mariadb` points it at the other two, and CI runs all three. The same file brings up [Smocker](https://github.com/smocker-dev/smocker) as the HTTP example's mock API — it seeds `examples/mocks/api-server.yaml` at startup and serves it on `localhost:8080` (web UI on `localhost:8081`).
+`docker-compose.yml` brings up [Smocker](https://github.com/smocker-dev/smocker) as the HTTP example's mock API — it seeds `examples/mocks/api-server.yaml` at startup and serves it on `localhost:8080` (web UI on `localhost:8081`).
 
 ## License
 
