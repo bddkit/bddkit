@@ -98,9 +98,9 @@ jobs:
           $results | Format-Table -AutoSize
           if ($results.Count -gt 0) { exit 1 }
 
-  # A build without the built-in API and databases (`dev-unreserve`), which is
-  # what `bddkit-api` and `bddkit-db` run on until the built-ins are gone. What
-  # is left needs neither the stub nor a database, so no containers here.
+  # A build without the built-in API (`dev-unreserve`), which is what
+  # `bddkit-api` runs on until the built-in is gone. What is left needs no
+  # stub, so no containers here.
   test-without-built-ins:
     name: test & clippy (dev-unreserve)
     needs: changes
@@ -135,35 +135,6 @@ jobs:
       contents: read
       checks: write
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          # 5432 for the Rust DB tests, 5433 for examples/db.yaml, which is the
-          # file the README tells a reader to run against docker-compose.
-          - 5432:5432
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      # One DSN per engine. tests/common/db.rs picks which one it uses from
-      # BDDKIT_TEST_ENGINE; tests/db_engines.rs and tests/db_mysql_insert.rs read
-      # all three directly and skip an engine whose variable is unset — so
-      # without these two lines they pass by testing nothing.
-      # Postgres: tests/common/db.rs falls back to port 5433 (docker-compose);
-      # the service container above is published on the default port instead.
-      # MySQL and MariaDB keep their docker-compose ports, since they are the
-      # same containers here (see "Start the example containers" below).
-      BDDKIT_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/postgres
-      BDDKIT_TEST_MYSQL_DSN: mysql://root:root@127.0.0.1:3307/apibdd_it
-      BDDKIT_TEST_MARIADB_DSN: mysql://root:root@127.0.0.1:3308/apibdd_it
-
     steps:
       - uses: actions/checkout@v6
 
@@ -186,83 +157,34 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # First, and with no database in reach: a dialect unit test that broke must
-      # report before a single container has started.
+      # First: a unit test that broke must report before a container has started.
       - name: Unit tests
         run: cargo test --locked --bin bddkit
 
       # The examples are the tool's demonstration surface; without this they rot
-      # silently and the README's reader is the first to find out. Every suite runs
+      # silently and the README's reader is the first to find out. The suite runs
       # exactly as examples/README.md documents it, and a failed scenario exits 1.
-      # None of these can be a service container: those start before checkout, so
-      # the files they mount — Smocker's mocks, the MySQL init script — do not
-      # exist yet. MySQL and MariaDB are taken from docker-compose for exactly that
-      # reason: the entrypoint applies examples/db/init-mysql.sql, which the
-      # example suite needs and which no client on the runner is guaranteed to be
-      # able to apply by hand. The wait is on what those scripts create, not on the
-      # server port, so a container that is up but still initialising cannot be
-      # mistaken for a ready one — and MariaDB waits on `tickets`, which comes from
-      # the second script (init-mariadb.sql), so a half-applied init directory is
-      # not mistaken for a finished one either.
+      # Smocker cannot be a service container: those start before checkout, so
+      # the mocks it mounts do not exist yet. The wait is on the mocks being
+      # loaded, not on the port.
       - name: Start the example containers
         run: |
-          docker compose up -d smocker mysql mariadb
+          docker compose up -d smocker
           timeout 180 bash -c '
             until curl -sf http://localhost:8081/mocks >/dev/null; do sleep 2; done
-            until docker compose exec -T mysql mysql -uroot -proot -e "SELECT 1" apibdd_demo >/dev/null 2>&1; do sleep 2; done
-            until docker compose exec -T mariadb mariadb -uroot -proot -e "SELECT 1 FROM tickets" apibdd_demo >/dev/null 2>&1; do sleep 2; done
           '
 
-      - name: Acceptance tests
-        run: cargo test --locked --test acceptance
+      # Every integration target. Among them, that a default build refuses a
+      # plugin claiming a built-in's group.
+      - name: Integration tests
+        run: cargo test --locked --test '*'
 
-      - name: Plugin acceptance tests
-        run: cargo test --locked --test plugin
-
-      # Among them, that a default build refuses a plugin claiming a built-in's group.
-      - name: Group plugin tests
-        run: cargo test --locked --test group_plugin
-
-      # The apibdd_it fixture schema is shared, so DB tests run single-threaded.
-      # The same suite runs once per engine: BDDKIT_TEST_ENGINE picks the dialect
-      # and, with it, the DSN above. Every feature source is identical on all
-      # three — what differs is the fixture DDL, in tests/common/db.rs.
-      - name: Database tests (Postgres)
-        run: cargo test --locked --test db -- --test-threads=1
-
-      - name: Database tests (MySQL)
-        env:
-          BDDKIT_TEST_ENGINE: mysql
-        run: cargo test --locked --test db -- --test-threads=1
-
-      - name: Database tests (MariaDB)
-        env:
-          BDDKIT_TEST_ENGINE: mariadb
-        run: cargo test --locked --test db -- --test-threads=1
-
-      # Platform selection per DSN, and the no-RETURNING insert path. Separate
-      # test targets, so they need naming here or cargo never builds them.
-      - name: Engine selection tests
-        run: cargo test --locked --test db_engines --test db_mysql_insert -- --test-threads=1
-
-      # docker-compose seeds this through the entrypoint; the service container
-      # above comes up empty, so examples/db.yaml's schemas are applied by hand.
-      - name: Load the example database schema
-        run: psql -v ON_ERROR_STOP=1 "$BDDKIT_TEST_DSN" -f examples/db/init.sql
-
-      # Every suite runs whatever the previous one did, so a red run still
-      # produces all four reports — `set -e` would stop at the first exit 1 and
-      # the report below would be missing the suites that never ran. The exit
-      # code is the worst one seen; a report the run could not write is 2 and
-      # fails the job like anything else. The reports live outside the
-      # checkout: `cargo publish --dry-run` below refuses a dirty working tree.
+      # A report the run could not write is 2 and fails the job like anything
+      # else. The report lives outside the checkout: `cargo publish --dry-run`
+      # below refuses a dirty working tree. The database suites live in
+      # bddkit-db now.
       - name: Example suites
-        run: |
-          code=0
-          for suite in api db db-mysql db-mariadb; do
-            cargo run --locked --quiet -- run --config examples/$suite.yaml --junit "$RUNNER_TEMP/reports/$suite.xml" || code=$(( $? > code ? $? : code ))
-          done
-          exit $code
+        run: cargo run --locked --quiet -- run --config examples/api.yaml --junit "$RUNNER_TEMP/reports/api.xml"
 
       # bddkit testing bddkit: selftest/ runs the binary on a scratch project
       # through the published `exec` plugin and reads back what it printed and

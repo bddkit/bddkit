@@ -1,36 +1,4 @@
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5433:5432"
-    volumes:
-      - ./examples/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-
-  mysql:
-    image: mysql:8
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: apibdd_it
-    ports:
-      - "3307:3306"
-    volumes:
-      - ./examples/db/init-mysql.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
-
-  mariadb:
-    image: mariadb:11
-    environment:
-      MARIADB_ROOT_PASSWORD: root
-      MARIADB_DATABASE: apibdd_it
-    ports:
-      - "3308:3306"
-    volumes:
-      # Numbered: the entrypoint applies these in sorted order, and the
-      # MariaDB-only extras need apibdd_demo to exist first.
-      - ./examples/db/init-mysql.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
-      - ./examples/db/init-mariadb.sql:/docker-entrypoint-initdb.d/20-mariadb.sql:ro
-
   smocker:
     image: ghcr.io/smocker-dev/smocker:v1.1.2-preview
     environment:
