@@ -589,13 +589,18 @@ pub async fn apply(
     // The plugin groups the config was just written with, from the answers:
     // reading them back would expand `${VAR}`, and an `--dsn '${BDDKIT_DB_DSN}'`
     // not exported yet would hide the `db` group behind a load error.
-    let groups: Vec<String> = answers.dsn.iter().map(|_| "db".to_string()).collect();
+    let mut groups: Vec<String> = answers.dsn.iter().map(|_| "db".to_string()).collect();
     if !answers.plugins.is_empty() || !groups.is_empty() {
         match plugin::manage::Context::new(env.clone(), crate::config_dir(config_path)) {
             Ok(ctx) => {
+                // A group an installed plugin serves needs no index to name a
+                // plugin for it, so an unreachable index is no failure then.
+                let served = ctx.served_groups();
+                groups.retain(|group| !served.contains(group));
                 // The plugins the answers named, then the ones the config just
-                // written needs: `db` for a database, and none for `api` while
-                // the host serves it, so no network is touched for that.
+                // written needs: `db` for a database unless an installed plugin
+                // serves it, and none for `api` while the host serves it, so no
+                // network is touched for either.
                 let mut names = answers.plugins.clone();
                 match ctx.needs_groups(&groups).await {
                     Ok((missing, _)) => {

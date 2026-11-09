@@ -334,6 +334,26 @@ impl Context {
         self.needs_groups(&cfg.groups_in_use()).await
     }
 
+    /// The groups the plugins installed in the chain serve, read from their
+    /// manifests, so a plugin installed from a repository under another name
+    /// counts too. Loads the libraries, so only `init` asks: it runs this
+    /// binary, where `needs` must also answer for another ABI. A chain that
+    /// does not load serves nothing.
+    pub(crate) fn served_groups(&self) -> Vec<String> {
+        let loaded = lock::load(&dirs::candidates(&self.layers, "plugins")).and_then(|entries| {
+            super::Plugins::load_collecting(entries, &[], &[], 1, &Default::default())
+        });
+        loaded
+            .map(|plugins| {
+                let groups = plugins.group_names();
+                // Never unloaded, as `load_plugins` leaves them: a plugin's
+                // `atexit` handler would run against an unmapped page.
+                std::mem::forget(plugins);
+                groups
+            })
+            .unwrap_or_default()
+    }
+
     /// `needs` for groups the caller already knows, so a config whose
     /// `${VAR}` is not exported yet does not hide what it asks for.
     pub(crate) async fn needs_groups(
