@@ -1093,6 +1093,50 @@ fn resource_add_writes_a_plugin_group_it_can_probe() {
     );
 }
 
+/// A resource name is written to the file literally and read back `${VAR}`-
+/// expanded, so a name carrying a variable that is set is not in the loaded
+/// config under the name being written. Built-in kinds refuse it; a plugin
+/// group used to write the literal key and exit 0.
+#[test]
+fn resource_add_refuses_a_plugin_group_name_that_expands_to_something_else() {
+    let dir = project(
+        "resource-add-expanding-name",
+        "Feature: f\n",
+        &format!("{ECHO_GROUP}default_echo: main\n"),
+    );
+    let cfg = dir.join("cfg.yaml");
+    let before = std::fs::read_to_string(&cfg).expect("read config");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "resource",
+            "add",
+            "echo",
+            "${BDDKIT_TEST_NAME}",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--no-check",
+        ])
+        .env("BDDKIT_TEST_NAME", "expanded")
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("${VAR}"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&cfg).expect("read config"),
+        before,
+        "nothing was written"
+    );
+}
+
 /// The failure issue #28 is about, end to end: the fixture's `loud` is a
 /// boolean and its `validate_config` refuses anything else, so before a
 /// manifest could declare a type the host wrote `'false'` and the plugin
