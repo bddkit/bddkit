@@ -338,6 +338,24 @@ fn a_resource_the_host_cannot_build_reports_the_resources_stage() {
     assert_eq!(suite.only_payload()["stage"], "resources");
 }
 
+#[test]
+fn a_plugin_instance_the_plugin_refuses_reports_the_resources_stage() {
+    let suite = plugin_suite("plugin-refused", "");
+    std::fs::write(
+        suite.dir.join("bddkit.yaml"),
+        "paths: [features]\nconcurrency: 1\nresources:\n  echo:\n    main: {}\n",
+    )
+    .unwrap();
+    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(
+        text(&out).contains("requires a string \"prefix\""),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(suite.only_payload()["stage"], "resources");
+}
+
 /// `/dev/full` opens for writing and fails every write with ENOSPC.
 #[cfg(target_os = "linux")]
 #[test]
