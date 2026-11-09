@@ -43,23 +43,8 @@ ExtractRegexFromVariableGlobal: nolasa regulārās izteiksmes pirmo tveršanas g
 ExtractRegexFromVariable: nolasa regulārās izteiksmes pirmo tveršanas grupu no mainīgā teksta mainīgajā
 EncryptWithAes: šifrē vērtību ar AES atslēgu un saglabā rezultātu mainīgajā
 UseApi: pārslēdz API resursu un tā noklusējuma galvenes līdz scenārija beigām
-UseConnection: pārslēdz datubāzes savienojumu līdz scenārija beigām
 DebugOn: izvada uz stderr ģenerēto SQL, tā saites un apmaiņu ar spraudņiem
 DebugOff: izslēdz atkļūdošanas izvadi, kas ieslēgta agrāk scenārijā
-HaveWhere: ievieto pa rindai par katru zemāk esošās tabulas rindu, kolonnas no tās galvenes
-HaveWith: ievieto rindu, aizpildot obligātās kolonnas pēc tabulas shēmas
-HaveMulti: ievieto rindas vairākās tabulās, zemāk esošās tabulas pirmā kolonna nosauc katru
-Update: atjaunina atbilstošās rindas un saglabā to skaitu mainīgajā updated_<table>
-DeleteAll: iztukšo visu tabulu — bez WHERE un neņemot vērā paralēli darbojošos failus
-DeleteWhere: dzēš atbilstošās rindas un saglabā to skaitu mainīgajā deleted_<table>
-ExtractFromDb: nolasa pirmās atbilstošās rindas kolonnu mainīgajā
-ShouldNotHaveTable: pārbauda, ka neviena rinda neatbilst nevienai zemāk esošās tabulas rindai
-ShouldNotHaveWith: pārbauda, ka nav rindas ar šādām kolonnu vērtībām
-ShouldHaveTable: pārbauda, ka katrai zemāk esošās tabulas rindai atbilst kāda rinda
-ShouldHaveWith: pārbauda, ka ir vismaz viena rinda ar šādām kolonnu vērtībām
-CallProcedure: izsauc glabāto procedūru ar šiem argumentiem
-CallFunction: izsauc funkciju un saglabā tās rezultātu mainīgajā
-GetSequence: pavirza secību uz priekšu un saglabā jauno vērtību mainīgajā
 Sleep: aptur scenāriju — galējs līdzeklis, parasti noder atlikta pārbaude
 ShowAllVariables: izvada uz stderr visus redzamos mainīgos
 ShowVariable: izvada uz stderr vienu mainīgo un kļūdu, ja tas nav iestatīts

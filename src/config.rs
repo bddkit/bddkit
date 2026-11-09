@@ -32,9 +32,6 @@ pub struct Config {
     pub default_api: Option<String>,
     #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
-    pub default_db: Option<String>,
-    #[cfg(not(feature = "dev-unreserve"))]
-    #[serde(default)]
     pub default_srp: Option<String>,
     #[serde(default)]
     pub options: OptionsLayer,
@@ -69,9 +66,6 @@ pub struct Resources {
     #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub api: BTreeMap<String, ApiConfig>,
-    #[cfg(not(feature = "dev-unreserve"))]
-    #[serde(default)]
-    pub db: BTreeMap<String, Connection>,
     #[cfg(not(feature = "dev-unreserve"))]
     #[serde(default)]
     pub srp: BTreeMap<String, SrpConfig>,
@@ -209,45 +203,6 @@ pub struct ApiConfig {
     pub effective_sensitive_headers: Vec<String>,
 }
 
-/// `Clone` so `doctor` can hand `Db::connect` a one-entry map per connection.
-/// `Db::connect` already names the failing connection in its error; what it
-/// does not do is carry on, so a whole-map call would return at the first dead
-/// DSN and never probe the second.
-/// What a `resources.db.<name>` body takes. See `API_FIELDS`.
-#[cfg(not(feature = "dev-unreserve"))]
-pub const DB_FIELDS: &[(&str, bool, &str, Scalar)] = &[
-    (
-        "dsn",
-        true,
-        "connection string; its scheme selects the engine (postgres://, mysql://)",
-        Scalar::Str,
-    ),
-    (
-        "search_path",
-        false,
-        "Postgres schema search path; refused on MySQL and MariaDB, which have no session equivalent",
-        Scalar::NonScalar,
-    ),
-    (
-        "options",
-        false,
-        "polling.timeout_secs / polling.interval_ms for eventual assertions against this connection",
-        Scalar::NonScalar,
-    ),
-];
-
-#[cfg(not(feature = "dev-unreserve"))]
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Connection {
-    pub dsn: String,
-    #[serde(default)]
-    pub search_path: Vec<String>,
-    #[serde(default)]
-    pub options: OptionsLayer,
-    #[serde(skip)]
-    pub effective_options: Options,
-}
-
 /// SRP parameters. Everything except `variant` has a sensible default: the
 /// RFC 5054 4096-bit group, generator 5, SHA-256.
 /// What a `resources.srp.<name>` body takes. See `API_FIELDS`.
@@ -287,8 +242,6 @@ pub fn host_fields(kind: &str) -> Option<&'static [(&'static str, bool, &'static
     match kind {
         #[cfg(not(feature = "dev-unreserve"))]
         "api" => Some(API_FIELDS),
-        #[cfg(not(feature = "dev-unreserve"))]
-        "db" => Some(DB_FIELDS),
         #[cfg(not(feature = "dev-unreserve"))]
         "srp" => Some(SRP_FIELDS),
         _ => None,
@@ -375,12 +328,6 @@ impl Config {
             resource.effective_sensitive_headers = headers;
         }
         #[cfg(not(feature = "dev-unreserve"))]
-        for (name, resource) in &mut self.resources.db {
-            resource.effective_options = global
-                .apply(&resource.options)
-                .map_err(|error| anyhow::anyhow!("resources.db.{name}: {error}"))?;
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
         for (name, resource) in &mut self.resources.srp {
             resource.effective_options = global
                 .apply(&resource.options)
@@ -407,7 +354,7 @@ impl Config {
     }
 
     /// The default API name. `None` if no APIs are declared at all — that's
-    /// legal, HTTP steps then fail on first use (see `resolve_default_db`).
+    /// legal, HTTP steps then fail on first use.
     #[cfg(not(feature = "dev-unreserve"))]
     pub fn resolve_default_api(&self) -> Result<Option<String>> {
         resolve_default(
@@ -415,18 +362,6 @@ impl Config {
             "resources.api",
             &self.default_api,
             self.resources.api.keys(),
-        )
-    }
-
-    /// The default connection name. `None` if no DBs are declared at all —
-    /// that's legal, DB steps then fail on first use.
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub fn resolve_default_db(&self) -> Result<Option<String>> {
-        resolve_default(
-            "default_db",
-            "resources.db",
-            &self.default_db,
-            self.resources.db.keys(),
         )
     }
 
@@ -446,11 +381,11 @@ impl Config {
         self.resources.groups.keys()
     }
 
-    /// The groups a default can be set for: the built-in three, declared or not,
+    /// The groups a default can be set for: the built-in two, declared or not,
     /// then the plugin groups the config declares.
     pub fn all_group_names(&self) -> Vec<String> {
         #[cfg(not(feature = "dev-unreserve"))]
-        let built_in = ["api", "db", "srp"];
+        let built_in = ["api", "srp"];
         #[cfg(feature = "dev-unreserve")]
         let built_in: [&str; 0] = [];
         built_in
@@ -468,8 +403,6 @@ impl Config {
         match group {
             #[cfg(not(feature = "dev-unreserve"))]
             "api" => self.default_api = Some(name.to_string()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            "db" => self.default_db = Some(name.to_string()),
             #[cfg(not(feature = "dev-unreserve"))]
             "srp" => self.default_srp = Some(name.to_string()),
             _ if self.resources.groups.contains_key(group) => {
@@ -520,15 +453,23 @@ impl Config {
     /// for `default_widget` — a key nothing ever reads, which is the silent no-op
     /// the config layer refuses everywhere else. Checked once the groups are
     /// known, i.e. after the plugins have loaded.
-    pub fn check_group_defaults(&self) -> Result<()> {
+    ///
+    /// With no plugin loaded only `default_db` is checked: it named the built-in
+    /// database kind, which refused it when nothing was declared, so a stray one
+    /// stays an error. Any other `default_*` is then the unknown key `Config`
+    /// has always tolerated.
+    pub fn check_group_defaults(&self, plugins_loaded: bool) -> Result<()> {
         for key in self.extra.keys() {
             let Some(group) = key.strip_prefix("default_") else {
                 continue;
             };
-            // api/db/srp are typed fields and never reach `extra`; listed so a
+            if !plugins_loaded && group != "db" {
+                continue;
+            }
+            // api/srp are typed fields and never reach `extra`; listed so a
             // future untyped one cannot be reported as a typo.
             #[cfg(not(feature = "dev-unreserve"))]
-            if matches!(group, "api" | "db" | "srp") {
+            if matches!(group, "api" | "srp") {
                 continue;
             }
             if self.resources.groups.contains_key(group) {
@@ -892,8 +833,6 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     #[cfg(not(feature = "dev-unreserve"))]
     cfg.resolve_default_api()?;
     #[cfg(not(feature = "dev-unreserve"))]
-    cfg.resolve_default_db()?;
-    #[cfg(not(feature = "dev-unreserve"))]
     cfg.resolve_default_srp()?;
     cfg.resolve_options()?;
     // The values of the headers a resource calls sensitive are known only now.
@@ -1086,19 +1025,6 @@ resources:
 
     #[test]
     #[cfg(not(feature = "dev-unreserve"))]
-    fn the_db_field_table_matches_the_connection_struct() {
-        check_table::<Connection>(
-            DB_FIELDS,
-            &[
-                ("dsn", "postgres://localhost/app"),
-                ("search_path", "[public]"),
-                ("options", "{ polling: { timeout_secs: 3 } }"),
-            ],
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
     fn the_srp_field_table_matches_the_srp_struct() {
         check_table::<SrpConfig>(
             SRP_FIELDS,
@@ -1154,7 +1080,7 @@ resources:
         )
         .expect("config parses");
         let error = c
-            .check_group_defaults()
+            .check_group_defaults(true)
             .expect_err("default_widgte names nothing")
             .to_string();
         assert!(error.contains("default_widgte"), "{error}");
@@ -1167,7 +1093,7 @@ resources:
             "paths: [features]\nresources:\n  api: {}\n  widget:\n    main:\n      bucket: b\ndefault_widget: main\n",
         )
         .expect("config parses");
-        c.check_group_defaults()
+        c.check_group_defaults(true)
             .expect("default_widget names its group");
     }
 
@@ -1211,18 +1137,18 @@ resources:
             c.resources.api["jobs"].effective_options.polling.interval,
             std::time::Duration::from_millis(200)
         );
+        // `db` is a plugin group now: its `options` key reaches the same cascade.
+        let reporting = c
+            .plugin_instances
+            .iter()
+            .find(|spec| spec.group == "db" && spec.name == "reporting")
+            .expect("the db instance");
         assert_eq!(
-            c.resources.db["reporting"]
-                .effective_options
-                .polling
-                .timeout,
+            reporting.options.polling.timeout,
             std::time::Duration::from_secs(10)
         );
         assert_eq!(
-            c.resources.db["reporting"]
-                .effective_options
-                .polling
-                .interval,
+            reporting.options.polling.interval,
             std::time::Duration::from_millis(500)
         );
         assert_eq!(
@@ -1465,57 +1391,46 @@ resources:
 
         #[test]
         fn no_apis_resolves_to_none() {
-            // Legal: a config may describe only DBs. HTTP steps then fail on
-            // first use — symmetric to resolve_default_db.
+            // Legal: a config may describe no API. HTTP steps then fail on
+            // first use.
             let c = parse("paths: [f]\nresources:\n  api: {}\n").expect("config parses");
             assert_eq!(c.resolve_default_api().expect("no APIs are declared"), None);
         }
     }
 
-    #[cfg(not(feature = "dev-unreserve"))]
-    mod resolve_default_db {
+    /// `db` is a plugin group: `default_db` keeps its meaning through the rule
+    /// every plugin group's `default_<group>` follows.
+    mod default_db {
         use super::*;
 
         #[test]
-        fn no_databases_resolves_to_none() {
-            let c = parse(SAMPLE).expect("config parses");
-            assert_eq!(c.resolve_default_db().expect("no DBs are declared"), None);
-        }
-
-        #[test]
-        fn a_single_connection_needs_no_explicit_default() {
-            let src = "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                       db:\n    only:\n      dsn: postgres://u:p@db/x\n";
+        fn the_config_key_names_the_default() {
+            let src = "paths: [f]\ndefault_db: two\nresources:\n  db:\n    one:\n      dsn: postgres://u:p@db/x\n    \
+                       two:\n      dsn: postgres://u:p@db/y\n";
             let c = parse(src).expect("config parses");
+            c.check_group_defaults(true)
+                .expect("default_db names a declared group");
             assert_eq!(
-                c.resolve_default_db().expect("default is inferred"),
-                Some("only".to_string())
+                c.resolve_default_group("db").expect("default is set"),
+                Some("two".to_string())
             );
         }
 
+        /// The built-in refused a `default_db` with nothing declared; with no
+        /// plugin loaded it still is, while other unknown keys stay tolerated.
         #[test]
-        fn several_connections_without_a_default_is_an_error() {
-            let src = "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                       db:\n    one:\n      dsn: postgres://u:p@db/x\n    two:\n      dsn: postgres://u:p@db/y\n";
-            let c = parse(src).expect("config parses");
-            let err = c.resolve_default_db().expect_err("default is ambiguous");
-            assert!(err.to_string().contains("default_db"), "{err}");
-        }
-
-        #[test]
-        fn reads_search_path() {
-            let src = "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                       db:\n    main:\n      dsn: postgres://u:p@db/x\n      search_path: [app, public]\n";
-            let c = parse(src).expect("config parses");
-            assert_eq!(c.resources.db["main"].search_path, vec!["app", "public"]);
-        }
-
-        #[test]
-        fn search_path_defaults_to_empty() {
-            let src = "paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://a.local\n  \
-                       db:\n    main:\n      dsn: postgres://u:p@db/x\n";
-            let c = parse(src).expect("config parses");
-            assert!(c.resources.db["main"].search_path.is_empty());
+        fn a_stray_default_db_is_refused_with_no_plugin_loaded() {
+            let c = parse("paths: [f]\ndefault_db: main\ndefault_timeout: 30\nresources: {}\n")
+                .expect("config parses");
+            let error = c
+                .check_group_defaults(false)
+                .expect_err("default_db names nothing")
+                .to_string();
+            assert!(error.contains("default_db"), "{error}");
+            let other = parse("paths: [f]\ndefault_timeout: 30\nresources: {}\n").expect("parses");
+            other
+                .check_group_defaults(false)
+                .expect("an unknown key is tolerated");
         }
     }
 

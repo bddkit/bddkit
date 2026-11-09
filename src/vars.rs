@@ -154,7 +154,7 @@ impl Default for VarStack {
 
 /// SQL NULL sentinel. NUL bytes never occur in `.feature` text, so the
 /// value can never be confused with real data. `<<null>>` expands into it,
-/// and the DB layer reads it back as NULL — a single point of substitution is kept.
+/// and the `db` plugin reads it back as NULL — a single point of substitution is kept.
 pub const NULL_SENTINEL: &str = "\u{0}__bddkit_null__\u{0}";
 
 /// One whole `<<name>>` or `<<function(arguments)>>` slot, with no capture

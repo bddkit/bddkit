@@ -331,7 +331,15 @@ impl Context {
         config: &Path,
     ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
         let cfg = crate::config::load(config, None)?;
-        let groups = cfg.groups_in_use();
+        self.needs_groups(&cfg.groups_in_use()).await
+    }
+
+    /// `needs` for groups the caller already knows, so a config whose
+    /// `${VAR}` is not exported yet does not hide what it asks for.
+    pub(crate) async fn needs_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
         if groups.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -340,7 +348,7 @@ impl Context {
             .map(|entry| entry.name)
             .collect();
         let index = install::fetch_index(&self.client, &self.sources).await?;
-        let wanted = install::needs(&groups, &installed, &index)?;
+        let wanted = install::needs(groups, &installed, &index)?;
         let unclaimed = wanted.unclaimed;
         let missing = wanted.missing.into_iter().cloned().collect();
         Ok((missing, unclaimed))

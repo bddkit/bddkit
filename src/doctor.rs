@@ -2,10 +2,10 @@
 //! without starting a run — plus, under `--live`, the one class of check a run
 //! does not have: whether the resources the config names actually answer.
 
+#[cfg(not(feature = "dev-unreserve"))]
+use crate::http;
 use crate::steps::{BUILTIN_STEPS, StepTarget};
 use crate::{config, dirs, feature, validate};
-#[cfg(not(feature = "dev-unreserve"))]
-use crate::{db, http};
 use serde::Serialize;
 use std::path::Path;
 
@@ -433,8 +433,6 @@ pub async fn check(
     push_evidence(&mut report, &cfg, stream);
     #[cfg(not(feature = "dev-unreserve"))]
     check_apis(&mut report, &cfg, live).await;
-    #[cfg(not(feature = "dev-unreserve"))]
-    check_databases(&mut report, &cfg, live).await;
     #[cfg(not(feature = "dev-unreserve"))]
     check_srp(&mut report, &cfg);
     if let Some(plugins) = plugins.as_ref() {
@@ -991,17 +989,11 @@ fn written_names(
             StepTarget::Builtin { id, .. } => match id {
                 StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
                 #[cfg(not(feature = "dev-unreserve"))]
-                id if RESPONSE_EXTRACTS.contains(&id) || id == StepId::GetSequence => {
-                    vec![caps[1].clone()]
-                }
+                id if RESPONSE_EXTRACTS.contains(&id) => vec![caps[1].clone()],
                 StepId::ExtractJsonFromVariable
                 | StepId::ExtractJsonFromVariableGlobal
                 | StepId::ExtractRegexFromVariable
                 | StepId::ExtractRegexFromVariableGlobal => vec![caps[2].clone()],
-                #[cfg(not(feature = "dev-unreserve"))]
-                StepId::CallFunction => vec![caps[2].clone()],
-                #[cfg(not(feature = "dev-unreserve"))]
-                StepId::ExtractFromDb => vec![caps[3].clone()],
                 #[cfg(not(feature = "dev-unreserve"))]
                 StepId::SrpVerifier
                 | StepId::SrpVerifierWithSalt
@@ -1180,7 +1172,6 @@ fn unserved_group(
             #[cfg(not(feature = "dev-unreserve"))]
             let served = match group {
                 "api" => !cfg.resources.api.is_empty(),
-                "db" => !cfg.resources.db.is_empty(),
                 "srp" => !cfg.resources.srp.is_empty(),
                 _ => true,
             };
@@ -1203,7 +1194,7 @@ fn unserved_group(
 /// The static check of one API resource: the resource it builds, and the line
 /// describing it.
 ///
-/// This and its three neighbours below are the per-resource checks `doctor` and
+/// This and its two neighbours below are the per-resource checks `doctor` and
 /// `resource add` share. They live in this module because its whole subject is
 /// the checks a run makes before its first request, and `add` makes the same
 /// ones over the single resource it is about to write. A second copy is how the
@@ -1237,26 +1228,6 @@ pub async fn probe_api(resource: &http::ApiResource, base_url: &str) -> Result<S
     Ok(format!("GET {base_url} → {status}"))
 }
 
-/// One connection at a time. `Db::connect` already names the failing connection
-/// in its error — what it does not do is carry on: the whole-map call returns
-/// at the first failure, so a second dead DSN would never be probed and a stage
-/// would not run to completion.
-///
-/// ponytail: a refused connection surfaces as sqlx's pool acquire timeout —
-/// thirty seconds, and the message says "pool timed out" rather than
-/// "connection refused". That is `Db::connect`'s own behaviour, which `run`
-/// shares, so fixing it belongs there rather than here: an `acquire_timeout` on
-/// `AnyPoolOptions` in `Db::connect` would make every caller fail fast at once.
-#[cfg(not(feature = "dev-unreserve"))]
-pub async fn probe_db(name: &str, connection: &config::Connection) -> Result<String, String> {
-    let one = std::collections::BTreeMap::from([(name.to_string(), connection.clone())]);
-    let pool = db::Db::connect(&one, 1).await?;
-    // The vendor the connection settled on, which on the shared `mysql://`
-    // scheme is only known after this round-trip.
-    let vendor = pool.platform(name).map(|p| p.name()).unwrap_or("?");
-    Ok(format!("connected, {vendor}"))
-}
-
 /// The SRP parameters a run would derive, and the variant that named them.
 #[cfg(not(feature = "dev-unreserve"))]
 pub fn check_srp_resource(srp: &config::SrpConfig) -> Result<String, String> {
@@ -1285,27 +1256,6 @@ async fn check_apis(report: &mut Report, cfg: &config::Config, live: bool) {
         match probe_api(&resource, &api.base_url).await {
             Ok(detail) => report.push_live("api", name, Status::Ok, &detail),
             Err(error) => report.push_live("api", name, Status::Failed, &error),
-        }
-    }
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-async fn check_databases(report: &mut Report, cfg: &config::Config, live: bool) {
-    for (name, connection) in &cfg.resources.db {
-        match db::check_dsn(connection) {
-            Ok(platform) => report.push("db", Some(name), Status::Ok, platform),
-            Err(error) => {
-                report.push("db", Some(name), Status::Failed, &error);
-                continue;
-            }
-        }
-        if !live {
-            report.push_live("db", name, Status::Skipped, "live probe skipped");
-            continue;
-        }
-        match probe_db(name, connection).await {
-            Ok(detail) => report.push_live("db", name, Status::Ok, &detail),
-            Err(error) => report.push_live("db", name, Status::Failed, &error),
         }
     }
 }

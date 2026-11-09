@@ -372,7 +372,7 @@ fn a_manifest_the_host_cannot_accept_is_exit_2_and_names_the_culprit() {
         ("target", 1, "elsewhere"),
         ("group", 1, "gtwo"),
         #[cfg(not(feature = "dev-unreserve"))]
-        ("host", 1, "\"db\""),
+        ("host", 1, "\"api\""),
         ("eager_unclaimed", 1, "elsewhere"),
         ("eager_per_worker", 1, "eager_init"),
     ] {
@@ -451,6 +451,114 @@ fn a_default_build_refuses_a_plugin_claiming_the_built_in_groups() {
     );
 }
 
+/// The fixture claiming `db` alone, as `bddkit-db` does: the databases left
+/// the host, so every build accepts it, with `connection` as its deprecated word.
+const DB_GROUP: &[(&str, &str)] = &[("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "db")];
+
+const DB_RESOURCES: &str =
+    "paths: [features]\nconcurrency: 1\nresources:\n  db:\n    main: {}\n    other: {}\n";
+
+/// Reads which `db` instance a scenario starts on.
+const STARTS_ON: &str = r#"Feature: f
+  Scenario: the default decides what a scenario starts on
+    When I read the selected instance into "db"
+    Then variable "db" should be equal to "other"
+"#;
+
+#[test]
+fn a_plugin_serves_the_db_group_and_its_switch_steps() {
+    let project = host_groups_project(
+        "db-switch",
+        r#"Feature: f
+  Scenario: the generated switch step and the former word both select an instance
+    When I use "other" db
+    And I read the selected instance into "db"
+    Then variable "db" should be equal to "other"
+    When I use "main" connection
+    And I read the selected instance into "db"
+    Then variable "db" should be equal to "main"
+"#,
+        &format!("{DB_RESOURCES}default_db: main\n"),
+    );
+    passed(&project.bddkit("run", DB_GROUP));
+}
+
+/// Constraint 4: the config key, the flag and the variable a built-in `db`
+/// had keep choosing the instance a scenario starts on.
+#[test]
+fn default_db_the_default_db_flag_and_its_variable_select_the_connection() {
+    let project = host_groups_project(
+        "db-default-key",
+        STARTS_ON,
+        &format!("{DB_RESOURCES}default_db: other\n"),
+    );
+    passed(&project.bddkit("run", DB_GROUP));
+
+    let project = host_groups_project("db-default-flags", STARTS_ON, DB_RESOURCES);
+    for args in [&["--default-db", "other"][..], &["--default", "db=other"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .arg("run")
+            .args(args)
+            .args(["--config", "cfg.yaml", "--bddkit-dir"])
+            .arg(project.dir.join(".bddkit"))
+            .current_dir(&project.dir)
+            .envs(DB_GROUP.iter().copied())
+            .output()
+            .expect("failed to run bddkit");
+        passed(&out);
+    }
+    let variable = [DB_GROUP[0], ("BDDKIT_DEFAULT_DB", "other")];
+    passed(&project.bddkit("run", &variable));
+}
+
+#[test]
+fn default_db_without_resources_db_is_refused() {
+    let project = host_groups_project(
+        "db-stray-default",
+        "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
+        "paths: [features]\nresources:\n  gone:\n    a: {}\ndefault_db: main\n",
+    );
+    let out = project.bddkit("run", &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(text(&out).contains("default_db"), "{}", text(&out));
+}
+
+#[test]
+fn doctor_gives_each_db_instance_a_row_and_hints_at_the_deprecated_word() {
+    let project = host_groups_project(
+        "db-doctor",
+        "Feature: f\n  Scenario: s\n    When I use \"other\" connection\n",
+        &format!("{DB_RESOURCES}default_db: main\n"),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--json", "--config", "cfg.yaml", "--bddkit-dir"])
+        .arg(project.dir.join(".bddkit"))
+        .current_dir(&project.dir)
+        .envs(DB_GROUP.iter().copied())
+        .output()
+        .expect("failed to run bddkit");
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor --json");
+    let checks = report["checks"].as_array().expect("checks");
+    for target in ["main", "other"] {
+        assert!(
+            checks
+                .iter()
+                .any(|row| row["stage"] == "db" && row["target"] == target),
+            "{target}: {checks:?}"
+        );
+    }
+    let detail = checks
+        .iter()
+        .find(|row| row["stage"] == "steps")
+        .and_then(|row| row["detail"].as_str())
+        .expect("a steps row with a detail");
+    assert!(
+        detail.contains(r#"I use "other" connection is deprecated, write I use "other" db"#),
+        "{detail}"
+    );
+}
+
 #[cfg(feature = "dev-unreserve")]
 mod dev_unreserve {
     use super::*;
@@ -482,21 +590,6 @@ mod dev_unreserve {
     Then variable "who" should be equal to "b"
     When I use "login" srp
     And I use "other" db
-    And I read the selected instance into "db"
-    Then variable "db" should be equal to "other"
-"#,
-            RESOURCES,
-        );
-        passed(&project.bddkit("run", HOST_GROUPS));
-    }
-
-    #[test]
-    fn the_deprecated_connection_word_selects_a_db_instance() {
-        let project = host_groups_project(
-            "connection",
-            r#"Feature: f
-  Scenario: the former switch word still switches
-    When I use "other" connection
     And I read the selected instance into "db"
     Then variable "db" should be equal to "other"
 "#,
@@ -567,22 +660,18 @@ mod dev_unreserve {
 
     #[test]
     fn doctor_gives_each_instance_of_a_claimed_group_its_own_row() {
+        // The `db` rows and the `connection` hint are
+        // `doctor_gives_each_db_instance_a_row_and_hints_at_the_deprecated_word`'s.
         let project = host_groups_project(
             "doctor",
-            "Feature: f\n  Scenario: s\n    When I use \"other\" connection\n",
+            "Feature: f\n  Scenario: s\n    When I use \"b\" api\n",
             RESOURCES,
         );
         let out = project.bddkit_with(&["doctor", "--json"]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out));
         let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor --json");
         let checks = report["checks"].as_array().expect("checks");
-        for (stage, target) in [
-            ("api", "a"),
-            ("api", "b"),
-            ("db", "main"),
-            ("db", "other"),
-            ("srp", "login"),
-        ] {
+        for (stage, target) in [("api", "a"), ("api", "b"), ("srp", "login")] {
             assert!(
                 checks
                     .iter()
@@ -590,15 +679,6 @@ mod dev_unreserve {
                 "{stage} {target}: {checks:?}"
             );
         }
-        let steps = checks
-            .iter()
-            .find(|row| row["stage"] == "steps")
-            .expect("a steps row");
-        let detail = steps["detail"].as_str().expect("its detail");
-        assert!(
-            detail.contains(r#"I use "other" connection is deprecated, write I use "other" db"#),
-            "{detail}"
-        );
     }
 
     #[test]

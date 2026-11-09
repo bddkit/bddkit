@@ -87,7 +87,6 @@ mod tests {
         World::new(
             apis,
             Arc::new(crate::unique::Generator::new()),
-            crate::db::DbHandle::new(None, String::new()),
             Some(Arc::new(SrpParams {
                 variant: Variant::HexString,
                 prime: num_bigint::BigUint::parse_bytes(RFC5054_4096_PRIME_HEX.as_bytes(), 16)

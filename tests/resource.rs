@@ -1,5 +1,5 @@
 //! `bddkit resource fields` — what a `resources.<kind>.<name>` body takes,
-//! for the three kinds the host serves. The plugin half needs a loaded
+//! for the two kinds the host serves. The plugin half needs a loaded
 //! `cdylib` and lives in `tests/plugin.rs`.
 
 use std::process::Command;
@@ -22,24 +22,24 @@ fn the_listing_covers_every_kind_the_host_serves() {
     let (out, code) = resource(&["resource", "fields"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("api:"), "{out}");
-    assert!(out.contains("db:"), "{out}");
     assert!(out.contains("srp:"), "{out}");
     assert!(out.contains("base_url"), "{out}");
-    assert!(out.contains("dsn"), "{out}");
     assert!(out.contains("variant"), "{out}");
+    // The databases are the `db` plugin's: no host kind of their own.
+    assert!(!out.contains("db:"), "{out}");
     assert!(
         out.contains("required"),
         "a reader has to be able to tell the mandatory keys apart:\n{out}"
     );
 }
 
-// moves-to: db
+// moves-to: api
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
 fn a_kind_argument_narrows_the_listing() {
-    let (out, code) = resource(&["resource", "fields", "db"]);
+    let (out, code) = resource(&["resource", "fields", "srp"]);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("dsn"), "{out}");
+    assert!(out.contains("variant"), "{out}");
     assert!(!out.contains("base_url"), "{out}");
 }
 

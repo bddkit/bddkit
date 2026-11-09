@@ -8,7 +8,7 @@ The payload is a closed struct of numbers, booleans and names from bddkit's own 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | int | `2` (`1` before `failures` was added to `run`) |
+| `schema` | int | `2` (`1` before `failures` was added to `run`; still `2` after `resources.db` was removed, since a field that goes away breaks no collector) |
 | `bddkit` | string | the version |
 | `os` | string | `linux`, `macos` or `windows` |
 | `arch` | string | `x86_64`, `aarch64`, other values as Rust names them |
@@ -34,8 +34,8 @@ The commands that send a payload are `run`, `doctor`, `report`, `plugin install`
 | `scenario_ms` | object or `null` | `p50`, `p90`, `max` (nearest rank, in ms) and `buckets`: counts of scenarios under 100 ms, under 1 s, under 10 s, under 60 s, and 60 s and over. `null` when no scenario finished. The durations themselves are not sent |
 | `features` | object | what was ON, whichever source turned it on, never a value: `junit`, `cucumber_json`, `events` (the flag or `$BDDKIT_EVENTS`), `artifacts_dir`, `tags`, `paths`, `env` are booleans; `evidence` is the list of active sources (`marked`, `failures`, `all`), never which steps were marked |
 | `privacy` | object | `reveal`: masking was off, by the flag, `BDDKIT_PRIVACY_REVEAL` or `privacy.reveal`; `custom_words`, `custom_fields`: whether the lists differ from the defaults, never the words |
-| `resources` | object | `api`, `srp`: counts; `db`: count per engine (`postgres`, `mysql`, `mariadb`); `plugins`: declared instances per official plugin name; `plugins_other`: instances of every other plugin |
-| `usage` | object | per step group that ran at least one step: `steps` (leaf steps executed) and `ms` (their summed duration). Groups are the builtin ones (`api`, `db`, `srp`, `vars`, `debug`, `general`), the groups of official plugins, and `other` for the groups of every other plugin. A macro call and an `I include` are not counted: the steps they run are, so their time is not counted twice |
+| `resources` | object | `api`, `srp`: counts; `plugins`: declared instances per official plugin name, the databases' `db` among them (until 0.5 a built-in `db` field counted connections per engine; the host no longer reads a DSN); `plugins_other`: instances of every other plugin |
+| `usage` | object | per step group that ran at least one step: `steps` (leaf steps executed) and `ms` (their summed duration). Groups are the builtin ones (`api`, `srp`, `vars`, `debug`, `general`), the groups of official plugins (`db` among them), and `other` for the groups of every other plugin. A macro call and an `I include` are not counted: the steps they run are, so their time is not counted twice |
 
 A plugin is official when its lock entry's `source` is a repository of the `bddkit` owner. An entry with no `source`, which is what a hand-written one has, is never official; the field is in a file the person can edit, so one that names a `bddkit` repository is believed.
 

@@ -9,8 +9,6 @@ macro_rules! debug_eprintln {
 mod annotate;
 mod artifacts;
 mod config;
-#[cfg(not(feature = "dev-unreserve"))]
-mod db;
 mod diagnostic;
 mod dirs;
 mod doctor;
@@ -453,7 +451,7 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit resource fields                      every resource kind bddkit serves itself
-  bddkit resource fields db                   only the database connection keys
+  bddkit resource fields srp                  only the SRP configuration keys
   bddkit resource fields --config suite.yaml  also the groups this suite's plugins serve
   bddkit resource fields --json               the same listing, machine-readable
   bddkit resource add api staging --config suite.yaml --base_url http://staging.local
@@ -474,7 +472,7 @@ enum ResourceCommand {
 
 #[derive(Args)]
 struct AddArgs {
-    /// api, db, srp, or a plugin group
+    /// api, srp, or a plugin group
     group: String,
     /// The name the resource is reachable by
     name: String,
@@ -497,7 +495,7 @@ struct AddArgs {
 
 #[derive(Args)]
 struct FieldsArgs {
-    /// Only this kind: api, db, srp, or a plugin group
+    /// Only this kind: api, srp, or a plugin group
     kind: Option<String>,
     /// Also describe the groups the plugins this config loads serve [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
@@ -811,7 +809,7 @@ impl ReportArgs {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit steps list                          every builtin step, grouped by resource
-  bddkit steps list db                       only the database steps
+  bddkit steps list vars                     only the variable steps
   bddkit steps list --filter response -v     narrow, and describe what is left
   bddkit steps list --json                   the same listing, machine-readable
   bddkit steps list --config suite.yaml      also the steps of that suite's plugins")]
@@ -828,7 +826,7 @@ enum StepsCommand {
 
 #[derive(Args)]
 struct ListArgs {
-    /// Only this resource: api, db, srp, vars, debug, general, or a plugin group
+    /// Only this resource: api, srp, vars, debug, general, or a plugin group
     resource: Option<String>,
     /// Case-insensitive substring match on the step template
     #[arg(long)]
@@ -925,15 +923,11 @@ fn list_steps(args: ListArgs) -> Result<i32> {
 }
 
 /// Everything that fails before the first request must exit with code 2 (invariant 6):
-/// config loading, path traversal, building API resources and DB pools, parsing
+/// config loading, path traversal, building API resources, parsing
 /// scheduling tags — this is a "nothing ran" failure, while 1 is reserved for
 /// a failed scenario.
 #[tokio::main]
 async fn main() {
-    // Every path that can build a pool runs through here first — `AnyPool`
-    // panics rather than erroring if a driver is not installed.
-    #[cfg(not(feature = "dev-unreserve"))]
-    sqlx::any::install_default_drivers();
     // The default hook prints the payload as it is, and a payload can hold a
     // value (an `unwrap` on a parsed secret). Same text, masked.
     std::panic::set_hook(Box::new(|info| {
@@ -1036,13 +1030,11 @@ fn load_plugins_collecting(
     if strict {
         plugins.ensure_valid()?;
     }
-    // Only meaningful once a plugin is loaded. With none there are no resource
-    // groups at all, so every top-level `default_*` key is the unknown key
-    // `Config` has always tolerated — it has never had `deny_unknown_fields`,
-    // and a suite written before plugins existed must keep running unchanged.
-    if !plugins.is_empty() {
-        cfg.check_group_defaults()?;
-    }
+    // With no plugin loaded there are no resource groups at all, so every
+    // top-level `default_*` key but `default_db` is the unknown key `Config`
+    // has always tolerated — it has never had `deny_unknown_fields`, and a
+    // suite written before plugins existed must keep running unchanged.
+    cfg.check_group_defaults(!plugins.is_empty())?;
     let mut defaults = std::collections::BTreeMap::new();
     for group in &groups_in_config {
         if let Some(name) = cfg.resolve_default_group(group)? {
@@ -1509,37 +1501,12 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     // `variant:` in a second block must not sit there until someone points
     // `default_srp` at it. This is also what keeps `doctor` — which reports on
     // every declared resource — from being stricter than the run it predicts.
-    //
-    // Before the pools: this costs microseconds, and connecting can cost
-    // thirty seconds against a database that is down. A suite with both faults
-    // should learn about both on the first attempt, not one per attempt.
     #[cfg(not(feature = "dev-unreserve"))]
     for (name, srp) in &cfg.resources.srp {
         srp.to_params()
             .with_context(|| format!("resources.srp.{name}"))?;
     }
 
-    // Pools are created once per run, sized to the worker pool's own
-    // concurrency so every worker can hold a connection at once.
-    #[cfg(not(feature = "dev-unreserve"))]
-    let db = if cfg.resources.db.is_empty() {
-        None
-    } else {
-        Some(Arc::new(
-            db::Db::connect(&cfg.resources.db, cfg.concurrency as u32)
-                .await
-                .map_err(anyhow::Error::msg)?,
-        ))
-    };
-    #[cfg(not(feature = "dev-unreserve"))]
-    if let Some(db) = &db {
-        probe.resources.db = db.engines().fold(Default::default(), |mut engines, name| {
-            telemetry::payload::Engines::add(&mut engines, name);
-            engines
-        });
-    }
-    #[cfg(not(feature = "dev-unreserve"))]
-    let default_db = cfg.resolve_default_db()?.unwrap_or_default();
     #[cfg(not(feature = "dev-unreserve"))]
     let srp = match cfg.resolve_default_srp()? {
         Some(name) => Some(Arc::new(cfg.resources.srp[&name].to_params()?)),
@@ -1604,10 +1571,6 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         apis,
         generator.clone(),
         filter,
-        #[cfg(not(feature = "dev-unreserve"))]
-        db,
-        #[cfg(not(feature = "dev-unreserve"))]
-        default_db,
         #[cfg(not(feature = "dev-unreserve"))]
         srp,
         plugins.clone(),

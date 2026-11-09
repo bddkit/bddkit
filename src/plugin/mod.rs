@@ -15,12 +15,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Group names the host serves itself. A plugin claiming one of these would
-/// shadow `resources.api` or `resources.db`, so it is refused at startup.
-/// `connection` is the built-in step word for the `db` group (`I use "<conn>"
-/// connection`) — a plugin claiming it would build a group-switch step that
-/// exactly overlaps the built-in one, so it is refused for the same reason.
+/// shadow `resources.api` or `resources.srp`, so it is refused at startup.
+/// `db` is not one: the databases are the `bddkit-db` plugin's, and
+/// `connection` is that plugin's deprecated switch word.
 #[cfg(not(feature = "dev-unreserve"))]
-const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
+const HOST_GROUPS: &[&str] = &["api", "srp"];
 /// A `dev-unreserve` build has no built-ins to shadow: a plugin may claim them.
 #[cfg(feature = "dev-unreserve")]
 const HOST_GROUPS: &[&str] = &[];
@@ -1803,9 +1802,9 @@ pub(crate) mod tests {
     #[test]
     #[cfg(not(feature = "dev-unreserve"))]
     fn a_plugin_claiming_a_host_group_is_refused() {
-        // docs/plugin-authoring.md promises these four names are reserved;
+        // docs/plugin-authoring.md promises these names are reserved;
         // nothing pinned that promise before this test.
-        for group in ["api", "db", "srp", "connection"] {
+        for group in ["api", "srp"] {
             let error = check_host_groups("intruder", &[group.to_string()])
                 .unwrap_err()
                 .to_string();
@@ -1813,6 +1812,8 @@ pub(crate) mod tests {
             assert!(error.contains("intruder"), "{error}");
         }
         check_host_groups("echo", &["echo".to_string()]).expect("its own group is fine");
+        // The databases left the host: `db` is a plugin's to claim.
+        check_host_groups("db", &["db".to_string()]).expect("db is no host group");
     }
 
     #[test]
@@ -1893,11 +1894,14 @@ pub(crate) mod tests {
         let own = words(&[("oldswitch", "gone")]);
         let ok = check_deprecated_words(&[("a", &own)], &groups).expect("a free word");
         assert_eq!(ok.get("oldswitch").map(String::as_str), Some("gone"));
+        // The built-in database switch word is the `db` plugin's now.
+        let connection = words(&[("connection", "gone")]);
+        check_deprecated_words(&[("a", &connection)], &groups).expect("connection is free");
 
         let odd = words(&[("", "gone")]);
         check_deprecated_words(&[("a", &odd)], &groups).expect_err("an empty word");
         #[cfg(not(feature = "dev-unreserve"))]
-        let refused = ["other", "db", "connection"];
+        let refused = ["other", "api", "srp"];
         #[cfg(feature = "dev-unreserve")]
         let refused = ["other"];
         for word in refused {

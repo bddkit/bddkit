@@ -700,39 +700,24 @@ fn a_doctor_that_cannot_read_its_config_follows_the_broken_config_rule() {
     assert!(suite.payloads().is_empty());
 }
 
-// moves-to: db
+// moves-to: api
+/// An API's name and its URL stay out of the payload; so does any count of
+/// databases, which are a plugin group now and counted as one. A plugin
+/// instance's name and values are `nothing_from_the_suite_reaches_the_payload`'s.
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
-fn a_dsn_and_a_connection_name_never_reach_the_payload() {
-    let config = |dsn: &str| {
-        format!(
-            "paths: [features]\nresources:\n  api:\n    marker_api:\n      base_url: http://marker.invalid:9\n  db:\n    marker_conn:\n      dsn: {dsn}\n"
-        )
-    };
-    let suite = suite("marker-db", "", &[("a.feature", PLAIN)]);
-
-    // A scheme no engine serves is refused when the pools are built, which is
-    // after the config was read: a refusal with a stage, and no wait for a
-    // connection to time out.
+fn an_api_name_and_its_url_never_reach_the_payload() {
+    let suite = suite("marker-api", "", &[("a.feature", PLAIN)]);
     std::fs::write(
         suite.dir.join("bddkit.yaml"),
-        config("marker://marker_user:marker_pass@127.0.0.1:1/marker_db"),
+        "paths: [features]\nresources:\n  api:\n    marker_api:\n      base_url: http://marker_user:marker_pass@marker.invalid:9\n",
     )
     .unwrap();
-    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-    assert_eq!(suite.only_payload()["stage"], "resources");
-
-    // `doctor` opens no socket without --live, so a real DSN is safe to use.
-    std::fs::write(
-        suite.dir.join("bddkit.yaml"),
-        config("postgres://marker_user:marker_pass@127.0.0.1:1/marker_db"),
-    )
-    .unwrap();
+    // `doctor` opens no socket without --live.
     doctor_rows(&suite, &["--telemetry", "true"], &[]);
-    let payloads = suite.payloads();
-    assert_eq!(payloads.len(), 2, "{payloads:?}");
-    assert_eq!(payloads[1]["resources"]["db"]["postgres"], 1);
+    let payload = suite.only_payload();
+    assert_eq!(payload["resources"]["api"], 1);
+    assert!(payload["resources"].get("db").is_none(), "{payload}");
     let recorded = std::fs::read_to_string(suite.log_path()).expect("payloads");
     assert!(!recorded.contains("marker"), "{recorded}");
 }

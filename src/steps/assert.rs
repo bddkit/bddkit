@@ -383,7 +383,6 @@ mod tests {
         let mut w = World::new(
             apis,
             std::sync::Arc::new(crate::unique::Generator::new()),
-            crate::db::DbHandle::new(None, String::new()),
             None,
             None,
             crate::options::Options::default(),

@@ -2,8 +2,6 @@
 pub mod api;
 #[cfg(not(feature = "dev-unreserve"))]
 pub mod assert;
-#[cfg(not(feature = "dev-unreserve"))]
-pub mod db;
 pub mod debug;
 pub mod expression;
 pub mod help;
@@ -126,41 +124,11 @@ pub enum StepId {
     ExtractRegexFromVariable,
     ExtractRegexFromVariableGlobal,
     EncryptWithAes,
-    // database
-    #[cfg(not(feature = "dev-unreserve"))]
-    UseConnection,
+    // debug
     DebugOn,
     DebugOff,
     EvidenceOn,
     EvidenceOff,
-    #[cfg(not(feature = "dev-unreserve"))]
-    HaveWith,
-    #[cfg(not(feature = "dev-unreserve"))]
-    HaveWhere,
-    #[cfg(not(feature = "dev-unreserve"))]
-    HaveMulti,
-    #[cfg(not(feature = "dev-unreserve"))]
-    Update,
-    #[cfg(not(feature = "dev-unreserve"))]
-    DeleteWhere,
-    #[cfg(not(feature = "dev-unreserve"))]
-    DeleteAll,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromDb,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ShouldHaveWith,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ShouldHaveTable,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ShouldNotHaveWith,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ShouldNotHaveTable,
-    #[cfg(not(feature = "dev-unreserve"))]
-    CallProcedure,
-    #[cfg(not(feature = "dev-unreserve"))]
-    CallFunction,
-    #[cfg(not(feature = "dev-unreserve"))]
-    GetSequence,
     Sleep,
     ShowAllVariables,
     ShowVariable,
@@ -190,8 +158,6 @@ pub enum OptionsSource {
     Global,
     #[cfg(not(feature = "dev-unreserve"))]
     Http,
-    #[cfg(not(feature = "dev-unreserve"))]
-    Db,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -680,13 +646,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"I use "{name}" api"#,
         "switches to another API resource and its default headers, until the scenario ends",
     ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::UseConnection,
-        "db",
-        r#"I use "{name}" connection"#,
-        "switches to another database connection, until the scenario ends",
-    ),
     action(
         StepId::DebugOn,
         "debug",
@@ -710,108 +669,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "debug",
         "I am not collecting evidence",
         "ends the mark set earlier in the scenario",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::HaveWhere,
-        "db",
-        r#"I have "{table}" where:"#,
-        "inserts one row per line of the table below, its header naming the columns",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::HaveWith,
-        "db",
-        r#"I have "{table}" with "{pairs}""#,
-        "inserts one row, filling required columns the pairs omit from the table schema",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::HaveMulti,
-        "db",
-        "I have:",
-        "inserts rows into several tables, the first column of the table below naming each one",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::Update,
-        "db",
-        r#"I update "{table}" with "{pairs}" where "{condition}""#,
-        "updates matching rows and stores the affected count in updated_<table>",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::DeleteAll,
-        "db",
-        r#"I delete all "{table}""#,
-        "wipes the whole table — no WHERE, and no awareness of files running in parallel",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::DeleteWhere,
-        "db",
-        r#"I delete "{table}" where "{condition}""#,
-        "deletes matching rows and stores the affected count in deleted_<table>",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromDb,
-        "db",
-        r#"I extract "{column}" from "{table}" with "{condition}" as "{name}""#,
-        "reads a column of the first matching row into a variable",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ShouldNotHaveTable,
-        "db",
-        r#"I should not have "{table}" with:"#,
-        "asserts no row matches any line of the table below",
-        OptionsSource::Db,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ShouldNotHaveWith,
-        "db",
-        r#"I should not have "{table}" with "{pairs}""#,
-        "asserts no row matches these column values",
-        OptionsSource::Db,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ShouldHaveTable,
-        "db",
-        r#"I should have "{table}" with:"#,
-        "asserts a row matches each line of the table below",
-        OptionsSource::Db,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ShouldHaveWith,
-        "db",
-        r#"I should have "{table}" with "{pairs}""#,
-        "asserts at least one row matches these column values",
-        OptionsSource::Db,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::CallProcedure,
-        "db",
-        r#"I call procedure "{name}" with "{arguments}""#,
-        "calls a stored procedure with these arguments",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::CallFunction,
-        "db",
-        r#"I call function "{name}" with "{arguments}" as "{variable}""#,
-        "calls a function and stores its return value in a variable",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::GetSequence,
-        "db",
-        r#"I get next value of sequence "{name}" as "{variable}""#,
-        "advances a sequence and stores the new value in a variable",
     ),
     action(
         StepId::Sleep,
@@ -1254,8 +1111,8 @@ impl Registry {
 
     /// Registers `I use "<name>" <group>` over the groups the loaded plugins
     /// actually claim. The alternation is built from the real group names, so
-    /// the pattern cannot overlap `I use "<name>" api` or
-    /// `I use "<conn>" connection` and no existing .feature changes meaning.
+    /// the pattern cannot overlap `I use "<name>" api` and no existing
+    /// .feature changes meaning.
     pub fn add_use_group_step(&mut self, groups: &[String]) -> Result<(), String> {
         if groups.is_empty() {
             return Ok(());
@@ -1734,8 +1591,6 @@ pub async fn dispatch(
         #[cfg(not(feature = "dev-unreserve"))]
         StepId::UseApi => api::use_api(w, a.cap(0)),
         StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::UseConnection => db::use_connection(w, a.cap(0)),
         StepId::DebugOn => debug::debug_on(w),
         StepId::DebugOff => debug::debug_off(w),
         StepId::EvidenceOn => {
@@ -1746,40 +1601,6 @@ pub async fn dispatch(
             w.trace.mark(false);
             Ok(())
         }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::HaveWith => db::have_with(w, a.cap(0), a.cap(1)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::HaveWhere => db::have_where(w, a.cap(0), a.table.as_ref()).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::HaveMulti => db::have_multi(w, a.table.as_ref()).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::Update => db::update(w, a.cap(0), a.cap(1), a.cap(2)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::DeleteWhere => db::delete_where(w, a.cap(0), a.cap(1)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::DeleteAll => db::delete_all(w, a.cap(0)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromDb => {
-            db::extract_from_db(w, a.cap(0), a.cap(1), a.cap(2), a.cap(3)).await
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ShouldHaveWith => return db::should_have(w, a.cap(0), a.cap(1)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ShouldHaveTable => {
-            return db::should_have_table(w, a.cap(0), a.table.as_ref()).await;
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ShouldNotHaveWith => return db::should_not_have(w, a.cap(0), a.cap(1)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ShouldNotHaveTable => {
-            return db::should_not_have_table(w, a.cap(0), a.table.as_ref()).await;
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::CallProcedure => db::call_procedure(w, a.cap(0), a.cap(1)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::CallFunction => db::call_function(w, a.cap(0), a.cap(1), a.cap(2)).await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::GetSequence => db::get_sequence(w, a.cap(0), a.cap(1)).await,
         StepId::Sleep => sleep(a.cap(0)).await.map_err(StepError::input),
         StepId::ShowAllVariables => show_all_variables(w).map_err(StepError::input),
         StepId::ShowVariable => show_variable(w, a.cap(0)).map_err(StepError::input),
@@ -2092,7 +1913,7 @@ mod tests {
 
     #[test]
     #[cfg(not(feature = "dev-unreserve"))]
-    fn the_group_switch_step_does_not_shadow_api_or_connection() {
+    fn the_group_switch_step_does_not_shadow_api() {
         let reg = Registry::with_macros_and_plugins(
             MacroCatalog::default(),
             &[],
@@ -2113,16 +1934,12 @@ mod tests {
             }
         );
 
-        let (conn_target, _) = reg
-            .find(r#"I use "pg" connection"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            conn_target,
-            StepTarget::Builtin {
-                id: StepId::UseConnection,
-                kind: StepKind::Action
-            }
+        // `connection` is the `db` plugin's deprecated word now: with no
+        // plugin declaring it, the step is unknown.
+        assert!(
+            reg.find(r#"I use "pg" connection"#)
+                .expect("no ambiguity")
+                .is_none()
         );
 
         let (group_target, caps) = reg
@@ -2480,11 +2297,6 @@ mod tests {
                 r#"variable "state" should be equal to "ready""#,
                 OptionsSource::Global,
             ),
-            #[cfg(not(feature = "dev-unreserve"))]
-            (
-                r#"I should have "users" with "state: ready""#,
-                OptionsSource::Db,
-            ),
         ];
 
         for (text, source) in cases {
@@ -2570,33 +2382,11 @@ mod tests {
             r#"extract "(\d+)" from variable "a" as "b" global"#,
             r#"I encrypt "555555" with AES using key "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" as "otp""#,
             #[cfg(not(feature = "dev-unreserve"))]
-            r#"I use "main" connection"#,
-            #[cfg(not(feature = "dev-unreserve"))]
             r#"I use "billing" api"#,
             "I am in debug mode",
             "I am not in debug mode",
             "I am collecting evidence",
             "I am not collecting evidence",
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I have "users" where:"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I have "users" with "email: a@b.net""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            "I have:",
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I update "companies" with "name: x" where "id: 1""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I delete "companies" where "slug: x""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I delete all "companies""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I extract "id" from "companies" with "slug: x" as "cid""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I call procedure "p" with "a: 1""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I call function "f" with "a: 1" as "r""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I get next value of sequence "s" as "n""#,
             r#"I sleep "5" seconds"#,
             "Show all variables",
             r#"Show "userId" variable"#,

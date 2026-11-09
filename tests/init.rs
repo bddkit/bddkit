@@ -49,26 +49,11 @@ fn config(dir: &Path) -> String {
 #[cfg(not(feature = "dev-unreserve"))]
 fn init_with_flags_writes_a_config_that_doctor_accepts() {
     let dir = temp("doctor");
-    let out = bddkit(
-        &dir,
-        &[
-            "init",
-            "--api-url",
-            "http://127.0.0.1:8080",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://user:pass@localhost/app",
-        ],
-    );
+    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:8080"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let config = config(&dir);
     assert!(
         config.contains("base_url: http://127.0.0.1:8080"),
-        "{config}"
-    );
-    assert!(
-        config.contains("dsn: postgres://user:pass@localhost/app"),
         "{config}"
     );
     assert!(
@@ -154,7 +139,6 @@ fn a_non_interactive_init_without_telemetry_writes_no_key() {
     );
 }
 
-// moves-to: db
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
 fn mismatched_flags_are_refused() {
@@ -208,24 +192,17 @@ fn gitignore_gains_only_missing_lines_and_only_in_a_git_work_tree() {
     assert!(!outside.join(".gitignore").exists());
 }
 
-// moves-to: db
+// moves-to: api
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
 fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
     // The config is `$`-expanded when it is read: `$$` must survive the
-    // round trip, and a `${NAME}` reference must stay a reference.
+    // round trip. A DSN, and a `${NAME}` reference staying one, are
+    // `plugin_cli::init_with_a_database_installs_the_db_plugin`'s.
     let dir = temp("dollar");
     let out = bddkit(
         &dir,
-        &[
-            "init",
-            "--api-url",
-            "http://127.0.0.1:9/?q=$id&p=$$",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://u:pa$$w@h/db?x=${BDDKIT_INIT_TEST_UNSET:-d}",
-        ],
+        &["init", "--api-url", "http://127.0.0.1:9/?q=$id&p=$$"],
     );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let doctor = bddkit(&dir, &["doctor", "--json"]);
@@ -235,17 +212,10 @@ fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
         "{}",
         text(&doctor)
     );
-    assert!(config(&dir).contains("pa$$$$w"), "{}", config(&dir));
-    assert!(
-        config(&dir).contains("${BDDKIT_INIT_TEST_UNSET:-d}"),
-        "{}",
-        config(&dir)
-    );
+    assert!(config(&dir).contains("p=$$$$"), "{}", config(&dir));
 }
 
-// moves-to: db
 #[test]
-#[cfg(not(feature = "dev-unreserve"))]
 fn a_dsn_of_another_engine_is_refused() {
     let dir = temp("scheme");
     let out = bddkit(
@@ -258,7 +228,19 @@ fn a_dsn_of_another_engine_is_refused() {
         &dir,
         &["init", "--db", "mariadb", "--dsn", "mysql://u:p@h/db"],
     );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    // Accepted: the config is written. Installing the `db` plugin then fails
+    // against this test's empty index, which is a finding, not a refusal.
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        !text(&out).contains("the DSN starts with"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        config(&dir).contains("dsn: mysql://u:p@h/db"),
+        "{}",
+        config(&dir)
+    );
 }
 
 #[test]
@@ -332,7 +314,7 @@ fn payloads(dir: &Path) -> Vec<serde_json::Value> {
     common::read_payloads(&dir.join("t.log"))
 }
 
-// moves-to: db
+// moves-to: api
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
 fn an_init_that_ends_with_yes_sends_one_init_payload() {
@@ -342,10 +324,6 @@ fn an_init_that_ends_with_yes_sends_one_init_payload() {
         &[
             "--api-url",
             "http://marker.invalid:8080",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://marker:marker@marker.invalid/marker",
             "--parallel",
             "false",
             "--telemetry",
@@ -361,7 +339,7 @@ fn an_init_that_ends_with_yes_sends_one_init_payload() {
     let init = &all[0]["init"];
     assert_eq!(init["interactive"], false);
     assert_eq!(init["resources"]["api"], 1);
-    assert_eq!(init["resources"]["db"]["postgres"], 1);
+    assert!(init["resources"].get("db").is_none(), "{init}");
     assert_eq!(init["settings"]["parallel"], true);
     assert_eq!(init["settings"]["project_layer"], false);
     let raw = std::fs::read_to_string(dir.join("t.log")).unwrap();
