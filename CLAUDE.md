@@ -82,7 +82,7 @@ Plugins live in their own repositories (names in `plugin-registry.yaml`, e.g. `b
 ## Dev workflow
 
 - do not use `superpowers` for simple tasks and non-code changes.
-- when changing Rust code, use `rust-best-practices` skill.
+- when changing Rust code, use `rust-skills` skill.
 - TDD per task: failing test → RED → implement → GREEN → commit. Tests assert real behavior, never mock theater.
 - Dependency VERSIONS are frozen (features may be added). Edition 2024, toolchain 1.97 — CI pins the exact version in the workflows (`toolchain: "1.97.1"`), so a new clippy lint in a fresh stable can never redden an unrelated PR. Do NOT pin it with a `rust-toolchain.toml`: on a machine whose `stable` already is that version rustup installs a second copy of the same toolchain and can leave it half-installed.
 - `cargo test` (unit + `tests/acceptance.rs` e2e against the axum stub). `cargo clippy --all-targets` must be clean — no warnings. Both pass with and without `--features dev-unreserve` as well: that build leaves the code of the built-in API, SRP and databases out, and all the code it removes carries `#[cfg(not(feature = "dev-unreserve"))]`, so the attribute is the list of the code the split deletes. Crates only that code uses, such as `sqlx` and `scraper`, stay in `Cargo.toml` and still compile. `cargo fmt --check` must be clean too, at the root and in all three fixture crates (`tests/fixtures/echo-plugin`, `tests/fixtures/worker-plugin`, `tests/fixtures/group-plugin`) — run `cargo fmt` (and the fixture equivalents) before committing rather than letting CI catch it. `HttpState::current` carries an `#[allow(dead_code)]` because only tests read it; that is correct, don't delete the method.

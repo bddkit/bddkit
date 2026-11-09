@@ -16,3 +16,4 @@ docs/superpowers/
 /.claude/worktrees/
 /.claude/tmp/
 /.claude/settings.local.json
+__pycache__/

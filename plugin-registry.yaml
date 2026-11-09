@@ -13,6 +13,7 @@ plugin:
     abi:
       "2": 0.2.1
       "3": 0.3.0
+      "4": 0.4.0
   - name: browser
     repo: bddkit/bddkit-browser
     groups: [browser]
@@ -20,6 +21,7 @@ plugin:
     abi:
       "2": 0.2.1
       "3": 0.3.0
+      "4": 0.4.0
   - name: exec
     repo: bddkit/bddkit-exec
     groups: [exec]
@@ -27,6 +29,7 @@ plugin:
     abi:
       "2": 0.2.1
       "3": 0.3.0
+      "4": 0.4.0
   - name: s3
     repo: bddkit/bddkit-s3
     groups: [s3]
@@ -34,9 +37,11 @@ plugin:
     abi:
       "2": 0.2.1
       "3": 0.3.0
+      "4": 0.4.0
   - name: script
     repo: bddkit/bddkit-script
     groups: [script]
     description: Transform values inside a test with Rhai scripts, without a browser or a plugin of your own
     abi:
       "3": 0.1.1
+      "4": 0.2.0
