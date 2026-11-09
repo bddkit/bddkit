@@ -783,6 +783,11 @@ async fn check_new_resource(
             crate::doctor::check_srp_resource(under_the_name(&cfg.resources.srp, input)?)?;
         }
         group => {
+            // After the splice a literal group is always in the loaded config;
+            // the empty fallback only keeps this arm from panicking, so the
+            // command stays at exit 0 or 1.
+            let empty = std::collections::BTreeMap::new();
+            under_the_name(cfg.resources.groups.get(group).unwrap_or(&empty), input)?;
             // `Plugins::load` refuses a group nothing serves and runs
             // `validate_config` for every declared instance, so loading the
             // prospective config is the static check.
