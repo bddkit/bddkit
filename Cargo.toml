@@ -28,9 +28,9 @@ exclude = [
 name = "bddkit"
 path = "src/main.rs"
 
-# For plugin authors only: leaves the built-in API, SRP and databases out at
-# compile time, so `bddkit-api` and `bddkit-db` can run on a candidate that still
-# has them. See docs/plugin-authoring.md, section 8. Goes away with the built-ins.
+# For plugin authors only: leaves the built-in API and SRP out at compile time,
+# so `bddkit-api` can run on a candidate that still has them. See
+# docs/plugin-authoring.md, section 8. Goes away with the built-ins.
 [features]
 dev-unreserve = []
 
@@ -54,7 +54,6 @@ uuid = { version = "1.24", features = ["v7"] }
 url = "2"
 mime_guess = "2"
 anyhow = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "any", "postgres", "mysql"] }
 sxd-document = "0.3.2"
 sxd-xpath = "0.4.2"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }

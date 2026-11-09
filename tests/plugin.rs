@@ -2668,6 +2668,37 @@ fn resource_add_masks_a_secret_in_the_refusal_block() {
     assert!(!text.contains("plugin-note-9876"), "{text}");
 }
 
+/// The block is the whole value of the failure path, so it has to be pasteable
+/// under `resources:`, which means carrying the group key when the config does
+/// not have that group yet, and it is masked: a URL password in a value never
+/// reaches the screen.
+#[test]
+fn resource_add_prints_a_masked_block_with_the_group_key_the_config_lacks() {
+    let dir = project("resource-add-new-group", "Feature: f\n", "");
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "http://app:add-pass-5678@127.0.0.1:1/app",
+            "--probe_error",
+            "the bucket is not there",
+        ],
+    );
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("The block, for manual insertion"), "{text}");
+    assert!(
+        text.contains("echo:\n  second:\n    prefix: http://app:***@127.0.0.1:1/app\n"),
+        "the block names the group it belongs under, masked: {text}"
+    );
+    assert!(!text.contains("add-pass-5678"), "{text}");
+}
+
 #[test]
 fn a_config_secret_is_masked_in_a_file_with_no_plugin_step() {
     let dir = project(

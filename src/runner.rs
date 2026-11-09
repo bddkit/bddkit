@@ -289,8 +289,6 @@ async fn run_step(
                             .options_for_last_response()
                             .map_err(StepError::input)?
                             .clone(),
-                        #[cfg(not(feature = "dev-unreserve"))]
-                        OptionsSource::Db => world.db.options().map_err(StepError::input)?.clone(),
                     };
                     let effective = base.apply(&layer).map_err(StepError::input)?;
                     let shown = reg.display_text(&step.text, &world.redactor);
@@ -615,7 +613,7 @@ async fn run_step(
 
 /// Runs `I include "<file>"` / `I include "<file>" scenario "<name>"`. The
 /// caller's `World` is reused in place — HTTP state, the current API
-/// resource, the DB connection, debug mode and every plugin instance carry
+/// resource, debug mode and every plugin instance carry
 /// over in both directions, because `reset_scenario` is never called here.
 /// Only `world.vars` is swapped for a fresh, isolated `VarStack`: the spec
 /// requires the caller's globals to be invisible inside the include, which a
@@ -819,7 +817,7 @@ fn run_include<'a>(
 }
 
 /// The SQL-NULL sentinel prints as `<<null>>` in debug output, never the raw
-/// NUL bytes — the same rule `steps/db.rs`'s debug lines already follow.
+/// NUL bytes.
 fn debug_display(value: &str) -> &str {
     if value == crate::vars::NULL_SENTINEL {
         "<<null>>"
@@ -836,10 +834,6 @@ pub struct RunContext {
     pub apis: Arc<crate::http::Apis>,
     pub generator: Arc<Generator>,
     pub filter: crate::feature::TagFilter,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub db: Option<Arc<crate::db::Db>>,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub default_db: String,
     #[cfg(not(feature = "dev-unreserve"))]
     pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
@@ -864,15 +858,13 @@ pub struct RunContext {
 
 impl RunContext {
     // An aggregator for run-wide config: the parameter list grows with each
-    // resource (db, srp, …), a separate builder for a single constructor is overkill.
+    // resource (srp, …), a separate builder for a single constructor is overkill.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         reg: Registry,
         #[cfg(not(feature = "dev-unreserve"))] apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         filter: crate::feature::TagFilter,
-        #[cfg(not(feature = "dev-unreserve"))] db: Option<Arc<crate::db::Db>>,
-        #[cfg(not(feature = "dev-unreserve"))] default_db: String,
         #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
@@ -890,10 +882,6 @@ impl RunContext {
             apis,
             generator,
             filter,
-            #[cfg(not(feature = "dev-unreserve"))]
-            db,
-            #[cfg(not(feature = "dev-unreserve"))]
-            default_db,
             #[cfg(not(feature = "dev-unreserve"))]
             srp,
             plugins,
@@ -988,8 +976,6 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
         #[cfg(not(feature = "dev-unreserve"))]
         ctx.apis.clone(),
         ctx.generator.clone(),
-        #[cfg(not(feature = "dev-unreserve"))]
-        crate::db::DbHandle::new(ctx.db.clone(), ctx.default_db.clone()),
         #[cfg(not(feature = "dev-unreserve"))]
         ctx.srp.clone(),
         ctx.plugins.clone(),
@@ -1425,10 +1411,6 @@ mod tests {
             crate::feature::TagFilter::new(&[]),
             #[cfg(not(feature = "dev-unreserve"))]
             None,
-            #[cfg(not(feature = "dev-unreserve"))]
-            String::new(),
-            #[cfg(not(feature = "dev-unreserve"))]
-            None,
             plugins,
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -1499,8 +1481,6 @@ mod tests {
             #[cfg(not(feature = "dev-unreserve"))]
             apis(),
             Arc::new(Generator::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            crate::db::DbHandle::new(None, String::new()),
             #[cfg(not(feature = "dev-unreserve"))]
             None,
             Some(plugins.clone()),

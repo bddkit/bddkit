@@ -361,8 +361,6 @@ mod tests {
             apis,
             Arc::new(crate::unique::Generator::new()),
             #[cfg(not(feature = "dev-unreserve"))]
-            crate::db::DbHandle::new(None, String::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
             crate::options::Options::default(),

@@ -1270,54 +1270,6 @@ fn a_file_in_two_chains_fails_the_startup() {
     assert!(stderr.contains("two chains"), "{stderr}");
 }
 
-// moves-to: db
-/// An unreachable DB — rejected BEFORE the first request, so code 2, not 1.
-/// Invariant 6: 1 is reserved for a failed scenario.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg(not(feature = "dev-unreserve"))]
-async fn an_unreachable_database_fails_the_startup_with_code_two() {
-    let dir = std::env::temp_dir().join(format!("bddkit-startup-exit-{}", std::process::id()));
-    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
-    std::fs::write(
-        dir.join("features/vars.feature"),
-        "Feature: f\n  Scenario: s\n    Given set variable \"x\" to \"1\"\n",
-    )
-    .expect("write feature");
-    std::fs::write(
-        dir.join("cfg.yaml"),
-        format!(
-            "paths: [{}]\nresources:\n  api: {{}}\n  db:\n    main:\n      \
-             dsn: postgres://nobody:nobody@127.0.0.1:1/nothing\n",
-            dir.join("features")
-                .display()
-                .to_string()
-                .replace('\\', "/")
-        ),
-    )
-    .expect("write config");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args([
-            "run",
-            "--config",
-            dir.join("cfg.yaml").to_str().expect("path is UTF-8"),
-        ])
-        .output()
-        .expect("failed to run bddkit");
-
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "failing before the first request must give 2\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("run not started"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// The order files print in with one worker is the queue order.
 /// Checking that `@priority` sets it: higher goes earlier.
 #[test]
@@ -1599,6 +1551,41 @@ fn run_empty_group_project(
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// The databases are the `db` plugin's: a connection with no plugin installed
+/// is a startup failure that says what to do, not a silent no-op.
+#[test]
+fn a_database_with_no_plugin_installed_exits_2_and_names_the_install() {
+    let dir = empty_group_project(
+        "db-no-plugin",
+        "  db:\n    main:\n      dsn: postgres://u:p@127.0.0.1:1/x\n",
+    );
+    let (code, stdout, stderr) = run_empty_group_project("run", &dir);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("no installed plugin serves the group \"db\""),
+        "{all}"
+    );
+    assert!(all.contains("bddkit plugin install"), "{all}");
+    assert!(all.contains("run not started"), "{all}");
+}
+
+/// A stray `default_db` was an error while the databases were built in, and
+/// stays one with no plugin installed: `run` and `doctor` both refuse it.
+#[test]
+fn a_stray_default_db_is_refused_with_no_plugin_installed() {
+    let dir = empty_group_project("db-stray-default", "  api: {}\ndefault_db: main\n");
+    let (code, stdout, stderr) = run_empty_group_project("run", &dir);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        format!("{stdout}{stderr}").contains("default_db"),
+        "{stdout}{stderr}"
+    );
+    let (code, stdout, stderr) = run_empty_group_project("doctor", &dir);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("default_db"), "{stdout}{stderr}");
 }
 
 #[test]
@@ -1941,7 +1928,7 @@ fn doctor_without_live_leaves_an_unreachable_base_url_alone() {
         "doctor-offline",
         "http://127.0.0.1:1/",
         "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
-        "  db:\n    primary:\n      dsn: postgres://u:p@127.0.0.1:1/x\n",
+        "",
     );
 
     let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
@@ -1988,54 +1975,6 @@ fn doctor_live_reports_an_unreachable_base_url() {
     );
 }
 
-// moves-to: db
-/// `doctor` probes one connection at a time, so a suite with four of them
-/// learns which one is dead — and, because the full-map `Db::connect` returns
-/// at the first failure, so that a second dead DSN is still probed.
-///
-/// Asserted through `--json` and with no API declared: the static `db` row
-/// carries the same name, and an API pointed at a closed port would supply the
-/// exit code on its own, so a laxer test passes with the live probe deleted.
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn doctor_live_reports_every_dead_connection_by_name() {
-    let cfg = http_write_doctor_project(
-        "doctor-dsn",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
-        "  db:\n    primary:\n      dsn: postgres://u:p@127.0.0.1:1/x\n\
-         \x20   secondary:\n      dsn: postgres://u:p@127.0.0.1:1/y\n\
-         default_db: primary\n",
-    );
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args([
-            "doctor",
-            "--config",
-            cfg.to_str().expect("path is UTF-8"),
-            "--live",
-            "--json",
-        ])
-        .output()
-        .expect("failed to run bddkit");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(1), "{stdout}");
-    let report: Value = serde_json::from_str(&stdout).expect("--json emits JSON only");
-    let checks = report["checks"].as_array().expect("checks is an array");
-    for name in ["primary", "secondary"] {
-        assert!(
-            checks.iter().any(|c| {
-                c["stage"] == "db"
-                    && c["target"] == name
-                    && c["status"] == "failed"
-                    && c["probe"] == true
-            }),
-            "the live probe of {name} must be reported failed:\n{stdout}"
-        );
-    }
-}
-
 // moves-to: api
 /// Every declared SRP resource is validated at startup, not just the default
 /// one. Otherwise a broken `variant:` in a second block sits there until
@@ -2066,46 +2005,6 @@ fn run_refuses_a_malformed_srp_resource_that_is_not_the_default() {
     assert!(
         stderr.contains("legacy"),
         "the bad resource is named:\n{stderr}"
-    );
-}
-
-// moves-to: db
-/// A DSN is more than its scheme, and sqlx parses the whole URL before it
-/// opens anything — so a typo past the `://` is a failure `run` reaches
-/// offline. The invariant is the pairing, not either message: whatever `run`
-/// refuses statically, a static `doctor` must refuse too.
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn doctor_and_run_agree_that_a_malformed_dsn_is_a_startup_failure() {
-    let cfg = http_write_doctor_project(
-        "doctor-baddsn",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
-        "  db:\n    primary:\n      dsn: \"postgres://u:p@127.0.0.1:notaport/x\"\n",
-    );
-    let path = cfg.to_str().expect("path is UTF-8");
-
-    let doctor = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["doctor", "--config", path])
-        .output()
-        .expect("failed to run bddkit");
-    let stdout = String::from_utf8_lossy(&doctor.stdout);
-    assert_eq!(
-        doctor.status.code(),
-        Some(1),
-        "no socket is needed to see this\n{stdout}"
-    );
-    assert!(stdout.contains("db primary"), "{stdout}");
-
-    let run = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["run", "--config", path])
-        .output()
-        .expect("failed to run bddkit");
-    assert_eq!(
-        run.status.code(),
-        Some(2),
-        "the run never starts: {}",
-        String::from_utf8_lossy(&run.stderr)
     );
 }
 
@@ -2503,43 +2402,6 @@ fn resource_add_refuses_a_name_that_expands_to_something_else() {
     );
 }
 
-// moves-to: db
-/// The block is the whole value of the failure path, so it has to be pasteable
-/// where the reader will paste it: under `resources:`, which means carrying the
-/// group key whenever the config does not have that group yet.
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn resource_add_prints_the_group_key_for_a_group_the_config_lacks() {
-    let cfg = http_write_doctor_project(
-        "resource-add-new-group",
-        "http://127.0.0.1:1/",
-        "Feature: only\n  Scenario: one\n    When I request \"/ping\"\n",
-        "default_api: stub\n",
-    );
-
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args([
-            "resource",
-            "add",
-            "db",
-            "reporting",
-            "--config",
-            cfg.to_str().expect("path is UTF-8"),
-            "--dsn",
-            "nope://reporting",
-            "--no-check",
-        ])
-        .output()
-        .expect("failed to run bddkit");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(
-        stdout.contains("db:\n  reporting:\n    dsn: nope://reporting\n"),
-        "the block names the group it belongs under: {stdout}"
-    );
-}
-
 /// Writes a healthy doctor project (see `write_doctor_project`) under a fresh
 /// directory whose name is the default config file (`bddkit.yaml` or
 /// `bddkit.yml`), and returns that directory — the default-discovery tests
@@ -2808,7 +2670,7 @@ fn steps_list_no_config_ignores_a_present_bddkit_yaml() {
 /// The same escape hatch, for `resource fields` — it shares the resolver but
 /// is a separate command with its own `--no-config` flag, so it needs its own
 /// proof the flag actually skips loading `bddkit.yaml`.
-// moves-to: db
+// moves-to: api
 #[test]
 #[cfg(not(feature = "dev-unreserve"))]
 fn resource_fields_no_config_ignores_a_present_bddkit_yaml() {
@@ -6090,69 +5952,6 @@ fn a_secret_saved_inside_an_include_is_masked_in_the_callers_failure() {
 
 // ---- privacy: output with no World around it (spec §7.6, §7.8) ----
 
-/// A project whose connection has a password in its DSN and, in a field that
-/// wants a list, the same URL again. No current driver or `doctor` message
-/// quotes a DSN, but a config type error quotes the string it was given, so
-/// this is the one way to make the value appear in an error today; the tests
-/// guard against any future message that does.
-// moves-to: db
-#[cfg(not(feature = "dev-unreserve"))]
-fn dsn_project(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(dir.join("features")).expect("mkdir");
-    std::fs::write(
-        dir.join("features/a.feature"),
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n",
-    )
-    .expect("write feature");
-    let config = dir.join("cfg.yaml");
-    let dsn = "postgres://app:dsn-pass-1234@127.0.0.1:1/app";
-    std::fs::write(
-        &config,
-        format!(
-            "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n  db:\n    main:\n      dsn: {dsn}\n      search_path: {dsn}\n"
-        ),
-    )
-    .expect("write config");
-    config
-}
-
-// moves-to: db
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn a_dsn_password_never_appears_in_a_connection_error() {
-    let cfg = dsn_project("mask-dsn-run");
-    let (code, stdout, stderr) = run_masking(&cfg, &[], &[]);
-    let text = format!("{stdout}{stderr}");
-    assert_eq!(code, 2, "{text}");
-    assert!(
-        text.contains("expected a sequence"),
-        "the error is shown: {text}"
-    );
-    assert!(text.contains("app:***@127.0.0.1"), "{text}");
-    assert!(!text.contains("dsn-pass-1234"), "{text}");
-}
-
-// moves-to: db
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn doctor_masks_a_dsn_password_in_its_report_and_its_json() {
-    let cfg = dsn_project("mask-dsn-doctor");
-    for extra in [&[][..], &["--json"][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-            .args(["doctor", "--config"])
-            .arg(&cfg)
-            .args(extra)
-            .output()
-            .expect("run doctor");
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert_eq!(out.status.code(), Some(1), "{text}");
-        assert!(text.contains("expected a sequence"), "{text}");
-        assert!(text.contains("app:***@127.0.0.1"), "{text}");
-        assert!(!text.contains("dsn-pass-1234"), "{text}");
-    }
-}
-
 #[test]
 fn doctor_says_so_on_stderr_when_masking_is_off() {
     let cfg = write_doctor_project("mask-doctor-reveal", "", "");
@@ -6170,32 +5969,6 @@ fn doctor_says_so_on_stderr_when_masking_is_off() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("masking is off"), "{stderr}");
     }
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn resource_add_masks_the_block_it_prints() {
-    let cfg = dsn_project("mask-resource-add");
-    std::fs::write(
-        &cfg,
-        "paths: [features]\nresources:\n  api:\n    a:\n      base_url: http://127.0.0.1:1/\n",
-    )
-    .expect("a config that parses");
-    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-        .args(["resource", "add", "db", "second", "--config"])
-        .arg(&cfg)
-        .args(["--dsn", "postgres://app:add-pass-5678@127.0.0.1:1/app"])
-        .output()
-        .expect("run resource add");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(
-        stdout.contains("The block, for manual insertion"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("app:***@127.0.0.1"), "{stdout}");
-    assert!(!stdout.contains("add-pass-5678"), "{stdout}");
 }
 
 #[test]

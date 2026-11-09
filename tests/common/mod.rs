@@ -3,8 +3,6 @@
 
 #![allow(dead_code)]
 
-pub mod db;
-
 /// The payloads a command recorded to `BDDKIT_TELEMETRY_LOG`, one per line.
 pub fn read_payloads(log: &std::path::Path) -> Vec<Value> {
     std::fs::read_to_string(log)

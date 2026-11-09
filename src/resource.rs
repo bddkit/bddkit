@@ -239,13 +239,12 @@ pub struct Field {
     pub example: Option<String>,
 }
 
-/// The three kinds the host serves itself, always available: they need no
+/// The two kinds the host serves itself, always available: they need no
 /// config, and describing them cannot fail.
 #[cfg(not(feature = "dev-unreserve"))]
 pub fn host_kinds() -> Vec<Kind> {
     [
         ("api", crate::config::API_FIELDS),
-        ("db", crate::config::DB_FIELDS),
         ("srp", crate::config::SRP_FIELDS),
     ]
     .into_iter()
@@ -667,7 +666,7 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
                 .is_some_and(|plugins| plugins.group_names().iter().any(|g| g == input.group));
             if !serves {
                 #[cfg(not(feature = "dev-unreserve"))]
-                let served = "bddkit serves api, db and srp, and ";
+                let served = "bddkit serves api and srp, and ";
                 #[cfg(feature = "dev-unreserve")]
                 let served = "";
                 return refuse(
@@ -779,15 +778,6 @@ async fn check_new_resource(
             );
         }
         #[cfg(not(feature = "dev-unreserve"))]
-        "db" => {
-            let connection = under_the_name(&cfg.resources.db, input)?;
-            crate::db::check_dsn(connection)?;
-            if input.no_check {
-                return Ok(());
-            }
-            crate::doctor::probe_db(input.name, connection).await?;
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
         "srp" => {
             crate::doctor::check_srp_resource(under_the_name(&cfg.resources.srp, input)?)?;
         }
@@ -828,7 +818,7 @@ mod tests {
     fn every_host_kind_is_described_and_marks_its_required_keys() {
         let kinds = host_kinds();
         let out = render(&kinds);
-        for kind in ["api:", "db:", "srp:"] {
+        for kind in ["api:", "srp:"] {
             assert!(out.contains(kind), "{out}");
         }
         assert!(out.contains("base_url"), "{out}");

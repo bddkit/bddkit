@@ -854,12 +854,6 @@ impl Trace {
         );
     }
 
-    /// One `sql` diagnostic, after the statement ran.
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub fn sql(&self, diagnostic: &SqlDiagnostic) {
-        self.sql_in("db", diagnostic, None);
-    }
-
     /// An `sql` diagnostic of a plugin's group, with the title it may give.
     pub fn sql_in(&self, group: &str, diagnostic: &SqlDiagnostic, title: Option<&str>) {
         if !self.evidence_on() {

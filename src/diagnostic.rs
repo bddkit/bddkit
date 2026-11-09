@@ -316,29 +316,6 @@ impl ScanItem {
 }
 
 impl SqlDiagnostic {
-    /// A statement that ran for `elapsed` over `resource`; a bind holding the
-    /// variables' `NULL` sentinel is SQL `NULL`.
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub fn new(
-        resource: &str,
-        sql: &str,
-        binds: &[Option<String>],
-        elapsed: std::time::Duration,
-    ) -> Self {
-        Self {
-            sql: sql.to_string(),
-            binds: binds
-                .iter()
-                .map(|bind| {
-                    bind.clone()
-                        .filter(|value| value != crate::vars::NULL_SENTINEL)
-                })
-                .collect(),
-            duration_us: Some(crate::events::micros(elapsed)),
-            resource: resource.to_string(),
-        }
-    }
-
     /// The `content` of the `sql` evidence event.
     pub fn content(&self, redactor: &Redactor) -> Value {
         let binds: Vec<Value> = self
@@ -521,22 +498,6 @@ mod tests {
                 .content(&redactor(&[]), &place)
                 .get("duration_us")
                 .is_none()
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn the_null_sentinel_bind_is_sql_null() {
-        let binds = [
-            Some(crate::vars::NULL_SENTINEL.to_string()),
-            Some("a".into()),
-            None,
-        ];
-        let sql = SqlDiagnostic::new("main", "select 1", &binds, std::time::Duration::ZERO);
-        assert_eq!(sql.binds, [None, Some("a".into()), None]);
-        assert_eq!(
-            sql.content(&Redactor::disabled())["binds"],
-            json!([null, "a", null])
         );
     }
 

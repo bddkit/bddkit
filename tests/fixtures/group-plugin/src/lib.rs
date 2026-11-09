@@ -23,6 +23,8 @@
 //!   "db"}`, one more step reads the selected `api` instance and another takes
 //!   a built-in's text, `the response code is <n>`: what only a `dev-unreserve`
 //!   build of the host accepts.
+//! - `BDDKIT_GROUP_FIXTURE_HOST_GROUPS=db`: the same, with `db` alone and no
+//!   `api` step: the databases left the host, so a default build accepts it.
 //! - `BDDKIT_GROUP_FIXTURE_LOG=<path>`: every `init`, `select`, `reset` and
 //!   `drop` appends one line, so a test sees the calls from outside.
 //!
@@ -116,6 +118,10 @@ fn host_groups() -> bool {
     std::env::var_os("BDDKIT_GROUP_FIXTURE_HOST_GROUPS").is_some()
 }
 
+fn db_only() -> bool {
+    std::env::var("BDDKIT_GROUP_FIXTURE_HOST_GROUPS").as_deref() == Ok("db")
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_abi_version() -> u32 {
     4
@@ -135,7 +141,11 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
             "deprecated": { "oldswitch": "gone" }
         });
         if host_groups() {
-            manifest["groups"] = serde_json::json!(["api", "srp", "db"]);
+            manifest["groups"] = if db_only() {
+                serde_json::json!(["db"])
+            } else {
+                serde_json::json!(["api", "srp", "db"])
+            };
             manifest["eager_init"] = serde_json::json!(["db"]);
             manifest["deprecated"] = serde_json::json!({ "connection": "db" });
         }
@@ -144,7 +154,7 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
                 manifest["deprecated"] = serde_json::json!({ "oldswitch": "elsewhere" })
             }
             Ok("group") => manifest["deprecated"] = serde_json::json!({ "gtwo": "gone" }),
-            Ok("host") => manifest["deprecated"] = serde_json::json!({ "db": "gone" }),
+            Ok("host") => manifest["deprecated"] = serde_json::json!({ "api": "gone" }),
             Ok("eager_unclaimed") => manifest["eager_init"] = serde_json::json!(["elsewhere"]),
             Ok("eager_per_worker") => {
                 manifest["concurrency"] = "per_worker".into();
@@ -159,7 +169,9 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn bddkit_list_steps() -> *mut c_char {
     guard("envelope", || {
-        let (first, second) = if host_groups() {
+        let (first, second) = if db_only() {
+            ("db", "db")
+        } else if host_groups() {
             ("db", "srp")
         } else {
             ("gone", "gtwo")
@@ -172,7 +184,7 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I wait at the group barrier for (\d+) parties$"#, "group": first, "kind": "action" },
             { "pattern": r#"^I read the gtwo handle into "([^"]*)"$"#, "group": second, "kind": "action" }
         ]);
-        if host_groups() {
+        if host_groups() && !db_only() {
             steps.as_array_mut().expect("an array").push(serde_json::json!(
                 { "pattern": r#"^I read the selected api instance into "([^"]*)"$"#, "group": "api", "kind": "action" }
             ));

@@ -26,8 +26,7 @@ pub struct SettingsArgs {
     #[cfg(not(feature = "dev-unreserve"))]
     #[arg(long = "default-api")]
     pub default_api: Option<String>,
-    /// The database connection a scenario starts on [default: $BDDKIT_DEFAULT_DB, else the config's `default_db`]
-    #[cfg(not(feature = "dev-unreserve"))]
+    /// The database connection a scenario starts on; an alias of `--default db=<name>` [default: $BDDKIT_DEFAULT_DB, else the config's `default_db`]
     #[arg(long = "default-db")]
     pub default_db: Option<String>,
     /// The SRP configuration the SRP steps use [default: $BDDKIT_DEFAULT_SRP, else the config's `default_srp`]
@@ -83,7 +82,7 @@ fn default_variable(group: &str) -> String {
 
 /// `get` is a variable lookup (`privacy::process_env` in a real run), injected
 /// so a test never touches the process environment. `groups` are the groups
-/// whose variable is read: the built-in three always, a plugin group when the
+/// whose variable is read: the built-in two always, a plugin group when the
 /// config declares it.
 pub fn resolve(
     args: &SettingsArgs,
@@ -92,17 +91,18 @@ pub fn resolve(
 ) -> Result<Overrides> {
     let get = |name: &str| get(name).filter(|value| !value.is_empty());
     let mut defaults = BTreeMap::new();
-    #[cfg(not(feature = "dev-unreserve"))]
+    // `--default-db` is an alias kept from when `db` was built in; `db` is a
+    // plugin group now, in every build.
     let spelled = [
+        #[cfg(not(feature = "dev-unreserve"))]
         ("api", &args.default_api),
         ("db", &args.default_db),
+        #[cfg(not(feature = "dev-unreserve"))]
         ("srp", &args.default_srp),
     ]
     .into_iter()
     .filter_map(|(group, name)| Some((group.to_string(), name.clone()?)))
     .chain(args.default.iter().cloned());
-    #[cfg(feature = "dev-unreserve")]
-    let spelled = args.default.iter().cloned();
     for (group, name) in spelled {
         if defaults.insert(group.clone(), name).is_some() {
             anyhow::bail!(
@@ -202,8 +202,6 @@ impl Config {
         }
         #[cfg(not(feature = "dev-unreserve"))]
         self.resolve_default_api()?;
-        #[cfg(not(feature = "dev-unreserve"))]
-        self.resolve_default_db()?;
         #[cfg(not(feature = "dev-unreserve"))]
         self.resolve_default_srp()?;
         self.resolve_options()

@@ -1,7 +1,5 @@
 use crate::artifacts::Artifacts;
 #[cfg(not(feature = "dev-unreserve"))]
-use crate::db::DbHandle;
-#[cfg(not(feature = "dev-unreserve"))]
 use crate::http::{Apis, HttpState};
 use crate::options::{Options, OptionsLayer};
 use crate::privacy::Redactor;
@@ -58,14 +56,12 @@ impl Workspace {
     }
 }
 
-/// Variables live for the feature file; HTTP state, the current DB connection,
-/// and debug mode live for the scenario. Asymmetry from Behat's behavior (spec §3).
+/// Variables live for the feature file; HTTP state, the selected plugin
+/// instances and debug mode live for the scenario. Asymmetry from Behat's behavior (spec §3).
 pub struct World {
     pub vars: VarStack,
     #[cfg(not(feature = "dev-unreserve"))]
     pub http: HttpState,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub db: DbHandle,
     pub debug: bool,
     pub generator: Arc<Generator>,
     pub options: Options,
@@ -98,7 +94,6 @@ impl World {
     pub fn new(
         #[cfg(not(feature = "dev-unreserve"))] apis: Arc<Apis>,
         generator: Arc<Generator>,
-        #[cfg(not(feature = "dev-unreserve"))] db: DbHandle,
         #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
@@ -109,8 +104,6 @@ impl World {
             vars: VarStack::new(),
             #[cfg(not(feature = "dev-unreserve"))]
             http: HttpState::new(apis),
-            #[cfg(not(feature = "dev-unreserve"))]
-            db,
             debug: false,
             generator,
             #[cfg(not(feature = "dev-unreserve"))]
@@ -175,12 +168,10 @@ impl World {
         self.pending_options.take()
     }
 
-    /// At the scenario boundary: the request, connection, and debug flag reset; variables remain.
+    /// At the scenario boundary: the request, the selected instances and the debug flag reset; variables remain.
     pub fn reset_scenario(&mut self) {
         #[cfg(not(feature = "dev-unreserve"))]
         self.http.reset();
-        #[cfg(not(feature = "dev-unreserve"))]
-        self.db.reset();
         self.debug = false;
         self.pending_options = None;
         self.plugins.reset();
@@ -190,8 +181,6 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "dev-unreserve"))]
-    use crate::db::DbHandle;
     #[cfg(not(feature = "dev-unreserve"))]
     use crate::http::ApiResource;
     use crate::unique::Generator;
@@ -216,8 +205,6 @@ mod tests {
             #[cfg(not(feature = "dev-unreserve"))]
             apis(),
             Arc::new(Generator::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            DbHandle::new(None, String::new()),
             #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
@@ -252,8 +239,6 @@ mod tests {
             apis(),
             Arc::new(Generator::new()),
             #[cfg(not(feature = "dev-unreserve"))]
-            DbHandle::new(None, String::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
             None,
             None,
             Options::default(),
@@ -281,7 +266,6 @@ mod tests {
         let mut w = World::new(
             apis(),
             Arc::new(Generator::new()),
-            DbHandle::new(None, String::new()),
             Some(params),
             None,
             Options::default(),
