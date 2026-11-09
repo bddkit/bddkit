@@ -406,3 +406,68 @@ fn an_api_url_needs_a_plugin_when_the_built_ins_are_left_out() {
         text(&out)
     );
 }
+
+/// `init --dsn` makes `db` a plugin group. With a plugin that serves it
+/// already installed, nothing is left to install, so the plugin index is not
+/// asked: an unreachable one (the harness points it at a missing file) must not
+/// turn the run into a failure. Without the plugin the index is the only way to
+/// find one, and its failure is reported.
+fn init_with_dsn(dir: &Path, installed: bool) -> Output {
+    if installed {
+        std::fs::create_dir_all(dir.join(".bddkit")).unwrap();
+        std::fs::write(
+            dir.join(".bddkit/plugins.yaml"),
+            format!(
+                "plugin:\n  - name: group\n    path: {}\n",
+                common::build_group_plugin(false).display()
+            ),
+        )
+        .unwrap();
+    }
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "init",
+            "--no-api",
+            "--db",
+            "postgres",
+            "--dsn",
+            "postgres://x/y",
+        ])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("BDDKIT_PLUGIN_REGISTRY", dir.join("no-such-index.yaml"))
+        .env("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "db")
+        .env_remove("BDDKIT_CONFIG")
+        .env_remove("BDDKIT_DIR")
+        .env_remove("CI")
+        .output()
+        .expect("run bddkit")
+}
+
+#[test]
+fn init_does_not_ask_the_index_when_an_installed_plugin_serves_the_group() {
+    let dir = temp("installed-db");
+    let out = init_with_dsn(&dir, true);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(dir.join("bddkit.yaml").exists());
+    assert!(
+        !text(&out).contains("could not work out which plugins"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[test]
+fn init_asks_the_index_when_no_installed_plugin_serves_the_group() {
+    let dir = temp("missing-db");
+    let out = init_with_dsn(&dir, false);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("could not work out which plugins"),
+        "{}",
+        text(&out)
+    );
+}
