@@ -998,8 +998,6 @@ fn resource_fields_describes_a_plugins_group_only_with_a_config() {
         .expect("run bddkit");
     let bare_out = String::from_utf8_lossy(&bare.stdout);
     assert_eq!(bare.status.code(), Some(0), "{bare_out}");
-    #[cfg(not(feature = "dev-unreserve"))]
-    assert!(bare_out.contains("api:"), "{bare_out}");
     assert!(
         !bare_out.contains("echo:"),
         "without --config no plugin is loaded, so it describes nothing:\n{bare_out}"

@@ -14,16 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Group names the host serves itself. A plugin claiming one of these would
-/// shadow `resources.api` or `resources.srp`, so it is refused at startup.
-/// `db` is not one: the databases are the `bddkit-db` plugin's, and
-/// `connection` is that plugin's deprecated switch word.
-#[cfg(not(feature = "dev-unreserve"))]
-const HOST_GROUPS: &[&str] = &["api", "srp"];
-/// A `dev-unreserve` build has no built-ins to shadow: a plugin may claim them.
-#[cfg(feature = "dev-unreserve")]
-const HOST_GROUPS: &[&str] = &[];
-
 /// How a plugin step reaches the registry.
 #[derive(Debug, Clone)]
 pub enum Declared {
@@ -197,7 +187,6 @@ impl Plugins {
                 concurrency,
             )?;
             let index = libs.len();
-            check_host_groups(&lib.name, &lib.manifest.groups)?;
             for group in &lib.manifest.groups {
                 if let Some(other) = groups.insert(group.clone(), index) {
                     bail!(
@@ -898,19 +887,6 @@ impl Plugins {
     }
 }
 
-/// A plugin claiming a group the host serves itself would shadow
-/// `resources.api` or `resources.db`. A free function over the parsed manifest's
-/// group list, for the same reason as `library`'s own checks: reachable from a
-/// unit test without building a second cdylib.
-fn check_host_groups(name: &str, groups: &[String]) -> Result<()> {
-    for group in groups {
-        if HOST_GROUPS.contains(&group.as_str()) {
-            bail!("plugin {name:?} claims the group {group:?}, which bddkit serves itself");
-        }
-    }
-    Ok(())
-}
-
 /// A handle's name in a message: `group` for a group-scoped one, whose key
 /// carries no instance.
 fn label(group: &str, instance: &str) -> String {
@@ -940,11 +916,6 @@ fn check_deprecated_words(
             if groups.contains_key(word) {
                 bail!(
                     "plugin {plugin:?} declares the deprecated word {word:?}, which is a resource group"
-                );
-            }
-            if HOST_GROUPS.contains(&word.as_str()) {
-                bail!(
-                    "plugin {plugin:?} declares the deprecated word {word:?}, which bddkit serves itself"
                 );
             }
             if let Some((other, _)) = words.insert(word.clone(), (plugin, target.clone())) {
@@ -1800,23 +1771,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn a_plugin_claiming_a_host_group_is_refused() {
-        // docs/plugin-authoring.md promises these names are reserved;
-        // nothing pinned that promise before this test.
-        for group in ["api", "srp"] {
-            let error = check_host_groups("intruder", &[group.to_string()])
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains(group), "{error}");
-            assert!(error.contains("intruder"), "{error}");
-        }
-        check_host_groups("echo", &["echo".to_string()]).expect("its own group is fine");
-        // The databases left the host: `db` is a plugin's to claim.
-        check_host_groups("db", &["db".to_string()]).expect("db is no host group");
-    }
-
-    #[test]
     fn the_fixture_plugin_is_refused_under_parallelism() {
         // It exports bddkit_reset_scenario, and a `shared` instance cannot hold
         // per-scenario state while every worker shares it.
@@ -1900,9 +1854,6 @@ pub(crate) mod tests {
 
         let odd = words(&[("", "gone")]);
         check_deprecated_words(&[("a", &odd)], &groups).expect_err("an empty word");
-        #[cfg(not(feature = "dev-unreserve"))]
-        let refused = ["other", "api", "srp"];
-        #[cfg(feature = "dev-unreserve")]
         let refused = ["other"];
         for word in refused {
             let bad = words(&[(word, "gone")]);

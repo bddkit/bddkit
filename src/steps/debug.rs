@@ -1,9 +1,6 @@
 use crate::failure::StepError;
 use crate::world::World;
 
-#[cfg(not(feature = "dev-unreserve"))]
-use super::markup::{self, BodyKind};
-
 pub fn debug_on(w: &mut World) -> Result<(), StepError> {
     w.debug = true;
     Ok(())
@@ -25,25 +22,6 @@ fn headers_table(headers: &[(String, String)]) -> String {
         .map(|(k, v)| format!("{k:width$} : {v}"))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn print_headers(w: &World) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    debug_eprintln!(
-        w,
-        "=== Response headers ===\n{}",
-        headers_table(
-            &ex.resp_headers
-                .iter()
-                .map(|(name, value)| (
-                    name.clone(),
-                    crate::diagnostic::shown_header(&ex.masked_headers, name, value, &w.redactor)
-                ))
-                .collect::<Vec<_>>()
-        )
-    );
-    Ok(())
 }
 
 /// Rows as a `| a | b |` grid, each column padded to its longest cell.
@@ -180,53 +158,6 @@ pub(crate) fn render_headers(
         })
         .collect();
     format!("{title}\n{}", headers_table(&shown))
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn print_body(w: &World) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    match markup::classify(markup::content_type(&ex.resp_headers)) {
-        BodyKind::Json => {
-            let v = ex.json()?;
-            let pretty = serde_json::to_string_pretty(&v)
-                .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            debug_eprintln!(w, "{}", render_text(&w.redactor, Some("json"), &pretty));
-        }
-        BodyKind::Xml => debug_eprintln!(w, "{}", render_text(&w.redactor, Some("xml"), &ex.body)),
-        BodyKind::Html => {
-            debug_eprintln!(w, "{}", render_text(&w.redactor, Some("html"), &ex.body))
-        }
-        BodyKind::Plain => debug_eprintln!(w, "{}", ex.body),
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    let kind = markup::classify(markup::content_type(&ex.resp_headers));
-    match kind {
-        BodyKind::Json => {
-            let root = ex.json()?;
-            let sub = bddkit_crate_json::path::read(&root, path).map_err(|e| e.to_string())?;
-            let pretty = serde_json::to_string_pretty(sub)
-                .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
-        }
-        BodyKind::Xml | BodyKind::Html => {
-            debug_eprintln!(
-                w,
-                "{}",
-                markup::select(kind, &ex.body, path, false).map_err(|e| e.to_string())?
-            );
-        }
-        BodyKind::Plain => {
-            return Err(
-                "path selection is not supported: content-type is not JSON/XML/HTML".to_string(),
-            );
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

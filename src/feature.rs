@@ -1139,10 +1139,7 @@ Feature: F
     /// `(name, source)` — what the agreement tests check the scanners against.
     fn fixture_sources() -> Vec<(String, String)> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let dirs: Vec<PathBuf> = ["tests", "examples", "selftest"]
-            .iter()
-            .map(|d| root.join(d))
-            .collect();
+        let dirs: Vec<PathBuf> = ["tests", "selftest"].iter().map(|d| root.join(d)).collect();
         let files = discover(&dirs).unwrap();
         assert!(files.len() > 20, "found only {files:?}");
         let mut sources: Vec<_> = files

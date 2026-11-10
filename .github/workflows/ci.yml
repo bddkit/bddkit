@@ -98,42 +98,13 @@ jobs:
           $results | Format-Table -AutoSize
           if ($results.Count -gt 0) { exit 1 }
 
-  # A build without the built-in API (`dev-unreserve`), which is what
-  # `bddkit-api` runs on until the built-in is gone. What is left needs no
-  # stub, so no containers here.
-  test-without-built-ins:
-    name: test & clippy (dev-unreserve)
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      # Pinned for the reason given in the job below.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: "1.97.1"
-          components: clippy
-          rustflags: ""
-
-      - name: Clippy
-        run: cargo clippy --locked --all-targets --features dev-unreserve -- -D warnings
-
-      - name: Tests
-        run: cargo test --locked --features dev-unreserve
-
   test:
     name: test & clippy
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    # `checks: write` is for the example report below, which is published as a
-    # Check Run; the rest is the default read-only token.
     permissions:
       contents: read
-      checks: write
 
     steps:
       - uses: actions/checkout@v6
@@ -157,34 +128,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # First: a unit test that broke must report before a container has started.
+      # First: a unit test that broke must report before the slower targets run.
       - name: Unit tests
         run: cargo test --locked --bin bddkit
 
-      # The examples are the tool's demonstration surface; without this they rot
-      # silently and the README's reader is the first to find out. The suite runs
-      # exactly as examples/README.md documents it, and a failed scenario exits 1.
-      # Smocker cannot be a service container: those start before checkout, so
-      # the mocks it mounts do not exist yet. The wait is on the mocks being
-      # loaded, not on the port.
-      - name: Start the example containers
-        run: |
-          docker compose up -d smocker
-          timeout 180 bash -c '
-            until curl -sf http://localhost:8081/mocks >/dev/null; do sleep 2; done
-          '
-
-      # Every integration target. Among them, that a default build refuses a
-      # plugin claiming a built-in's group.
+      # Every integration target.
       - name: Integration tests
         run: cargo test --locked --test '*'
-
-      # A report the run could not write is 2 and fails the job like anything
-      # else. The report lives outside the checkout: `cargo publish --dry-run`
-      # below refuses a dirty working tree. The database suites live in
-      # bddkit-db now.
-      - name: Example suites
-        run: cargo run --locked --quiet -- run --config examples/api.yaml --junit "$RUNNER_TEMP/reports/api.xml"
 
       # bddkit testing bddkit: selftest/ runs the binary on a scratch project
       # through the published `exec` plugin and reads back what it printed and
@@ -197,8 +147,7 @@ jobs:
           ./target/debug/bddkit run --config selftest/bddkit.yaml --events "$RUNNER_TEMP/selftest/run.ndjson" --evidence --artifacts-dir "$RUNNER_TEMP/selftest/artifacts"
 
       # The stream above, as the page a person opens after a red build. Kept
-      # outside the checkout like the JUnit files, and uploaded with its
-      # artifacts; `--embed-artifacts` makes the page open on its own anyway.
+      # outside the checkout, and uploaded with its artifacts; `--embed-artifacts` makes the page open on its own anyway.
       - name: Self-test report
         if: always()
         run: ./target/debug/bddkit report "$RUNNER_TEMP/selftest/run.ndjson" --embed-artifacts
@@ -210,18 +159,6 @@ jobs:
           name: selftest-report
           path: ${{ runner.temp }}/selftest
           if-no-files-found: ignore
-
-      # The JUnit files above, rendered on the job's summary page and, for a
-      # PR, as annotations at the failing scenario — which is also the live
-      # check that the XML `run --junit` writes is what GitHub reads.
-      # `always()`: a red run is exactly when the report is wanted.
-      - name: Example report
-        if: always()
-        uses: dorny/test-reporter@v2
-        with:
-          name: Example suites
-          path: ${{ runner.temp }}/reports/*.xml
-          reporter: java-junit
 
       - name: Package check
         run: cargo publish --dry-run --locked

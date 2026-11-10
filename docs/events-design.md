@@ -423,7 +423,7 @@ A deferred step's `evidence` and `attempt` events are held per scenario and carr
 
 ### 9.3 The `evidence` event
 
-**Decided.** There is one event type for all evidence, whatever produced it. The core has no `http_exchange` and no `db_query` type: the built-in API speaks the form a plugin's diagnostic already has, as the database did before it became the `db` plugin, so moving it into a plugin changes nothing in the stream.
+**Decided.** There is one event type for all evidence, whatever produced it. The core has no `http_exchange` and no `db_query` type: the HTTP API and the databases speak the form a plugin's diagnostic has, as plugins now.
 
 Fields beyond the envelope: `file`, `scenario`, `step` (the innermost step in flight), `group` (`api`, `db`, or a plugin group), `resource` (the instance name), `kind`, an optional `title`, and either `content` or a file reference (`path`, `size`, `media_type`).
 

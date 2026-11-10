@@ -1,15 +1,7 @@
-#[cfg(not(feature = "dev-unreserve"))]
-pub mod api;
-#[cfg(not(feature = "dev-unreserve"))]
-pub mod assert;
 pub mod debug;
 pub mod expression;
 pub mod help;
-#[cfg(not(feature = "dev-unreserve"))]
-mod markup;
 pub mod plugin;
-#[cfg(not(feature = "dev-unreserve"))]
-pub mod srp;
 mod suggest;
 pub mod vars;
 
@@ -22,93 +14,13 @@ use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepId {
-    // request
-    #[cfg(not(feature = "dev-unreserve"))]
-    SetRequestHeader,
-    #[cfg(not(feature = "dev-unreserve"))]
-    AddRequestHeader,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SetQueryParam,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SetRequestBody,
-    #[cfg(not(feature = "dev-unreserve"))]
-    EmptyRequestBody,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SetFormParams,
-    #[cfg(not(feature = "dev-unreserve"))]
-    AttachFile,
-    #[cfg(not(feature = "dev-unreserve"))]
-    RequestPath,
-    #[cfg(not(feature = "dev-unreserve"))]
-    RequestPathWithMethod,
-    #[cfg(not(feature = "dev-unreserve"))]
-    UseApi,
     UsePluginInstance,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SignNextRequestWithHawk,
     ExpectEventually,
     ExpectWithin,
     ExpectWithinEvery,
-    // response checks
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseCode,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyContainsJson,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyEqualsJson,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseArrayLength,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseHeader,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseHeaderContains,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseHeaderNotContains,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseHeaderMatches,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseHeaderNotMatches,
-    #[cfg(not(feature = "dev-unreserve"))]
-    JsonNodeExists,
-    #[cfg(not(feature = "dev-unreserve"))]
-    JsonNodeNotExists,
-    #[cfg(not(feature = "dev-unreserve"))]
-    JsonNodeIsNull,
-    #[cfg(not(feature = "dev-unreserve"))]
-    JsonNodeNotNull,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyNotContainsJson,
-    #[cfg(not(feature = "dev-unreserve"))]
-    JsonNodeNotContainsSubstring,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyEmpty,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyContains,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyNotContains,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyMatches,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyNotMatches,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyHasElement,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyHasElementWithText,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ResponseBodyNotHasElement,
     // variables
     SetVariable,
     SetVariableGlobal,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromJson,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromJsonGlobal,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromCookies,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromCookiesGlobal,
-    #[cfg(not(feature = "dev-unreserve"))]
-    ExtractFromMarkup,
     VariableEquals,
     VariableNotEquals,
     VariableContains,
@@ -132,22 +44,7 @@ pub enum StepId {
     Sleep,
     ShowAllVariables,
     ShowVariable,
-    #[cfg(not(feature = "dev-unreserve"))]
-    PrintResponseHeaders,
-    #[cfg(not(feature = "dev-unreserve"))]
-    PrintResponseBody,
-    #[cfg(not(feature = "dev-unreserve"))]
-    PrintResponseBodyAsPath,
     PrintTable,
-    // SRP
-    #[cfg(not(feature = "dev-unreserve"))]
-    SrpVerifier,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SrpVerifierWithSalt,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SrpStartLogin,
-    #[cfg(not(feature = "dev-unreserve"))]
-    SrpCompleteLogin,
     // include
     Include,
     IncludeScenario,
@@ -156,8 +53,6 @@ pub enum StepId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionsSource {
     Global,
-    #[cfg(not(feature = "dev-unreserve"))]
-    Http,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +64,7 @@ pub enum StepKind {
 pub struct StepDef {
     pub id: StepId,
     /// The resource this step belongs to, and the heading `bddkit steps list`
-    /// prints it under: `api`, `db`, `srp`, `vars`, `debug`, or `general` for
+    /// prints it under: `vars`, `debug`, or `general` for
     /// the few steps that belong to no resource at all.
     pub group: &'static str,
     /// A Cucumber Expression with bddkit's parameter extension: `{name}` is a
@@ -220,76 +115,6 @@ const fn assertion(
 /// optional part may not hold a parameter, which is why each `I include` step
 /// is declared twice, without and with `with prefix "{prefix}"`.
 pub const BUILTIN_STEPS: &[StepDef] = &[
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SetRequestHeader,
-        "api",
-        r#"the "{name}" request header is "{value}""#,
-        "sets a header on the request being built, replacing any previous value",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::AddRequestHeader,
-        "api",
-        r#"I add "{value}" to the "{name}" request header"#,
-        "appends another value to a request header, keeping what is already there",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SetQueryParam,
-        "api",
-        r#"the query parameter "{name}" is "{value}""#,
-        "sets a query string parameter on the request being built",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SetRequestBody,
-        "api",
-        "the request body is:",
-        "sets the request body from the docstring below the step",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::EmptyRequestBody,
-        "api",
-        "the request body is empty",
-        "clears the request body built so far",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SetFormParams,
-        "api",
-        "the request form parameters are:",
-        "sends the table below as form-encoded parameters instead of a body",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::AttachFile,
-        "api",
-        r#"I attach the file "{file}" to the request as "{name}""#,
-        "attaches a file, path relative to this feature file, as a multipart/form-data part",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::RequestPathWithMethod,
-        "api",
-        r#"I request "{path}" using HTTP {method:method}"#,
-        "performs the request against the current API with this method",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::RequestPath,
-        "api",
-        r#"I request "{path}""#,
-        "performs a GET request against the current API",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SignNextRequestWithHawk,
-        "api",
-        r#"I sign the next request with Hawk id "{id}" and key "{key:secret}""#,
-        "signs the next request with these Hawk credentials, and every replay of it",
-    ),
     action(
         StepId::ExpectEventually,
         "general",
@@ -308,190 +133,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"I expect the next assertion to pass within {seconds:uint} seconds"#,
         "lets the next assertion retry for this long, at the configured interval",
     ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseCode,
-        "api",
-        "the response code is {code:uint}",
-        "asserts the HTTP status code of the last response",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyContainsJson,
-        "api",
-        "the response body contains JSON:",
-        "asserts the response body contains this JSON — object subsets pass, array order is ignored",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyEqualsJson,
-        "api",
-        "the response body equals JSON:",
-        "asserts the response body equals this JSON exactly, key for key and element for element",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseArrayLength,
-        "api",
-        "the response body is a JSON array of length {length:uint}",
-        "asserts the response body is a JSON array holding this many elements",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseHeader,
-        "api",
-        r#"the "{name}" response header is "{value}""#,
-        "asserts a response header holds exactly this value — on any line, when the server sent the header more than once",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseHeaderContains,
-        "api",
-        r#"the "{name}" response header contains "{text:any}""#,
-        "asserts a response header's value contains this text — on any line, when the header repeats",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseHeaderNotContains,
-        "api",
-        r#"the "{name}" response header does not contain "{text:any}""#,
-        "asserts no line of a response header contains this text — passes when the header is absent",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseHeaderMatches,
-        "api",
-        r#"the "{name}" response header matches "{pattern:any}""#,
-        "asserts a response header's value matches this regular expression — on any line, when the header repeats",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseHeaderNotMatches,
-        "api",
-        r#"the "{name}" response header does not match "{pattern:any}""#,
-        "asserts no line of a response header matches this regular expression — passes when the header is absent",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::JsonNodeExists,
-        "api",
-        r#"the JSON node "{path}" should exist"#,
-        "asserts the response body has a node at this JSON path",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::JsonNodeNotExists,
-        "api",
-        r#"the JSON node "{path}" should not exist"#,
-        "asserts the response body has no node at this JSON path — a null value still counts as existing",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::JsonNodeIsNull,
-        "api",
-        r#"the JSON node "{path}" should be null"#,
-        "asserts the node at this JSON path exists and is JSON null",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::JsonNodeNotNull,
-        "api",
-        r#"the JSON node "{path}" should not be null"#,
-        "asserts the node at this JSON path exists and is not JSON null",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyNotContainsJson,
-        "api",
-        "the response body does not contain JSON:",
-        "asserts the response body does not contain this JSON — same subset/order-independent matching as `contains`, inverted",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::JsonNodeNotContainsSubstring,
-        "api",
-        r#"the JSON node "{path}" should not contain "{substring}""#,
-        "asserts a string node does not contain this substring",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyEmpty,
-        "api",
-        "the response body should be empty",
-        "asserts the response body is empty",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyContains,
-        "api",
-        r#"the response body contains "{text}""#,
-        "asserts the raw response body contains this text — works for any content type",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyNotContains,
-        "api",
-        r#"the response body does not contain "{text}""#,
-        "asserts the raw response body does not contain this text",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyMatches,
-        "api",
-        r#"the response body matches "{pattern}""#,
-        "asserts the raw response body matches this regular expression",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyNotMatches,
-        "api",
-        r#"the response body does not match "{pattern}""#,
-        "asserts the raw response body does not match this regular expression",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyHasElement,
-        "api",
-        r#"the response body has element "{selector}""#,
-        "asserts an HTML (CSS selector) or XML (XPath) element matches in the response body",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyHasElementWithText,
-        "api",
-        r#"the response body has element "{selector}" with text "{text}""#,
-        "asserts the matched elements' text, newline-joined if more than one, equals this value exactly",
-        OptionsSource::Http,
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    assertion(
-        StepId::ResponseBodyNotHasElement,
-        "api",
-        r#"the response body does not have element "{selector}""#,
-        "asserts no element matches this selector in the response body",
-        OptionsSource::Http,
-    ),
     action(
         StepId::SetVariableGlobal,
         "vars",
@@ -503,41 +144,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "vars",
         r#"set variable "{name}" to "{value}""#,
         "sets a variable for the whole feature file",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromJsonGlobal,
-        "vars",
-        r#"extract "{path}" from JSON as "{name}" global"#,
-        "reads a JSON path of the response into a variable the whole file can see",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromJson,
-        "vars",
-        r#"extract "{path}" from JSON as "{name}""#,
-        "reads a JSON path of the response into a variable",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromCookiesGlobal,
-        "vars",
-        r#"extract "{cookie}" from cookies as "{name}" global"#,
-        "reads a response cookie into a variable the whole file can see",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromCookies,
-        "vars",
-        r#"extract "{cookie}" from cookies as "{name}""#,
-        "reads a response cookie into a variable",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::ExtractFromMarkup,
-        "vars",
-        r#"extract "{selector}" from response body as "{name}""#,
-        "reads the matched elements' text, newline-joined if more than one, into a variable",
     ),
     assertion(
         StepId::VariableNotEquals,
@@ -639,13 +245,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"I encrypt "{value}" with AES using key "{key:secret}" as "{name}""#,
         "encrypts a value with an AES key and stores the result in a variable",
     ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::UseApi,
-        "api",
-        r#"I use "{name}" api"#,
-        "switches to another API resource and its default headers, until the scenario ends",
-    ),
     action(
         StepId::DebugOn,
         "debug",
@@ -688,60 +287,11 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"Show "{name}" variable"#,
         "prints one variable to stderr, failing if it is not set",
     ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::PrintResponseHeaders,
-        "debug",
-        "Print response headers",
-        "prints the headers of the last response to stderr",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::PrintResponseBody,
-        "debug",
-        "Print response body",
-        "prints the body of the last response to stderr, highlighted",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::PrintResponseBodyAsPath,
-        "debug",
-        r#"Print response body as "{path}""#,
-        "prints one JSON path, XPath (XML) or CSS selector (HTML) selection of the last response to stderr",
-    ),
     action(
         StepId::PrintTable,
         "debug",
         "Print table:",
         "prints the table below to stderr with variables filled in and columns aligned",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SrpVerifierWithSalt,
-        "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" and salt "{salt}" as "{prefix}""#,
-        "computes an SRP verifier from this salt into <prefix>_salt and <prefix>_verifier",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SrpVerifier,
-        "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" as "{prefix}""#,
-        "computes an SRP verifier from a fresh salt into <prefix>_salt and <prefix>_verifier",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SrpStartLogin,
-        "srp",
-        r#"I start an SRP login as "{prefix}""#,
-        "starts an SRP login, storing the client values in <prefix>_a and <prefix>_A",
-    ),
-    #[cfg(not(feature = "dev-unreserve"))]
-    action(
-        StepId::SrpCompleteLogin,
-        "srp",
-        r#"I complete SRP login "{prefix}" for "{username}" with password "{password:secret}" salt "{salt}" and "{server_public}""#,
-        "answers the server challenge into <prefix>_M1, <prefix>_M2 and <prefix>_sessionKey",
     ),
     action(
         StepId::Include,
@@ -1205,28 +755,6 @@ impl Registry {
         for (index, definition) in self.macros.iter().enumerate() {
             for step in &definition.body {
                 match self.find(&step.text)? {
-                    #[cfg(not(feature = "dev-unreserve"))]
-                    Some((
-                        StepTarget::Builtin {
-                            id: StepId::AttachFile,
-                            ..
-                        },
-                        caps,
-                    )) => {
-                        // Relative to the macro's own file, as at run time.
-                        let base = definition
-                            .source
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."));
-                        crate::validate::check_attached_file(&caps[0], base).map_err(|e| {
-                            format!(
-                                "{e}, in macro {:?} from {}:{}",
-                                definition.step,
-                                definition.source.display(),
-                                definition.line,
-                            )
-                        })?;
-                    }
                     Some((StepTarget::Builtin { .. }, _)) => {}
                     Some((target @ StepTarget::Plugin { .. }, caps)) => {
                         // ponytail: a file included from a macro body is not
@@ -1368,35 +896,8 @@ impl Args {
 }
 
 /// One `match` instead of boxed futures and trait objects.
-pub async fn dispatch(
-    w: &mut World,
-    id: StepId,
-    a: &Args,
-    #[cfg_attr(feature = "dev-unreserve", allow(unused_variables))] attempt: u64,
-) -> AttemptResult {
+pub async fn dispatch(w: &mut World, id: StepId, a: &Args) -> AttemptResult {
     let result: Result<(), StepError> = match id {
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SetRequestHeader => api::set_header(w, a.cap(0), a.cap(1)),
-        #[cfg(not(feature = "dev-unreserve"))]
-        // The step names the value before the name: `I add "V" to the "H" request header`.
-        StepId::AddRequestHeader => api::add_header(w, a.cap(1), a.cap(0)),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SetQueryParam => api::set_query(w, a.cap(0), a.cap(1)),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SetRequestBody => api::set_body(w, a.docstring.as_ref()),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::EmptyRequestBody => api::clear_body(w),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SetFormParams => api::set_form(w, a.table.as_ref()),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SignNextRequestWithHawk => api::sign_next_request_with_hawk(w, a.cap(0), a.cap(1)),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::RequestPath => api::request(w, a.cap(0), "GET").await,
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::RequestPathWithMethod => {
-            let (p, m) = (a.cap(0).to_string(), a.cap(1).to_string());
-            api::request(w, &p, &m).await
-        }
         StepId::ExpectEventually => {
             w.arm_options(OptionsLayer::default());
             Ok(())
@@ -1428,133 +929,8 @@ pub async fn dispatch(
                 Ok(())
             }
         }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseCode => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_code(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseHeader => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header(w, a.cap(0), a.cap(1));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseHeaderContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_contains(w, a.cap(0), a.cap(1), false);
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseHeaderNotContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_contains(w, a.cap(0), a.cap(1), true);
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseHeaderMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_matches(w, a.cap(0), a.cap(1), false);
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseHeaderNotMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_matches(w, a.cap(0), a.cap(1), true);
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyContainsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_contains_json(w, a.docstring.as_ref());
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyEqualsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_equals_json(w, a.docstring.as_ref());
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseArrayLength => {
-            assert::replay_response(w, attempt).await?;
-            return assert::array_length(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::JsonNodeExists => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_exists(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::JsonNodeNotExists => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_exists(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::JsonNodeIsNull => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_is_null(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::JsonNodeNotNull => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_null(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyNotContainsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_contains_json(w, a.docstring.as_ref());
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::JsonNodeNotContainsSubstring => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_contains(w, a.cap(0), a.cap(1));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyEmpty => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_empty(w);
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_contains_text(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyNotContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_contains_text(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_matches(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyNotMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_matches(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyHasElement => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_has_element(w, a.cap(0));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyHasElementWithText => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_has_element_with_text(w, a.cap(0), a.cap(1));
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ResponseBodyNotHasElement => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_has_element(w, a.cap(0));
-        }
         StepId::SetVariable => vars::set_variable(w, a.cap(0), a.cap(1), false),
         StepId::SetVariableGlobal => vars::set_variable(w, a.cap(0), a.cap(1), true),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromJson => vars::extract_from_json(w, a.cap(0), a.cap(1), false),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromJsonGlobal => vars::extract_from_json(w, a.cap(0), a.cap(1), true),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromCookies => vars::extract_from_cookies(w, a.cap(0), a.cap(1), false),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromCookiesGlobal => vars::extract_from_cookies(w, a.cap(0), a.cap(1), true),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::ExtractFromMarkup => vars::extract_from_markup(w, a.cap(0), a.cap(1)),
         StepId::VariableEquals => {
             return vars::variable_equals(w, a.cap(0), a.cap(1), false);
         }
@@ -1588,8 +964,6 @@ pub async fn dispatch(
             vars::extract_regex_from_variable(w, a.cap(0), a.cap(1), a.cap(2), true)
         }
         StepId::EncryptWithAes => vars::encrypt_with_aes(w, a.cap(0), a.cap(1), a.cap(2)),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::UseApi => api::use_api(w, a.cap(0)),
         StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)).await,
         StepId::DebugOn => debug::debug_on(w),
         StepId::DebugOff => debug::debug_off(w),
@@ -1604,37 +978,9 @@ pub async fn dispatch(
         StepId::Sleep => sleep(a.cap(0)).await.map_err(StepError::input),
         StepId::ShowAllVariables => show_all_variables(w).map_err(StepError::input),
         StepId::ShowVariable => show_variable(w, a.cap(0)).map_err(StepError::input),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::PrintResponseHeaders => debug::print_headers(w).map_err(StepError::input),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::PrintResponseBody => debug::print_body(w).map_err(StepError::input),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::PrintResponseBodyAsPath => {
-            debug::print_body_as(w, a.cap(0)).map_err(StepError::input)
-        }
         StepId::PrintTable => debug::print_table(w, a.table.as_ref()).map_err(StepError::input),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SrpVerifier => {
-            srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)).map_err(StepError::input)
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SrpVerifierWithSalt => {
-            srp::generate_verifier(w, a.cap(0), a.cap(1), Some(a.cap(2)), a.cap(3))
-                .map_err(StepError::input)
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SrpStartLogin => srp::start_login(w, a.cap(0)).map_err(StepError::input),
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::SrpCompleteLogin => {
-            srp::complete_login(w, a.cap(0), a.cap(1), a.cap(2), a.cap(3), a.cap(4))
-                .map_err(StepError::input)
-        }
         StepId::Include | StepId::IncludeScenario => {
             unreachable!("execute_step intercepts Include/IncludeScenario before calling dispatch")
-        }
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepId::AttachFile => {
-            unreachable!("execute_step intercepts AttachFile before calling dispatch")
         }
     };
     result.map_err(AttemptError::Fatal)
@@ -1744,19 +1090,6 @@ mod tests {
         assert!(params[0].check("abc").is_err());
         assert!(reg.find(r#"I sleep "<<n>>" seconds"#).unwrap().is_some());
         assert!(reg.find("I sleep abc seconds").unwrap().is_none());
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn a_method_slot_is_type_checked() {
-        let reg = reg();
-        let (_, _, params) = reg
-            .find_with_params(r#"I request "/a" using HTTP <<m>>"#)
-            .unwrap()
-            .expect("matches");
-        let method = params.iter().find(|p| p.name == "method").expect("method");
-        assert!(method.check("FETCH").is_err());
-        assert!(method.check("PATCH").is_ok());
     }
 
     #[test]
@@ -1912,55 +1245,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn the_group_switch_step_does_not_shadow_api() {
-        let reg = Registry::with_macros_and_plugins(
-            MacroCatalog::default(),
-            &[],
-            &["widget".to_string(), "browser".to_string()],
-            None,
-        )
-        .expect("registry");
-
-        let (api_target, _) = reg
-            .find(r#"I use "main" api"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            api_target,
-            StepTarget::Builtin {
-                id: StepId::UseApi,
-                kind: StepKind::Action
-            }
-        );
-
-        // `connection` is the `db` plugin's deprecated word now: with no
-        // plugin declaring it, the step is unknown.
-        assert!(
-            reg.find(r#"I use "pg" connection"#)
-                .expect("no ambiguity")
-                .is_none()
-        );
-
-        let (group_target, caps) = reg
-            .find(r#"I use "bucket-a" widget"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            group_target,
-            StepTarget::Builtin {
-                id: StepId::UsePluginInstance,
-                kind: StepKind::Action
-            }
-        );
-        assert_eq!(
-            caps,
-            vec!["bucket-a".to_string(), "widget".to_string()],
-            "name before group"
-        );
-    }
-
-    #[test]
     fn a_group_name_with_regex_metacharacters_is_escaped_not_interpreted() {
         let reg = Registry::with_macros_and_plugins(
             MacroCatalog::default(),
@@ -1990,7 +1274,7 @@ mod tests {
     fn every_builtin_declares_a_known_group_and_a_description() {
         // The group is what `bddkit steps list` prints and filters on: a typo
         // there hides a whole step from discovery without failing anything else.
-        const GROUPS: &[&str] = &["api", "db", "srp", "vars", "debug", "general"];
+        const GROUPS: &[&str] = &["vars", "debug", "general"];
         for def in BUILTIN_STEPS {
             assert!(
                 GROUPS.contains(&def.group),
@@ -2060,39 +1344,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn a_macro_body_attaching_a_missing_literal_file_is_refused_at_startup() {
-        let dir =
-            std::env::temp_dir().join(format!("bddkit-steps-macro-attach-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        std::fs::write(dir.join("present.bin"), b"x").expect("write fixture");
-        let path = dir.join("m.yaml");
-        let load = |file: &str| {
-            std::fs::write(
-                &path,
-                format!(
-                    "- step: I send the document\n  do: [\"I attach the file \\\"{file}\\\" to the request as \\\"c\\\"\"]\n"
-                ),
-            )
-            .expect("write macro file");
-            Registry::with_macros(
-                MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads"),
-            )
-        };
-
-        let error = load("gone.bin").expect_err("a missing literal file is refused");
-        assert!(error.contains("gone.bin"), "{error}");
-        assert!(
-            load("present.bin").is_ok(),
-            "resolved beside the macro file"
-        );
-        assert!(
-            load("<<name>>.bin").is_ok(),
-            "a variable is left to the step"
-        );
-    }
-
-    #[test]
     fn a_macro_body_may_call_a_plugin_step() {
         // Macros exist to compose steps and plugins exist to add steps.
         // Validating macros before the plugin patterns are registered made a
@@ -2143,39 +1394,15 @@ mod tests {
             reg.unknown_step_detail(r#"I sleep "abc" seconds"#),
             "\n  parameter <seconds> expects uint, got \"abc\""
         );
-        #[cfg(not(feature = "dev-unreserve"))]
-        assert_eq!(
-            reg.unknown_step_detail(r#"I request "/ping" using HTTP POSTT"#),
-            "\n  parameter <method> expects method, got \"POSTT\""
-        );
     }
 
     #[test]
     fn an_unknown_step_suggests_the_closest_templates() {
         let reg = Registry::new().unwrap();
-        let cases = [
-            (
-                r#"variable "a" should be empt"#,
-                r#"variable "<name>" should be empty"#,
-            ),
-            #[cfg(not(feature = "dev-unreserve"))]
-            ("the response status is 200", "the response code is <code>"),
-            #[cfg(not(feature = "dev-unreserve"))]
-            (
-                r#"the JSON node "a" should be nul"#,
-                r#"the JSON node "<path>" should be null"#,
-            ),
-            #[cfg(not(feature = "dev-unreserve"))]
-            (
-                r#"I request "/x" using HTTP"#,
-                r#"I request "<path>" using HTTP <method>"#,
-            ),
-            #[cfg(not(feature = "dev-unreserve"))]
-            (
-                r#"the response body contain "x""#,
-                r#"the response body contains "<text>" or the response body matches "<pattern>""#,
-            ),
-        ];
+        let cases = [(
+            r#"variable "a" should be empt"#,
+            r#"variable "<name>" should be empty"#,
+        )];
         for (text, suggestion) in cases {
             assert_eq!(
                 reg.unknown_step_detail(text),
@@ -2190,11 +1417,6 @@ mod tests {
             ""
         );
         // An unterminated quote swallows the rest as one token, not drops it.
-        #[cfg(not(feature = "dev-unreserve"))]
-        assert_eq!(
-            reg.unknown_step_detail(r#"I request "/x using HTTP GET"#),
-            "\n  did you mean: I request \"<path>\""
-        );
         let mut grouped = Registry::new().unwrap();
         grouped.add_use_group_step(&["echo".to_string()]).unwrap();
         assert_eq!(
@@ -2290,14 +1512,10 @@ mod tests {
 
     #[test]
     fn assertions_keep_their_option_source_in_registry_metadata() {
-        let cases = [
-            #[cfg(not(feature = "dev-unreserve"))]
-            ("the response code is 200", OptionsSource::Http),
-            (
-                r#"variable "state" should be equal to "ready""#,
-                OptionsSource::Global,
-            ),
-        ];
+        let cases = [(
+            r#"variable "state" should be equal to "ready""#,
+            OptionsSource::Global,
+        )];
 
         for (text, source) in cases {
             let (target, _) = reg().find(text).unwrap().expect("assertion is registered");
@@ -2312,60 +1530,8 @@ mod tests {
     fn no_two_builtin_steps_are_ambiguous() {
         // Every pattern is checked against all the others on concrete examples.
         let samples = [
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the "Accept" request header is "application/json""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I add "b" to the "Accept" request header"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the query parameter "q" is "1""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the request body is:",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the request body is empty",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the request form parameters are:",
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I request "/ping" using HTTP POST"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I request "/ping""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the response code is 200",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the response body contains JSON:",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the response body equals JSON:",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "the response body is a JSON array of length 3",
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body contains "hello""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body does not contain "hello""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body matches "h[0-9]""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body does not match "h[0-9]""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body has element "h1#title""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body has element "h1#title" with text "Hi""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the response body does not have element "h1#title""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the "X-Trace" response header is "abc""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"the JSON node "data.id" should exist"#,
             r#"set variable "a" to "1""#,
             r#"set variable "a" to "1" global"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"extract "id" from JSON as "userId""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"extract "id" from JSON as "userId" global"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"extract "jwt" from cookies as "t""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"extract "jwt" from cookies as "t" global"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"extract "h1#title" from response body as "pageTitle""#,
             r#"variable "a" should be equal to "1""#,
             r#"variable "a" should not be equal to "1""#,
             r#"variable "a" should contain "1""#,
@@ -2381,8 +1547,6 @@ mod tests {
             r#"extract "(\d+)" from variable "a" as "b""#,
             r#"extract "(\d+)" from variable "a" as "b" global"#,
             r#"I encrypt "555555" with AES using key "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" as "otp""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I use "billing" api"#,
             "I am in debug mode",
             "I am not in debug mode",
             "I am collecting evidence",
@@ -2390,22 +1554,6 @@ mod tests {
             r#"I sleep "5" seconds"#,
             "Show all variables",
             r#"Show "userId" variable"#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            "Print response headers",
-            #[cfg(not(feature = "dev-unreserve"))]
-            "Print response body",
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"Print response body as "status""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I generate an SRP verifier for "u@example.test" with password "p" as "reg""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I generate an SRP verifier for "u@example.test" with password "p" and salt "ab" as "reg""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I start an SRP login as "srp""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I complete SRP login "srp" for "u@example.test" with password "p" salt "ab" and "cd""#,
-            #[cfg(not(feature = "dev-unreserve"))]
-            r#"I sign the next request with Hawk id "session-1" and key "abc""#,
             r#"I include "a.feature""#,
             r#"I include "a.feature" with:"#,
             r#"I include "a.feature" with prefix "p""#,
@@ -2450,17 +1598,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn the_use_api_step_resolves_to_its_builtin() {
-        let (target, caps) = reg()
-            .find(r#"I use "billing" api"#)
-            .expect("pattern is not ambiguous")
-            .expect("step is declared");
-        assert!(target == StepId::UseApi, "the step must resolve to UseApi");
-        assert_eq!(caps, vec!["billing".to_string()]);
-    }
-
-    #[test]
     fn the_aes_encryption_step_resolves_to_its_builtin() {
         let (target, caps) = reg()
             .find(
@@ -2478,39 +1615,6 @@ mod tests {
                 "otp",
             ]
         );
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn the_sign_next_request_with_hawk_step_resolves_to_its_builtin() {
-        let (target, caps) = reg()
-            .find(r#"I sign the next request with Hawk id "session-1" and key "abc""#)
-            .expect("pattern is not ambiguous")
-            .expect("step is declared");
-        assert!(
-            target == StepId::SignNextRequestWithHawk,
-            "the step must resolve to SignNextRequestWithHawk"
-        );
-        assert_eq!(caps, vec!["session-1".to_string(), "abc".to_string()]);
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn captures_path_and_method() {
-        let (id, caps) = reg()
-            .find(r#"I request "/api/v1/x" using HTTP PATCH"#)
-            .unwrap()
-            .unwrap();
-        assert_eq!(id, StepId::RequestPathWithMethod);
-        assert_eq!(caps, vec!["/api/v1/x".to_string(), "PATCH".to_string()]);
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn bare_request_defaults_to_get_variant() {
-        let (id, caps) = reg().find(r#"I request "/ping""#).unwrap().unwrap();
-        assert_eq!(id, StepId::RequestPath);
-        assert_eq!(caps, vec!["/ping".to_string()]);
     }
 
     #[test]

@@ -130,25 +130,8 @@ fn a_run_records_one_payload_with_only_schema_fields() {
     assert_eq!(payload["files"], 1);
     assert_eq!(payload["scenarios"], 1);
     assert_eq!(payload["failed"], 0);
-    #[cfg(not(feature = "dev-unreserve"))]
-    assert_eq!(payload["resources"]["api"], 0);
     assert_eq!(payload["usage"]["vars"]["steps"], 1);
     assert!(payload["ci"].is_null() && payload["stage"].is_null());
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn a_run_counts_the_api_resources_of_the_suite() {
-    let suite = suite("api-count", "", &[("a.feature", PLAIN)]);
-    std::fs::write(
-        suite.dir.join("bddkit.yaml"),
-        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n",
-    )
-    .unwrap();
-    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert_eq!(suite.only_payload()["resources"]["api"], 1);
 }
 
 #[test]
@@ -324,21 +307,6 @@ fn a_refusal_after_the_config_reports_the_stage_it_stopped_in() {
         assert_eq!(payload["stage"], stage, "{name}: {payload}");
         assert_eq!(payload["exit"], 2, "{name}");
     }
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn a_resource_the_host_cannot_build_reports_the_resources_stage() {
-    let suite = suite("resources-stage", "", &[("a.feature", PLAIN)]);
-    std::fs::write(
-        suite.dir.join("bddkit.yaml"),
-        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n      timeout_secs: 0\n",
-    )
-    .unwrap();
-    let out = suite.bddkit(&["run", "--telemetry", "true"], &[]);
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-    assert_eq!(suite.only_payload()["stage"], "resources");
 }
 
 #[test]
@@ -679,25 +647,9 @@ fn doctor_records_its_own_payload_with_the_stages_that_failed() {
         payload["doctor"]["stages_failed"],
         serde_json::json!(["steps"])
     );
-    #[cfg(not(feature = "dev-unreserve"))]
-    assert_eq!(payload["resources"]["api"], 0);
     for run_only in ["files", "scenarios", "usage", "scenario_ms"] {
         assert!(payload.get(run_only).is_none(), "{run_only}");
     }
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn doctor_counts_the_api_resources_of_the_suite() {
-    let suite = suite("doctor-api-count", "", &[("a.feature", PLAIN)]);
-    std::fs::write(
-        suite.dir.join("bddkit.yaml"),
-        "paths: [features]\nresources:\n  api:\n    stub:\n      base_url: http://127.0.0.1:9\n",
-    )
-    .unwrap();
-    doctor_rows(&suite, &["--telemetry", "true"], &[]);
-    assert_eq!(suite.only_payload()["resources"]["api"], 1);
 }
 
 #[test]
@@ -716,28 +668,6 @@ fn a_doctor_that_cannot_read_its_config_follows_the_broken_config_rule() {
         "off (decided by a config that could not be read)"
     );
     assert!(suite.payloads().is_empty());
-}
-
-// moves-to: api
-/// An API's name and its URL stay out of the payload; so does any count of
-/// databases, which are a plugin group now and counted as one. A plugin
-/// instance's name and values are `nothing_from_the_suite_reaches_the_payload`'s.
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn an_api_name_and_its_url_never_reach_the_payload() {
-    let suite = suite("marker-api", "", &[("a.feature", PLAIN)]);
-    std::fs::write(
-        suite.dir.join("bddkit.yaml"),
-        "paths: [features]\nresources:\n  api:\n    marker_api:\n      base_url: http://marker_user:marker_pass@marker.invalid:9\n",
-    )
-    .unwrap();
-    // `doctor` opens no socket without --live.
-    doctor_rows(&suite, &["--telemetry", "true"], &[]);
-    let payload = suite.only_payload();
-    assert_eq!(payload["resources"]["api"], 1);
-    assert!(payload["resources"].get("db").is_none(), "{payload}");
-    let recorded = std::fs::read_to_string(suite.log_path()).expect("payloads");
-    assert!(!recorded.contains("marker"), "{recorded}");
 }
 
 /// A suite whose one feature echoes through the fixture plugin, with the lock

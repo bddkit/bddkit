@@ -4,7 +4,7 @@ Loaded on demand; the root `CLAUDE.md` holds the invariants that apply everywher
 
 
 1. Add a `StepId` variant + its entry to `BUILTIN_STEPS` in `steps/mod.rs`: group, Cucumber Expression, one-line English description. A parameter is `"{name}"` (quoted text) or `{name:type}` with a type from `expression::TYPES` — the name is what `bddkit steps list` prints as `<name>`. An optional part cannot hold a parameter: declare two entries with the same `StepId` instead. Keep the ambiguity test green — if two expressions overlap, fix the EXPRESSION, not the table order.
-2. Write the step fn in `steps/{api,assert,vars,debug,srp}.rs`.
+2. Write the step fn in `steps/{vars,debug}.rs`.
 3. Add a dispatch arm (compiler forces this — no catch-all).
 4. Optionally translate the description in `locales/steps.{ru,lv}.yaml`, keyed by the `StepId` variant name. Skipping this is fine — an untranslated step falls back to English per step.
 

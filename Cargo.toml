@@ -14,9 +14,7 @@ exclude = [
     "/.github",
     "/.idea",
     "/tests",
-    "/examples",
     "/selftest",
-    "/docker-compose.yml",
     "/CLAUDE.md",
     "/AGENTS.md",
     "/.claude",
@@ -28,22 +26,15 @@ exclude = [
 name = "bddkit"
 path = "src/main.rs"
 
-# For plugin authors only: leaves the built-in API and SRP out at compile time,
-# so `bddkit-api` can run on a candidate that still has them. See
-# docs/plugin-authoring.md, section 8. Goes away with the built-ins.
-[features]
-dev-unreserve = []
-
 [dependencies]
 bddkit-crate-json = "0.1"
 base64 = "0.22"
 aes = "0.9"
 cbc = { version = "0.2", features = ["alloc"] }
 gherkin = "0.16"
-hmac = "0.12"
 libloading = "0.8"
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "test-util"] }
-reqwest = { version = "0.13", features = ["json", "form", "multipart"] }
+reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml_ng = "0.10"
@@ -54,15 +45,10 @@ uuid = { version = "1.24", features = ["v7"] }
 url = "2"
 mime_guess = "2"
 anyhow = "1"
-sxd-document = "0.3.2"
-sxd-xpath = "0.4.2"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 dotenvy = "0.15"
-num-bigint = "0.4"
 sha2 = "0.10"
-sha1 = "0.10"
 getrandom = "0.3"
-scraper = "0.27.0"
 flate2 = "1.1.9"
 tar = "0.4.46"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
@@ -79,6 +65,8 @@ self-replace = "1"
 
 [dev-dependencies]
 axum = "0.8"
+sxd-document = "0.3.2"
+sxd-xpath = "0.4.2"
 
 # Release artifacts ship without debug symbols: smaller downloads, same behavior.
 [profile.release]

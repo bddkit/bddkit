@@ -831,13 +831,6 @@ impl Trace {
         self.record("evidence", fields);
     }
 
-    /// One `http` diagnostic, rendered by the host: hidden by position, then
-    /// by value, and only then is a body weighed against the limit.
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub fn http(&self, diagnostic: &HttpDiagnostic) {
-        self.http_in("api", diagnostic, None);
-    }
-
     /// An `http` diagnostic of a plugin's group, with the title it may give.
     pub fn http_in(&self, group: &str, diagnostic: &HttpDiagnostic, title: Option<&str>) {
         if !self.evidence_on() {

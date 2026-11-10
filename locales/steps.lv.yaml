@@ -2,31 +2,11 @@
 # English lives in BUILTIN_STEPS beside the pattern it describes; a key missing
 # here falls back to English, so this file may lag behind newly added steps.
 
-SetRequestHeader: iestata veidojamā pieprasījuma galveni, aizstājot iepriekšējo vērtību
-AddRequestHeader: pievieno vēl vienu vērtību pieprasījuma galvenei, saglabājot esošo
-SetQueryParam: iestata vaicājuma virknes parametru
-SetRequestBody: iestata pieprasījuma saturu no teksta bloka zem soļa
-EmptyRequestBody: notīra līdz šim sagatavoto pieprasījuma saturu
-SetFormParams: nosūta zemāk esošo tabulu kā formas parametrus satura vietā
-AttachFile: pievieno failu (ceļš no šī feature faila) kā multipart/form-data daļu
-RequestPathWithMethod: izpilda pieprasījumu pret pašreizējo API ar norādīto metodi
-RequestPath: izpilda GET pieprasījumu pret pašreizējo API
-SignNextRequestWithHawk: paraksta nākamo pieprasījumu ar šiem Hawk akreditācijas datiem un katru tā atkārtojumu
 ExpectEventually: ļauj nākamajai pārbaudei atkārtoties ar konfigurētajiem aptaujas parametriem
 ExpectWithinEvery: ļauj nākamajai pārbaudei atkārtoties tik ilgi un ar šādu intervālu
 ExpectWithin: ļauj nākamajai pārbaudei atkārtoties tik ilgi ar konfigurēto intervālu
-ResponseCode: pārbauda pēdējās atbildes HTTP statusa kodu
-ResponseBodyContainsJson: pārbauda, vai atbildes saturs ietver šo JSON — objekta apakškopa der, masīva secība netiek ņemta vērā
-ResponseBodyEqualsJson: pārbauda, vai atbildes saturs precīzi sakrīt ar šo JSON, atslēga pret atslēgu un elements pret elementu
-ResponseArrayLength: pārbauda, vai atbildes saturs ir norādītā garuma JSON masīvs
-ResponseHeader: pārbauda, vai atbildes galvene ir tieši šī vērtība — jebkurā rindā, ja serveris galveni atsūtīja vairākas reizes
-JsonNodeExists: pārbauda, vai atbildes saturā ir mezgls šajā JSON ceļā
 SetVariableGlobal: piešķir mainīgo, kas redzams visiem šī faila scenārijiem
 SetVariable: piešķir mainīgo visam feature failam
-ExtractFromJsonGlobal: nolasa atbildes JSON ceļu mainīgajā, kas redzams visam failam
-ExtractFromJson: nolasa atbildes JSON ceļu mainīgajā
-ExtractFromCookiesGlobal: nolasa atbildes sīkdatni mainīgajā, kas redzams visam failam
-ExtractFromCookies: nolasa atbildes sīkdatni mainīgajā
 VariableNotEquals: pārbauda, vai mainīgais atšķiras no šīs vērtības
 VariableEquals: pārbauda, vai mainīgais ir tieši šī vērtība
 VariableContains: pārbauda, vai mainīgā teksts satur šo apakšvirkni
@@ -42,18 +22,10 @@ ExtractJsonFromVariable: nolasa JSON ceļu no mainīgā teksta mainīgajā
 ExtractRegexFromVariableGlobal: nolasa regulārās izteiksmes pirmo tveršanas grupu no mainīgā teksta mainīgajā, kas redzams visam failam
 ExtractRegexFromVariable: nolasa regulārās izteiksmes pirmo tveršanas grupu no mainīgā teksta mainīgajā
 EncryptWithAes: šifrē vērtību ar AES atslēgu un saglabā rezultātu mainīgajā
-UseApi: pārslēdz API resursu un tā noklusējuma galvenes līdz scenārija beigām
 DebugOn: izvada uz stderr ģenerēto SQL, tā saites un apmaiņu ar spraudņiem
 DebugOff: izslēdz atkļūdošanas izvadi, kas ieslēgta agrāk scenārijā
 Sleep: aptur scenāriju — galējs līdzeklis, parasti noder atlikta pārbaude
 ShowAllVariables: izvada uz stderr visus redzamos mainīgos
 ShowVariable: izvada uz stderr vienu mainīgo un kļūdu, ja tas nav iestatīts
-PrintResponseHeaders: izvada uz stderr pēdējās atbildes galvenes
-PrintResponseBody: izvada uz stderr pēdējās atbildes saturu ar iekrāsojumu
-PrintResponseBodyAsPath: izvada uz stderr pēdējās atbildes izvēli pēc JSON ceļa vai XPath
 PrintTable: izvada uz stderr zemāk esošo tabulu ar aizvietotiem mainīgajiem un izlīdzinātām kolonnām
-SrpVerifierWithSalt: aprēķina SRP verifikatoru ar šo sāli mainīgajos <prefix>_salt un <prefix>_verifier
-SrpVerifier: aprēķina SRP verifikatoru ar jaunu sāli mainīgajos <prefix>_salt un <prefix>_verifier
-SrpStartLogin: sāk SRP pieteikšanos, saglabājot klienta vērtības <prefix>_a un <prefix>_A
-SrpCompleteLogin: atbild uz servera izaicinājumu mainīgajos <prefix>_M1, <prefix>_M2 un <prefix>_sessionKey
 UsePluginInstance: pārslēdz šīs grupas instanci līdz scenārija beigām

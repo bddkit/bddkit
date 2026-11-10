@@ -1,9 +1,0 @@
-- step: 'I login with password "{password}"'
-  exports: [customerJwtToken]
-  do:
-    - the "Content-Type" request header is "application/json"
-    - the request body is: |
-        {"password": "<<password>>"}
-    - I request "/login" using HTTP POST
-    - the response code is 200
-    - extract "jwt_token" from cookies as "customerJwtToken"

@@ -91,37 +91,9 @@ Then it writes `bddkit.yaml` (a comment above each key), `features/example.featu
 
 The `telemetry` key `init` writes is the suite's decision about anonymous usage counts, see [Telemetry](#telemetry).
 
-### The shipped example suite
+### Example suites
 
-```bash
-docker compose up -d smocker   # local mock API the example talks to
-cargo build --release
-./target/release/bddkit run --config examples/api.yaml
-```
-
-```console
-run m4k2p9x7q3b1
-  ✓ examples/features/methods.feature — scenarios: 8
-  ✓ examples/features/json_matchers.feature — scenarios: 4
-  ✓ examples/features/variables.feature — scenarios: 6
-  ✓ examples/features/variable_assertions.feature — scenarios: 3
-  ✓ examples/features/macros.feature — scenarios: 8
-  ✓ examples/features/content_types.feature — scenarios: 6
-  ✓ examples/features/eventual.feature — scenarios: 1
-
-run m4k2p9x7q3b1
-files: 7, scenarios: 36, failed: 0
-```
-
-The example suite talks to a local [Smocker](https://github.com/smocker-dev/smocker)
-instance seeded from `examples/mocks/api-server.yaml`, so it runs offline and
-its responses are fixed by a file in this repo. Smocker's web UI is on
-<http://localhost:8081>.
-
-The database examples live with the [`db` plugin](https://github.com/bddkit/bddkit-db).
-
-`examples/README.md` covers the suite, what each feature file demonstrates,
-and how to narrow a run to one file or one tag.
+The HTTP API and SRP steps are the [`api` plugin](https://github.com/bddkit/bddkit-api)'s, and its example suite lives there, with its README. The database examples live with the [`db` plugin](https://github.com/bddkit/bddkit-db). `bddkit init` installs the plugins a suite needs.
 
 `bddkit run` flags: `[--config <path>]` (default: `$BDDKIT_CONFIG`, else `./bddkit.yaml` or `./bddkit.yml` in the working directory), positional paths to override the config's, `--tag` (repeatable), `--env` to pick a `.env.<name>` layer, `--fail-fast[=<bool>]`, `--junit <file>` and `--cucumber-json <file>` for machine-readable reports, `--artifacts-dir <dir>` (also `$BDDKIT_ARTIFACTS_DIR`, the flag wins) to root the evidence files plugins write — one `<dir>/<six-digit counter>/` per plugin step, `<temp dir>/bddkit-<run id>` when unset, never cleaned up by bddkit, so give each run its own directory when you archive (a second run into the same one starts counting at `000000` again and overwrites); the per-file workspace stays under the temporary directory either way — `--events <path>` (or `$BDDKIT_EVENTS`) for a live stream of the run, and `--evidence[=<sources>]` to put what the steps did into it (see "Following a run live" below). Exit codes: `0` passed, `1` a scenario failed, `2` the run never started, including when no config is given and none of the above is found, and `128` plus the signal number when the run was interrupted — `130` for SIGINT/Ctrl-C, `143` for SIGTERM, `129` for SIGHUP (see "Interrupting a run" below).
 
@@ -571,7 +543,7 @@ Four things to know about it:
 
 ## Plugins
 
-`api` and `srp` are the resource kinds built into the binary. Any **other** key under `resources:` is a group served by a plugin, `db` included — a shared library bddkit loads at startup — so reaching an object store, a queue or a mailbox is the same move as reaching a second database:
+Every key under `resources:` is a group served by a plugin — `api`, `srp` and `db` included — a shared library bddkit loads at startup — so reaching an object store, a queue or a mailbox is the same move as reaching a second database:
 
 ```yaml
 resources:
@@ -625,18 +597,8 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 | For | Look at |
 |---|---|
 | Every step, authoritative | `BUILTIN_STEPS` in `src/steps/mod.rs` |
-| How to run the examples | `examples/README.md` |
-| A runnable HTTP example | `examples/api.yaml`, `examples/features/` |
-| Every HTTP method, 404 included | `examples/features/methods.feature` |
-| JSON matchers and paths | `examples/features/json_matchers.feature` |
-| Variables: set, extract, reuse, typed positions, printing them | `examples/features/variables.feature` |
-| Asserting over a variable, extracting from one | `examples/features/variable_assertions.feature`, `examples/macros/users.yaml` |
-| Macros, nesting, Scenario Outline, typed parameters | `examples/features/macros.feature`, `examples/macros/posts.yaml` |
-| Non-JSON responses, form login, file upload | `examples/features/content_types.feature` |
-| Polling an assertion until it passes | `examples/features/eventual.feature` |
-| The mock API behind all of it | `examples/mocks/api-server.yaml` |
 | Every DB step, cleanup and the engines | [`bddkit-db`](https://github.com/bddkit/bddkit-db) and its `examples/` |
-| SRP handshake, Hawk signing | `tests/features/` |
+| HTTP, SRP and Hawk steps, with a runnable example suite | [`bddkit-api`](https://github.com/bddkit/bddkit-api) and its `examples/` |
 | Hiding secrets, and the design behind it | the Privacy section above, `docs/events-design.md` section 7 |
 | What the usage counts hold, field by field | the Telemetry section above, `docs/telemetry.md` |
 | bddkit tested by bddkit (masking, end to end) | `selftest/README.md` |
@@ -658,7 +620,7 @@ connection and would never see uncommitted rows, so rolling back per scenario
 would break any test where a step writes and the API reads. Isolation comes
 from unique data instead.
 
-**Where this is going.** `api` and `srp` are the resource kinds that ship in the binary, not the ceiling — any other key under `resources:` is a capability group a plugin serves, the databases' `db` among them, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
+**Where this is going.** The core ships no resource kind: every key under `resources:` is a capability group a plugin serves, the HTTP API's `api` and `srp`, the databases' `db` among them, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
 
 ## Development
 
@@ -666,7 +628,6 @@ from unique data instead.
 cargo test
 ```
 
-`docker-compose.yml` brings up [Smocker](https://github.com/smocker-dev/smocker) as the HTTP example's mock API — it seeds `examples/mocks/api-server.yaml` at startup and serves it on `localhost:8080` (web UI on `localhost:8081`).
 
 ## License
 

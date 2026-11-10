@@ -275,6 +275,40 @@ fn init_with(dir: &Path, github: &str, args: &[&str], envs: &[(&str, &str)]) -> 
 /// group. The group fixture, claiming `db` alone, stands in for `bddkit-db`,
 /// which the index on this branch does not list yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_with_an_api_url_installs_the_api_plugin() {
+    let (stub, github) = spawn().await;
+    stub.index("plugin:\n  - name: api\n    repo: bddkit/bddkit-api\n    description: HTTP API\n    groups: [api]\n");
+    stub.publish_archive("bddkit/bddkit-api", "0.1.0", |top| {
+        let lib = std::fs::read(common::build_group_plugin(false)).expect("fixture");
+        pack_files(top, &[(&common::dll_name("group_plugin"), lib.as_slice())])
+    });
+    stub.latest("bddkit/bddkit-api", "0.1.0");
+    let dir = temp("init-api");
+    let out = init_with(
+        &dir,
+        &github,
+        &[
+            "--api-url",
+            "http://127.0.0.1:8080",
+            "--parallel",
+            "false",
+            "--telemetry",
+            "false",
+        ],
+        &[("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "1")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let config = std::fs::read_to_string(dir.join("bddkit.yaml")).expect("config written");
+    assert!(
+        config.contains("base_url: http://127.0.0.1:8080"),
+        "{config}"
+    );
+    let lock = std::fs::read_to_string(dir.join("xdg-config/bddkit/plugins.yaml"))
+        .expect("the plugin went to the user layer");
+    assert!(lock.contains("source: bddkit/bddkit-api"), "{lock}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn init_with_a_database_installs_the_db_plugin() {
     let (stub, github) = spawn().await;
     stub.index("plugin:\n  - name: db\n    repo: bddkit/bddkit-db\n    description: Databases\n    groups: [db]\n");

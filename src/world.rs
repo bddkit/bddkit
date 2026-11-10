@@ -1,6 +1,4 @@
 use crate::artifacts::Artifacts;
-#[cfg(not(feature = "dev-unreserve"))]
-use crate::http::{Apis, HttpState};
 use crate::options::{Options, OptionsLayer};
 use crate::privacy::Redactor;
 use crate::unique::Generator;
@@ -56,20 +54,14 @@ impl Workspace {
     }
 }
 
-/// Variables live for the feature file; HTTP state, the selected plugin
+/// Variables live for the feature file; the selected plugin
 /// instances and debug mode live for the scenario. Asymmetry from Behat's behavior (spec §3).
 pub struct World {
     pub vars: VarStack,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub http: HttpState,
     pub debug: bool,
     pub generator: Arc<Generator>,
     pub options: Options,
     pending_options: Option<OptionsLayer>,
-    /// Run-wide configuration, not scenario state: `reset_scenario`
-    /// does not touch it.
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub srp: Option<Arc<crate::srp::SrpParams>>,
     /// Scenario state: which instance of each plugin group is selected.
     pub plugins: crate::plugin::PluginState,
     /// Per feature file, like `vars`: `reset_scenario` does not touch it.
@@ -92,9 +84,7 @@ pub struct World {
 
 impl World {
     pub fn new(
-        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<Apis>,
         generator: Arc<Generator>,
-        #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
         artifacts: Arc<Artifacts>,
@@ -102,12 +92,8 @@ impl World {
         let workspace = Workspace::new(generator.run_id());
         Self {
             vars: VarStack::new(),
-            #[cfg(not(feature = "dev-unreserve"))]
-            http: HttpState::new(apis),
             debug: false,
             generator,
-            #[cfg(not(feature = "dev-unreserve"))]
-            srp,
             options,
             pending_options: None,
             plugins: crate::plugin::PluginState::new(plugins),
@@ -123,8 +109,6 @@ impl World {
     /// Hands the file's set to everything that registers into it.
     pub fn set_redactor(&mut self, redactor: Redactor) {
         self.vars.set_redactor(redactor.clone());
-        #[cfg(not(feature = "dev-unreserve"))]
-        self.http.set_redactor(redactor.clone());
         self.trace.set_redactor(redactor.clone());
         self.redactor = redactor;
     }
@@ -135,24 +119,8 @@ impl World {
         if !sources.any() {
             return;
         }
-        #[cfg(not(feature = "dev-unreserve"))]
-        self.http.collect_evidence();
         self.trace
             .collect_evidence(self.artifacts.clone(), sources, cap);
-    }
-
-    /// Emits the exchanges stored since the last call as evidence of the
-    /// innermost step in flight.
-    pub fn flush_evidence(&mut self) {
-        #[cfg(not(feature = "dev-unreserve"))]
-        for stored in self.http.take_evidence() {
-            // The diagnostic copies the exchange: build it only for a step
-            // whose evidence is kept.
-            if self.trace.evidence_on() {
-                self.trace
-                    .http(&stored.exchange.diagnostic(Some(stored.elapsed)));
-            }
-        }
     }
 
     /// The working directory of this feature file, created on first use.
@@ -168,10 +136,8 @@ impl World {
         self.pending_options.take()
     }
 
-    /// At the scenario boundary: the request, the selected instances and the debug flag reset; variables remain.
+    /// At the scenario boundary: the selected instances and the debug flag reset; variables remain.
     pub fn reset_scenario(&mut self) {
-        #[cfg(not(feature = "dev-unreserve"))]
-        self.http.reset();
         self.debug = false;
         self.pending_options = None;
         self.plugins.reset();
@@ -181,32 +147,13 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "dev-unreserve"))]
-    use crate::http::ApiResource;
     use crate::unique::Generator;
-    #[cfg(not(feature = "dev-unreserve"))]
-    use std::collections::HashMap;
     use std::sync::Arc;
-
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn apis() -> Arc<Apis> {
-        let mut by_name = HashMap::new();
-        by_name.insert(
-            "main".to_string(),
-            ApiResource::new("http://x.local", 5, Vec::new(), Options::default())
-                .expect("valid base_url"),
-        );
-        Arc::new(Apis::new(by_name, Some("main".to_string())).expect("default declared"))
-    }
 
     #[test]
     fn reset_scenario_clears_debug() {
         let mut w = World::new(
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis(),
             Arc::new(Generator::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            None,
             None,
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -235,11 +182,7 @@ mod tests {
     #[test]
     fn reset_scenario_resets_the_plugin_selection() {
         let mut w = World::new(
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis(),
             Arc::new(Generator::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            None,
             None,
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -252,30 +195,6 @@ mod tests {
         w.plugins.use_instance_unchecked("echo", "b");
         w.reset_scenario();
         assert_eq!(w.plugins.current("echo").expect("selected"), "a");
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn srp_parameters_survive_a_scenario_boundary() {
-        let params = Arc::new(crate::srp::SrpParams {
-            variant: crate::srp::Variant::HexString,
-            prime: num_bigint::BigUint::from(23u32),
-            generator: num_bigint::BigUint::from(5u32),
-            hash: crate::srp::HashAlg::Sha256,
-        });
-        let mut w = World::new(
-            apis(),
-            Arc::new(Generator::new()),
-            Some(params),
-            None,
-            Options::default(),
-            crate::artifacts::Artifacts::for_test(),
-        );
-        w.reset_scenario();
-        assert!(
-            w.srp.is_some(),
-            "SRP parameters are run-wide configuration, not scenario state"
-        );
     }
 
     #[test]

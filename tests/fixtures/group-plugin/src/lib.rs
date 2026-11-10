@@ -21,8 +21,7 @@
 //! - `BDDKIT_GROUP_FIXTURE_HOST_GROUPS=1`: the manifest claims `api`, `srp` and
 //!   `db` instead, with `eager_init: ["db"]` and `deprecated: {"connection":
 //!   "db"}`, one more step reads the selected `api` instance and another takes
-//!   a built-in's text, `the response code is <n>`: what only a `dev-unreserve`
-//!   build of the host accepts.
+//!   the text of a step `bddkit-api` declares, `the response code is <n>`.
 //! - `BDDKIT_GROUP_FIXTURE_HOST_GROUPS=db`: the same, with `db` alone and no
 //!   `api` step: the databases left the host, so a default build accepts it.
 //! - `BDDKIT_GROUP_FIXTURE_LOG=<path>`: every `init`, `select`, `reset` and
@@ -154,7 +153,6 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
                 manifest["deprecated"] = serde_json::json!({ "oldswitch": "elsewhere" })
             }
             Ok("group") => manifest["deprecated"] = serde_json::json!({ "gtwo": "gone" }),
-            Ok("host") => manifest["deprecated"] = serde_json::json!({ "api": "gone" }),
             Ok("eager_unclaimed") => manifest["eager_init"] = serde_json::json!(["elsewhere"]),
             Ok("eager_per_worker") => {
                 manifest["concurrency"] = "per_worker".into();
