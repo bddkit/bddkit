@@ -2,7 +2,7 @@
 
 Scenarios that run the `bddkit` binary on a scratch project and assert on what it printed and wrote. A bddkit feature can only see what a system under test returns, so the console, the reports and the event stream of a nested run are reached through the published [`exec`](https://github.com/bddkit/bddkit-exec) plugin.
 
-This is not `examples/`, which is the demonstration surface and must always be green: the fixtures here fail on purpose.
+The fixtures here fail on purpose, so this suite is for the core's own CI, not a demonstration.
 
 ## Running it
 
