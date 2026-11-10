@@ -95,20 +95,3 @@ impl RunProbe {
         .await;
     }
 }
-
-/// The counts of what a config declares: APIs and SRP configurations. Plugin
-/// instances, the `db` group's included, are added once the plugins are loaded.
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn resources_of(cfg: &crate::config::Config) -> Resources {
-    Resources {
-        api: cfg.resources.api.len() as u64,
-        srp: cfg.resources.srp.len() as u64,
-        ..Default::default()
-    }
-}
-
-/// A `dev-unreserve` build declares no resource of its own to count.
-#[cfg(feature = "dev-unreserve")]
-pub fn resources_of(_cfg: &crate::config::Config) -> Resources {
-    Resources::default()
-}

@@ -235,8 +235,6 @@ fn execute_step<'a>(
         if let (Some(group), Some(counters)) = (&leaf_group, &world.counters) {
             counters.leaf(group, started.elapsed());
         }
-        // Still the innermost step in flight: this is whose exchanges they are.
-        world.flush_evidence();
         world.trace.step_finished(
             result.as_ref().err().map(|error| error.kind),
             started.elapsed(),
@@ -264,41 +262,25 @@ async fn run_step(
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
             let args = args.expect("resolve interpolates every step but an include");
-            #[cfg(not(feature = "dev-unreserve"))]
-            if id == StepId::AttachFile {
-                // Needs the directory of the file the step is written in,
-                // which `dispatch` does not carry — same reason as Include.
-                let base_dir = source.parent().unwrap_or(std::path::Path::new("."));
-                return crate::steps::api::attach_file(world, base_dir, args.cap(0), args.cap(1));
-            }
             match kind {
-                StepKind::Action => dispatch(world, id, &args, 0)
+                StepKind::Action => dispatch(world, id, &args)
                     .await
                     .map_err(AttemptError::into_error),
                 StepKind::Assertion(source_kind) => {
                     let Some(layer) = world.take_options() else {
-                        return dispatch(world, id, &args, 0)
+                        return dispatch(world, id, &args)
                             .await
                             .map_err(AttemptError::into_error);
                     };
                     let base = match source_kind {
                         OptionsSource::Global => world.options.clone(),
-                        #[cfg(not(feature = "dev-unreserve"))]
-                        OptionsSource::Http => world
-                            .http
-                            .options_for_last_response()
-                            .map_err(StepError::input)?
-                            .clone(),
                     };
                     let effective = base.apply(&layer).map_err(StepError::input)?;
                     let shown = reg.display_text(&step.text, &world.redactor);
                     let mut polling = Polling::new(&shown, &effective.polling);
                     let mut attempt = 0;
                     loop {
-                        let outcome = dispatch(world, id, &args, attempt).await;
-                        // A replay stored an exchange: it is evidence before
-                        // the attempt it belongs to is reported.
-                        world.flush_evidence();
+                        let outcome = dispatch(world, id, &args).await;
                         match outcome {
                             Ok(()) => return Ok(()),
                             Err(AttemptError::Fatal(error)) => return Err(error),
@@ -830,12 +812,8 @@ fn debug_display(value: &str) -> &str {
 /// a single reference instead of six.
 pub struct RunContext {
     pub reg: Registry,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub apis: Arc<crate::http::Apis>,
     pub generator: Arc<Generator>,
     pub filter: crate::feature::TagFilter,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
     pub options: Options,
     pub artifacts: Arc<crate::artifacts::Artifacts>,
@@ -862,10 +840,8 @@ impl RunContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         reg: Registry,
-        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         filter: crate::feature::TagFilter,
-        #[cfg(not(feature = "dev-unreserve"))] srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
         artifacts: Arc<crate::artifacts::Artifacts>,
@@ -878,12 +854,8 @@ impl RunContext {
         Self {
             counters,
             reg,
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis,
             generator,
             filter,
-            #[cfg(not(feature = "dev-unreserve"))]
-            srp,
             plugins,
             options,
             artifacts,
@@ -973,11 +945,7 @@ async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) ->
 /// task, and `tokio::spawn` requires `'static`.
 pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResult {
     let mut world = World::new(
-        #[cfg(not(feature = "dev-unreserve"))]
-        ctx.apis.clone(),
         ctx.generator.clone(),
-        #[cfg(not(feature = "dev-unreserve"))]
-        ctx.srp.clone(),
         ctx.plugins.clone(),
         ctx.options.clone(),
         ctx.artifacts.clone(),
@@ -1079,14 +1047,6 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                     ));
                     for dump in &e.diagnostics {
                         msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
-                    }
-                    #[cfg(not(feature = "dev-unreserve"))]
-                    if let Some(dump) = world
-                        .http
-                        .last()
-                        .and_then(|ex| ex.diagnostic(None).dump(&world.redactor))
-                    {
-                        msg.push_str(&format!("\n\n{dump}"));
                     }
                     // Before the next scenario's reset: the plugins' state is
                     // still the failing one's.
@@ -1378,39 +1338,17 @@ pub async fn run_all(
 mod tests {
     use super::*;
     use crate::macros::MacroCatalog;
-    #[cfg(not(feature = "dev-unreserve"))]
-    use crate::unique::UniqueKind;
     use std::path::PathBuf;
-
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn apis() -> Arc<crate::http::Apis> {
-        apis_at("http://example.test")
-    }
-
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn apis_at(base: &str) -> Arc<crate::http::Apis> {
-        let mut by_name = std::collections::HashMap::new();
-        by_name.insert(
-            "default".to_string(),
-            crate::http::ApiResource::new(base, 1, Vec::new(), Options::default()).unwrap(),
-        );
-        Arc::new(crate::http::Apis::new(by_name, Some("default".to_string())).unwrap())
-    }
 
     fn context_with(
         registry: Registry,
-        #[cfg(not(feature = "dev-unreserve"))] apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
     ) -> Arc<RunContext> {
         Arc::new(RunContext::new(
             registry,
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis,
             generator,
             crate::feature::TagFilter::new(&[]),
-            #[cfg(not(feature = "dev-unreserve"))]
-            None,
             plugins,
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -1419,13 +1357,7 @@ mod tests {
     }
 
     fn context(registry: Registry) -> Arc<RunContext> {
-        context_with(
-            registry,
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis(),
-            Arc::new(Generator::new()),
-            None,
-        )
+        context_with(registry, Arc::new(Generator::new()), None)
     }
 
     /// The fixture plugin, with one declared instance "a" that is also the
@@ -1478,11 +1410,7 @@ mod tests {
     fn echo_world(plugins: crate::plugin::Plugins) -> (World, Arc<crate::plugin::Plugins>) {
         let plugins = Arc::new(plugins);
         let world = World::new(
-            #[cfg(not(feature = "dev-unreserve"))]
-            apis(),
             Arc::new(Generator::new()),
-            #[cfg(not(feature = "dev-unreserve"))]
-            None,
             Some(plugins.clone()),
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -1928,8 +1856,6 @@ Feature: macro
             .expect("the plugin registry builds");
             let context = context_with(
                 registry,
-                #[cfg(not(feature = "dev-unreserve"))]
-                apis(),
                 Arc::new(Generator::new()),
                 Some(Arc::new(plugins)),
             );
@@ -1993,30 +1919,28 @@ Feature: eventual assertion
             assert_eq!(Instant::now(), started);
         }
 
-        // moves-to: api
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        #[cfg(not(feature = "dev-unreserve"))]
+        #[tokio::test(start_paused = true)]
         async fn a_retrying_assertion_prepares_unique_capture_once() {
-            // Real time and a real stub: the built-in path is the one under
-            // test, and a built-in retry needs a response it can re-request.
-            let app =
-                axum::Router::new().route("/state", axum::routing::get(|| async { "pending" }));
-            let (base, _server) = crate::http::tests::spawn_app(app).await;
-            let generator = Arc::new(Generator::new());
-            let context = context_with(
-                Registry::new().unwrap(),
-                apis_at(&base),
-                generator.clone(),
+            let plugins = echo_plugins();
+            let registry = Registry::with_macros_and_plugins(
+                MacroCatalog::default(),
+                &plugins.steps(),
+                &["echo".to_string()],
                 None,
-            );
-            let before = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
+            )
+            .expect("the plugin registry builds");
+            let generator = Arc::new(Generator::new());
+            let context = context_with(registry, generator.clone(), Some(Arc::new(plugins)));
+            let before = generator
+                .next(crate::unique::UniqueKind::Number)
+                .parse::<u64>()
+                .unwrap();
             let result = run_in(
                 r#"
 Feature: eventual assertion
   Scenario: stable preparation
-    When I request "/state"
-    And I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
-    Then the response body contains "<<unique(number)>>"
+    Given I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
+    Then the echo should not be ready yet declaring "<<unique(number)>>" secret
 "#,
                 context,
             )
@@ -2028,7 +1952,10 @@ Feature: eventual assertion
                 .and_then(|caps| caps[1].parse().ok())
                 .unwrap_or_else(|| panic!("no attempt count in {failure}"));
             assert!(attempts > 1, "the assertion was never retried: {failure}");
-            let after = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
+            let after = generator
+                .next(crate::unique::UniqueKind::Number)
+                .parse::<u64>()
+                .unwrap();
 
             assert_eq!(after - before, 2, "unique() must be evaluated only once");
         }

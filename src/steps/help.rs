@@ -289,7 +289,9 @@ mod tests {
         // ours — and a key naming a step that no longer exists is dead weight
         // that will never be printed. Completeness is deliberately NOT checked:
         // falling back to English per step is what lets a translation lag.
-        #[cfg(not(feature = "dev-unreserve"))]
+        // The one step with a `StepId` that is not in the table: it is built at
+        // startup from the loaded plugin groups, because it cannot exist until
+        // a plugin claims one. Its text is still the host's, so it translates.
         let mut ids: Vec<String> = crate::steps::BUILTIN_STEPS
             .iter()
             .map(|def| format!("{:?}", def.id))
@@ -297,13 +299,10 @@ mod tests {
         // The one step with a `StepId` that is not in the table: it is built at
         // startup from the loaded plugin groups, because it cannot exist until
         // a plugin claims one. Its text is still the host's, so it translates.
-        #[cfg(not(feature = "dev-unreserve"))]
         ids.push("UsePluginInstance".to_string());
         for (code, _) in LOCALES {
             let map = translations(code);
             assert!(!map.is_empty(), "locale {code} is empty");
-            // A `dev-unreserve` build leaves steps out that the files still translate.
-            #[cfg(not(feature = "dev-unreserve"))]
             for key in map.keys() {
                 assert!(
                     ids.contains(key),

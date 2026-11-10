@@ -589,7 +589,13 @@ pub async fn apply(
     // The plugin groups the config was just written with, from the answers:
     // reading them back would expand `${VAR}`, and an `--dsn '${BDDKIT_DB_DSN}'`
     // not exported yet would hide the `db` group behind a load error.
-    let mut groups: Vec<String> = answers.dsn.iter().map(|_| "db".to_string()).collect();
+    let mut groups: Vec<String> = answers
+        .api_url
+        .iter()
+        .map(|_| "api")
+        .chain(answers.dsn.iter().map(|_| "db"))
+        .map(String::from)
+        .collect();
     if !answers.plugins.is_empty() || !groups.is_empty() {
         match plugin::manage::Context::new(env.clone(), crate::config_dir(config_path)) {
             Ok(ctx) => {
@@ -598,9 +604,8 @@ pub async fn apply(
                 let served = ctx.served_groups();
                 groups.retain(|group| !served.contains(group));
                 // The plugins the answers named, then the ones the config just
-                // written needs: `db` for a database unless an installed plugin
-                // serves it, and none for `api` while the host serves it, so no
-                // network is touched for either.
+                // written needs: `api` for an API and `db` for a database,
+                // unless an installed plugin serves the group.
                 let mut names = answers.plugins.clone();
                 match ctx.needs_groups(&groups).await {
                     Ok((missing, _)) => {
@@ -758,10 +763,6 @@ fn init_payload(
         } else {
             info.plugins_failed += 1;
         }
-    }
-    #[cfg(not(feature = "dev-unreserve"))]
-    {
-        info.resources.api = u64::from(answers.api_url.is_some());
     }
     // Changed from the default, and only whether.
     info.settings.insert("parallel", !answers.parallel);

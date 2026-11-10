@@ -15,10 +15,6 @@ mod doctor;
 mod events;
 mod failure;
 mod feature;
-#[cfg(not(feature = "dev-unreserve"))]
-mod hawk;
-#[cfg(not(feature = "dev-unreserve"))]
-mod http;
 mod include;
 mod init;
 mod macros;
@@ -30,8 +26,6 @@ mod report;
 mod resource;
 mod runner;
 mod settings;
-#[cfg(not(feature = "dev-unreserve"))]
-mod srp;
 mod steps;
 mod telemetry;
 mod unique;
@@ -472,7 +466,7 @@ enum ResourceCommand {
 
 #[derive(Args)]
 struct AddArgs {
-    /// api, srp, or a plugin group
+    /// a plugin group
     group: String,
     /// The name the resource is reachable by
     name: String,
@@ -495,7 +489,7 @@ struct AddArgs {
 
 #[derive(Args)]
 struct FieldsArgs {
-    /// Only this kind: api, srp, or a plugin group
+    /// Only this kind: a plugin group
     kind: Option<String>,
     /// Also describe the groups the plugins this config loads serve [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
@@ -555,10 +549,6 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
 }
 
 fn list_fields(args: FieldsArgs) -> Result<i32> {
-    #[cfg(not(feature = "dev-unreserve"))]
-    let mut kinds = resource::host_kinds();
-    // A `dev-unreserve` build serves no kind itself.
-    #[cfg(feature = "dev-unreserve")]
     let mut kinds = Vec::new();
 
     // A plugin's field list lives inside its `cdylib`, so reading it means
@@ -826,7 +816,7 @@ enum StepsCommand {
 
 #[derive(Args)]
 struct ListArgs {
-    /// Only this resource: api, srp, vars, debug, general, or a plugin group
+    /// Only this resource: vars, debug, general, or a plugin group
     resource: Option<String>,
     /// Case-insensitive substring match on the step template
     #[arg(long)]
@@ -1031,8 +1021,8 @@ fn load_plugins_collecting(
         plugins.ensure_valid()?;
     }
     // With no plugin loaded there are no resource groups at all, so every
-    // top-level `default_*` key but `default_db` is the unknown key `Config`
-    // has always tolerated — it has never had `deny_unknown_fields`, and a
+    // top-level `default_*` key but `default_api`, `default_db` and
+    // `default_srp` is the unknown key `Config` has always tolerated — it has never had `deny_unknown_fields`, and a
     // suite written before plugins existed must keep running unchanged.
     cfg.check_group_defaults(!plugins.is_empty())?;
     let mut defaults = std::collections::BTreeMap::new();
@@ -1325,7 +1315,6 @@ fn note_config(
         paths: !cli.paths.is_empty() || env_var("BDDKIT_PATHS").is_some(),
         env: cli.env.is_some(),
     };
-    probe.resources = telemetry::run::resources_of(cfg);
     probe.read = true;
 }
 
@@ -1478,44 +1467,6 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     probe.concurrency = cfg.concurrency.clamp(1, chains.len().max(1)) as u64;
 
     probe.stage = Some(telemetry::payload::Stage::Resources);
-    #[cfg(not(feature = "dev-unreserve"))]
-    let mut by_name = std::collections::HashMap::new();
-    #[cfg(not(feature = "dev-unreserve"))]
-    for (name, api) in &cfg.resources.api {
-        let headers = api
-            .default_headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        by_name.insert(
-            name.clone(),
-            http::ApiResource::new(
-                &api.base_url,
-                api.timeout_secs,
-                headers,
-                api.effective_options.clone(),
-            )?
-            .with_sensitive_headers(api.effective_sensitive_headers.clone()),
-        );
-    }
-    #[cfg(not(feature = "dev-unreserve"))]
-    let apis = Arc::new(http::Apis::new(by_name, cfg.resolve_default_api()?)?);
-
-    // Every declared SRP resource, not only the default: a malformed
-    // `variant:` in a second block must not sit there until someone points
-    // `default_srp` at it. This is also what keeps `doctor` — which reports on
-    // every declared resource — from being stricter than the run it predicts.
-    #[cfg(not(feature = "dev-unreserve"))]
-    for (name, srp) in &cfg.resources.srp {
-        srp.to_params()
-            .with_context(|| format!("resources.srp.{name}"))?;
-    }
-
-    #[cfg(not(feature = "dev-unreserve"))]
-    let srp = match cfg.resolve_default_srp()? {
-        Some(name) => Some(Arc::new(cfg.resources.srp[&name].to_params()?)),
-        None => None,
-    };
 
     // After every fallible resolution above, so no later `?` can leave a handle
     // that came up unswept. A plugin group that asked for `eager_init` is connected here too, so an
@@ -1571,12 +1522,8 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     }
     let mut ctx = runner::RunContext::new(
         reg,
-        #[cfg(not(feature = "dev-unreserve"))]
-        apis,
         generator.clone(),
         filter,
-        #[cfg(not(feature = "dev-unreserve"))]
-        srp,
         plugins.clone(),
         cfg.effective_options.clone(),
         artifacts,

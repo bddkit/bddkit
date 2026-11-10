@@ -88,22 +88,6 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         });
                     }
                 }
-                #[cfg(not(feature = "dev-unreserve"))]
-                Ok(Some((
-                    StepTarget::Builtin {
-                        id: crate::steps::StepId::AttachFile,
-                        ..
-                    },
-                    caps,
-                ))) => {
-                    if let Err(message) = check_attached_file(&caps[0], &base_dir) {
-                        problems.push(Problem {
-                            file: lf.path.clone(),
-                            line: step.line,
-                            message,
-                        });
-                    }
-                }
                 Ok(Some((target, caps))) => {
                     let checked = check_plugin_step(
                         reg,
@@ -311,26 +295,6 @@ fn check_include_recursive(
     Ok(())
 }
 
-/// A literal `I attach the file` path must exist before the first request. A
-/// path holding a `<<variable>>` can only be read once it is interpolated, so
-/// the step itself reports it then. A macro body is not walked here, so a
-/// literal path inside one is also caught only at the step.
-#[cfg(not(feature = "dev-unreserve"))]
-pub(crate) fn check_attached_file(file: &str, base_dir: &Path) -> Result<(), String> {
-    if file.contains("<<") {
-        return Ok(());
-    }
-    let path = crate::include::join(file, base_dir);
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(format!(
-            "I attach the file {file:?}: no such file ({})",
-            display_path(&path)
-        ))
-    }
-}
-
 /// The absolute directory a plugin step's file sits in, from the directory the
 /// run knows it by. A file given as `a.feature` has the parent `""`, which
 /// stands for the working directory, and an included `../inc/x.feature` leaves
@@ -419,14 +383,6 @@ fn check_include_body_step(
                 stack,
             )
         }
-        #[cfg(not(feature = "dev-unreserve"))]
-        Ok(Some((
-            StepTarget::Builtin {
-                id: crate::steps::StepId::AttachFile,
-                ..
-            },
-            caps,
-        ))) => check_attached_file(&caps[0], base_dir),
         Ok(Some((target, caps))) => check_plugin_step(
             reg,
             &target,
@@ -684,81 +640,6 @@ Feature: f
         let filter = crate::feature::TagFilter::new(&[]);
         let problems = check(&[&lf], &reg, &filter);
         assert!(problems.iter().any(|p| p.message.contains("nope.feature")));
-    }
-
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn attach_problems(tag: &str, path_literal: &str, create: bool) -> Vec<Problem> {
-        let dir = std::env::temp_dir().join(format!(
-            "bddkit-validate-attach-{tag}-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(dir.join("fixtures")).unwrap();
-        if create {
-            std::fs::write(dir.join("fixtures/id.png"), b"x").unwrap();
-        }
-        let path = dir.join("caller.feature");
-        std::fs::write(
-            &path,
-            format!(
-                "Feature: f\n  Scenario: s\n    Given I attach the file \"{path_literal}\" to the request as \"content\"\n"
-            ),
-        )
-        .unwrap();
-        let lf = crate::feature::load(&path).unwrap();
-        let reg = crate::steps::Registry::new().unwrap();
-        check(&[&lf], &reg, &crate::feature::TagFilter::new(&[]))
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn attaching_a_missing_literal_file_is_a_problem_naming_it() {
-        let problems = attach_problems("missing", "fixtures/id.png", false);
-        assert!(
-            problems
-                .iter()
-                .any(|p| p.message.contains("fixtures/id.png")),
-            "{problems:?}"
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn attaching_an_existing_literal_file_is_no_problem() {
-        assert!(attach_problems("present", "fixtures/id.png", true).is_empty());
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn attaching_a_file_whose_path_has_a_variable_is_left_to_the_step() {
-        assert!(attach_problems("variable", "fixtures/<<name>>.png", false).is_empty());
-    }
-
-    #[test]
-    #[cfg(not(feature = "dev-unreserve"))]
-    fn a_missing_attached_file_inside_an_included_scenario_is_a_problem() {
-        let dir = std::env::temp_dir().join(format!(
-            "bddkit-validate-attach-include-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("target.feature"),
-            "Feature: t\n  Scenario: only\n    Given I attach the file \"gone.png\" to the request as \"c\"\n",
-        )
-        .unwrap();
-        let path = dir.join("caller.feature");
-        std::fs::write(
-            &path,
-            "Feature: f\n  Scenario: s\n    Given I include \"target.feature\"\n",
-        )
-        .unwrap();
-        let lf = crate::feature::load(&path).unwrap();
-        let reg = crate::steps::Registry::new().unwrap();
-        let problems = check(&[&lf], &reg, &crate::feature::TagFilter::new(&[]));
-        assert!(
-            problems.iter().any(|p| p.message.contains("gone.png")),
-            "{problems:?}"
-        );
     }
 
     #[test]

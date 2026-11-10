@@ -234,10 +234,6 @@ impl PrivacyFlags {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Resources {
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub api: u64,
-    #[cfg(not(feature = "dev-unreserve"))]
-    pub srp: u64,
     /// Instances per official plugin name.
     pub plugins: BTreeMap<String, u64>,
     pub plugins_other: u64,

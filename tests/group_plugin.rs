@@ -371,8 +371,6 @@ fn a_manifest_the_host_cannot_accept_is_exit_2_and_names_the_culprit() {
     for (case, concurrency, wants) in [
         ("target", 1, "elsewhere"),
         ("group", 1, "gtwo"),
-        #[cfg(not(feature = "dev-unreserve"))]
-        ("host", 1, "\"api\""),
         ("eager_unclaimed", 1, "elsewhere"),
         ("eager_per_worker", 1, "eager_init"),
     ] {
@@ -416,9 +414,8 @@ fn the_context_is_asked_before_the_reset_of_the_next_scenario() {
     assert!(at("context") < at("reset"), "{calls:?}");
 }
 
-/// `api`, `srp` and `db` are claimed by the fixture itself: what a plugin author
-/// runs on a `dev-unreserve` build. The default build keeps them for its
-/// built-ins and refuses it at load.
+/// `api`, `srp` and `db` are claimed by the fixture itself, as `bddkit-api` and
+/// `bddkit-db` claim them.
 const HOST_GROUPS: &[(&str, &str)] = &[("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "1")];
 
 fn host_groups_project(name: &str, feature: &str, config: &str) -> Project {
@@ -431,24 +428,6 @@ fn host_groups_project(name: &str, feature: &str, config: &str) -> Project {
     );
     std::fs::write(project.dir.join("cfg.yaml"), config).expect("write config");
     project
-}
-
-// The same manifest the `dev-unreserve` tests below load.
-#[cfg(not(feature = "dev-unreserve"))]
-#[test]
-fn a_default_build_refuses_a_plugin_claiming_the_built_in_groups() {
-    let project = host_groups_project(
-        "refused",
-        "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
-        "paths: [features]\nresources: {}\n",
-    );
-    let out = project.bddkit("run", HOST_GROUPS);
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-    assert!(
-        text(&out).contains("which bddkit serves itself"),
-        "{}",
-        text(&out)
-    );
 }
 
 /// The fixture claiming `db` alone, as `bddkit-db` does: the databases left
@@ -559,8 +538,7 @@ fn doctor_gives_each_db_instance_a_row_and_hints_at_the_deprecated_word() {
     );
 }
 
-#[cfg(feature = "dev-unreserve")]
-mod dev_unreserve {
+mod former_built_ins {
     use super::*;
 
     impl Project {
@@ -682,13 +660,22 @@ mod dev_unreserve {
     }
 
     #[test]
-    fn the_built_in_default_flags_are_gone() {
-        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
-            .args(["run", "--default-api", "a"])
-            .output()
-            .expect("failed to run bddkit");
-        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-        assert!(text(&out).contains("--default-api"), "{}", text(&out));
+    fn the_old_default_flags_still_name_the_group() {
+        let feature = r#"Feature: f
+  Scenario: the flag decides what a scenario starts on
+    When I read the selected api instance into "who"
+    Then variable "who" should be equal to "b"
+"#;
+        let project = host_groups_project("flag", feature, RESOURCES);
+        passed(&project.bddkit_with(&["run", "--default-api", "b"]));
+        let srp = host_groups_project(
+            "srp-flag",
+            "Feature: f\n  Scenario: s\n    Given I sleep 0 seconds\n",
+            "paths: [features]\nresources:\n  srp:\n    a: {}\n    b: {}\n",
+        );
+        passed(&srp.bddkit_with(&["run", "--default-srp", "b"]));
+        let variable = [HOST_GROUPS[0], ("BDDKIT_DEFAULT_SRP", "b")];
+        passed(&srp.bddkit("run", &variable));
     }
 
     #[test]

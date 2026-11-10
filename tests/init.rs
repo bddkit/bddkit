@@ -44,40 +44,6 @@ fn config(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("bddkit.yaml")).expect("bddkit.yaml written")
 }
 
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn init_with_flags_writes_a_config_that_doctor_accepts() {
-    let dir = temp("doctor");
-    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:8080"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let config = config(&dir);
-    assert!(
-        config.contains("base_url: http://127.0.0.1:8080"),
-        "{config}"
-    );
-    assert!(
-        config.contains("# "),
-        "every key carries a comment:\n{config}"
-    );
-    let doctor = bddkit(&dir, &["doctor"]);
-    assert_eq!(doctor.status.code(), Some(0), "{}", text(&doctor));
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn the_example_feature_passes_without_a_network() {
-    let dir = temp("example");
-    // Nothing listens on this port: the request in the feature is a comment.
-    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:9"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let feature = std::fs::read_to_string(dir.join("features/example.feature")).expect("feature");
-    assert!(feature.contains("# When I request \"/\""), "{feature}");
-    let run = bddkit(&dir, &["run"]);
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run));
-}
-
 #[test]
 fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
     let dir = temp("refuse");
@@ -91,22 +57,6 @@ fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
         std::fs::read_to_string(dir.join("bddkit.yml")).unwrap(),
         "paths: [x]\nresources: {api: {}}\n"
     );
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn an_empty_api_answer_writes_no_api_resource() {
-    let dir = temp("no-api");
-    let out = bddkit(&dir, &["init", "--no-api"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert!(!config(&dir).contains("base_url"), "{}", config(&dir));
-    let feature = std::fs::read_to_string(dir.join("features/example.feature")).unwrap();
-    assert!(!feature.contains("request"), "{feature}");
-    // No flags at all means the same.
-    let bare = temp("bare");
-    assert_eq!(bddkit(&bare, &["init"]).status.code(), Some(0));
-    assert!(!config(&bare).contains("base_url"));
 }
 
 #[test]
@@ -140,7 +90,6 @@ fn a_non_interactive_init_without_telemetry_writes_no_key() {
 }
 
 #[test]
-#[cfg(not(feature = "dev-unreserve"))]
 fn mismatched_flags_are_refused() {
     for args in [
         &["init", "--dsn", "postgres://x/y"][..],
@@ -190,29 +139,6 @@ fn gitignore_gains_only_missing_lines_and_only_in_a_git_work_tree() {
     let outside = temp("gitignore-none");
     assert_eq!(bddkit(&outside, &["init"]).status.code(), Some(0));
     assert!(!outside.join(".gitignore").exists());
-}
-
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
-    // The config is `$`-expanded when it is read: `$$` must survive the
-    // round trip. A DSN, and a `${NAME}` reference staying one, are
-    // `plugin_cli::init_with_a_database_installs_the_db_plugin`'s.
-    let dir = temp("dollar");
-    let out = bddkit(
-        &dir,
-        &["init", "--api-url", "http://127.0.0.1:9/?q=$id&p=$$"],
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let doctor = bddkit(&dir, &["doctor", "--json"]);
-    assert_eq!(doctor.status.code(), Some(0), "{}", text(&doctor));
-    assert!(
-        text(&doctor).contains("http://127.0.0.1:9/?q=$id&p=$$"),
-        "{}",
-        text(&doctor)
-    );
-    assert!(config(&dir).contains("p=$$$$"), "{}", config(&dir));
 }
 
 #[test]
@@ -314,41 +240,6 @@ fn payloads(dir: &Path) -> Vec<serde_json::Value> {
     common::read_payloads(&dir.join("t.log"))
 }
 
-// moves-to: api
-#[test]
-#[cfg(not(feature = "dev-unreserve"))]
-fn an_init_that_ends_with_yes_sends_one_init_payload() {
-    let dir = temp("telemetry-yes");
-    let out = telemetry_init(
-        &dir,
-        &[
-            "--api-url",
-            "http://marker.invalid:8080",
-            "--parallel",
-            "false",
-            "--telemetry",
-            "true",
-        ],
-        &[],
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let all = payloads(&dir);
-    assert_eq!(all.len(), 1, "{all:?}");
-    assert_eq!(all[0]["command"], "init");
-    assert_eq!(all[0]["exit"], 0);
-    let init = &all[0]["init"];
-    assert_eq!(init["interactive"], false);
-    assert_eq!(init["resources"]["api"], 1);
-    assert!(init["resources"].get("db").is_none(), "{init}");
-    assert_eq!(init["settings"]["parallel"], true);
-    assert_eq!(init["settings"]["project_layer"], false);
-    let raw = std::fs::read_to_string(dir.join("t.log")).unwrap();
-    assert!(!raw.contains("marker"), "{raw}");
-    for run_only in ["files", "scenarios", "usage", "scenario_ms"] {
-        assert!(all[0].get(run_only).is_none(), "{run_only}");
-    }
-}
-
 #[test]
 fn an_init_answered_no_or_not_asked_sends_nothing() {
     for (name, flags) in [("no", vec!["--telemetry", "false"]), ("unanswered", vec![])] {
@@ -390,13 +281,12 @@ fn a_yes_in_the_config_still_loses_to_do_not_track() {
     assert!(payloads(&dir).is_empty());
 }
 
-/// As on a core without the built-ins: `init` writes what it was told and goes
+/// `init` writes what it was told and goes
 /// down the plugin path, and the plugin that would serve `resources.api` is what
 /// `doctor` then reports missing.
-#[cfg(feature = "dev-unreserve")]
 #[test]
-fn an_api_url_needs_a_plugin_when_the_built_ins_are_left_out() {
-    let dir = temp("dev-unreserve");
+fn an_api_url_needs_the_api_plugin() {
+    let dir = temp("api-url-no-plugin");
     let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:8080"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(config(&dir).contains("base_url: http://127.0.0.1:8080"));

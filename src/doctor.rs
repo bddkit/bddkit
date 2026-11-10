@@ -2,9 +2,7 @@
 //! without starting a run — plus, under `--live`, the one class of check a run
 //! does not have: whether the resources the config names actually answer.
 
-#[cfg(not(feature = "dev-unreserve"))]
-use crate::http;
-use crate::steps::{BUILTIN_STEPS, StepTarget};
+use crate::steps::StepTarget;
 use crate::{config, dirs, feature, validate};
 use serde::Serialize;
 use std::path::Path;
@@ -431,10 +429,6 @@ pub async fn check(
     );
     let stream = events_path.is_some() || crate::privacy::process_env("BDDKIT_EVENTS").is_some();
     push_evidence(&mut report, &cfg, stream);
-    #[cfg(not(feature = "dev-unreserve"))]
-    check_apis(&mut report, &cfg, live).await;
-    #[cfg(not(feature = "dev-unreserve"))]
-    check_srp(&mut report, &cfg);
     if let Some(plugins) = plugins.as_ref() {
         check_plugin_instances(&mut report, plugins, live);
     }
@@ -443,7 +437,7 @@ pub async fn check(
             .as_ref()
             .ok()
             .map(crate::telemetry::payload::PrivacyFlags::of);
-        let mut resources = crate::telemetry::run::resources_of(&cfg);
+        let mut resources = crate::telemetry::payload::Resources::default();
         if let Some(plugins) = &plugins {
             (resources.plugins, resources.plugins_other) = plugins.instance_counts();
         }
@@ -599,7 +593,7 @@ fn check_features(
                 &borrowed,
                 registry,
                 &filter,
-                |target| unserved_group(cfg, plugins, target),
+                |target| unserved_group(plugins, target),
             ));
             problems.extend(found.into_iter().map(|p| {
                 (
@@ -700,10 +694,9 @@ fn check_features(
 /// variables the host cannot see, so neither finding is certain enough for
 /// `validate::check`.
 ///
-/// 1. An `extract … from JSON|cookies|response body`, or a plugin step that
-///    `reads` some state and `sets_vars`, straight after an include reads what
-///    the helper left behind; it breaks the day the helper sends one more
-///    request. Quiet when the helper exports that name.
+/// 1. A plugin step that `reads` some state and `sets_vars`, straight after an
+///    include, reads what the helper left behind; it breaks the day the helper
+///    sends one more request. Quiet when the helper exports that name.
 /// 2. An `@exports` name no step of the helper (or the nested include it
 ///    exports) writes: `run` finds it out only at the include.
 ///
@@ -881,10 +874,6 @@ fn left_behind(
 ) -> Vec<(String, String)> {
     use crate::steps::StepTarget;
     match target {
-        #[cfg(not(feature = "dev-unreserve"))]
-        StepTarget::Builtin { id, .. } if RESPONSE_EXTRACTS.contains(&id) => {
-            vec![(caps[1].clone(), "response".to_string())]
-        }
         StepTarget::Plugin { lib, step, .. } => {
             let Some(effects) = registry
                 .plugin_step(lib, step)
@@ -921,19 +910,6 @@ fn prefixed(prefix: &str, name: &str) -> String {
         format!("{prefix}_{name}")
     }
 }
-
-/// The steps that read a variable out of the last response.
-#[cfg(not(feature = "dev-unreserve"))]
-const RESPONSE_EXTRACTS: [crate::steps::StepId; 5] = {
-    use crate::steps::StepId::*;
-    [
-        ExtractFromJson,
-        ExtractFromJsonGlobal,
-        ExtractFromCookies,
-        ExtractFromCookiesGlobal,
-        ExtractFromMarkup,
-    ]
-};
 
 /// An include step's scenario name and `with prefix` (empty when absent), or
 /// `None` for any other step.
@@ -988,17 +964,10 @@ fn written_names(
             StepTarget::Macro(index) => registry.macro_def(index).exports.clone(),
             StepTarget::Builtin { id, .. } => match id {
                 StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
-                #[cfg(not(feature = "dev-unreserve"))]
-                id if RESPONSE_EXTRACTS.contains(&id) => vec![caps[1].clone()],
                 StepId::ExtractJsonFromVariable
                 | StepId::ExtractJsonFromVariableGlobal
                 | StepId::ExtractRegexFromVariable
                 | StepId::ExtractRegexFromVariableGlobal => vec![caps[2].clone()],
-                #[cfg(not(feature = "dev-unreserve"))]
-                StepId::SrpVerifier
-                | StepId::SrpVerifierWithSalt
-                | StepId::SrpStartLogin
-                | StepId::SrpCompleteLogin => return None,
                 StepId::EncryptWithAes => return None,
                 StepId::Include | StepId::IncludeScenario => {
                     let (name, prefix) = include_call(id, &caps)?;
@@ -1161,113 +1130,18 @@ fn push_privacy(
 /// when it has — or when the step reaches for no resource at all (`vars`,
 /// `debug`, `general`, and a macro, whose body is checked step by step only
 /// when it runs).
-fn unserved_group(
-    #[cfg_attr(feature = "dev-unreserve", allow(unused_variables))] cfg: &config::Config,
-    plugins: Option<&crate::plugin::Plugins>,
-    target: &StepTarget,
-) -> Option<String> {
+fn unserved_group(plugins: Option<&crate::plugin::Plugins>, target: &StepTarget) -> Option<String> {
     let (group, served) = match target {
-        StepTarget::Builtin { id, .. } => {
-            let group = BUILTIN_STEPS.iter().find(|def| def.id == *id)?.group;
-            #[cfg(not(feature = "dev-unreserve"))]
-            let served = match group {
-                "api" => !cfg.resources.api.is_empty(),
-                "srp" => !cfg.resources.srp.is_empty(),
-                _ => true,
-            };
-            #[cfg(feature = "dev-unreserve")]
-            let served = true;
-            (group, served)
-        }
         StepTarget::Plugin { lib, step, .. } => {
             let plugins = plugins?;
             let group = plugins.group_of_step(*lib, *step);
             (group, plugins.has_instance(group))
         }
-        StepTarget::Macro(_) => return None,
+        StepTarget::Builtin { .. } | StepTarget::Macro(_) => return None,
     };
     (!served).then(|| {
         format!("this step needs a resource of the \"{group}\" group, and resources.{group} declares none")
     })
-}
-
-/// The static check of one API resource: the resource it builds, and the line
-/// describing it.
-///
-/// This and its two neighbours below are the per-resource checks `doctor` and
-/// `resource add` share. They live in this module because its whole subject is
-/// the checks a run makes before its first request, and `add` makes the same
-/// ones over the single resource it is about to write. A second copy is how the
-/// two commands come to disagree about whether a config is valid — which for
-/// `doctor` is by definition a bug in `doctor`.
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn check_api(api: &config::ApiConfig) -> Result<(http::ApiResource, String), String> {
-    let headers = api
-        .default_headers
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let resource = http::ApiResource::new(
-        &api.base_url,
-        api.timeout_secs,
-        headers,
-        api.effective_options.clone(),
-    )
-    .map_err(|error| format!("{error:#}"))?;
-    Ok((
-        resource,
-        format!("{} ({}s timeout)", api.base_url, api.timeout_secs),
-    ))
-}
-
-/// The live half: whether the base URL answers at all. Any status is a pass —
-/// reachability is the question, the application's own routing is not.
-#[cfg(not(feature = "dev-unreserve"))]
-pub async fn probe_api(resource: &http::ApiResource, base_url: &str) -> Result<String, String> {
-    let status = resource.probe().await?;
-    Ok(format!("GET {base_url} → {status}"))
-}
-
-/// The SRP parameters a run would derive, and the variant that named them.
-#[cfg(not(feature = "dev-unreserve"))]
-pub fn check_srp_resource(srp: &config::SrpConfig) -> Result<String, String> {
-    srp.to_params()
-        .map(|_| srp.variant.clone())
-        .map_err(|error| format!("{error:#}"))
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-async fn check_apis(report: &mut Report, cfg: &config::Config, live: bool) {
-    for (name, api) in &cfg.resources.api {
-        let resource = match check_api(api) {
-            Ok((resource, detail)) => {
-                report.push("api", Some(name), Status::Ok, &detail);
-                resource
-            }
-            Err(error) => {
-                report.push("api", Some(name), Status::Failed, &error);
-                continue;
-            }
-        };
-        if !live {
-            report.push_live("api", name, Status::Skipped, "live probe skipped");
-            continue;
-        }
-        match probe_api(&resource, &api.base_url).await {
-            Ok(detail) => report.push_live("api", name, Status::Ok, &detail),
-            Err(error) => report.push_live("api", name, Status::Failed, &error),
-        }
-    }
-}
-
-#[cfg(not(feature = "dev-unreserve"))]
-fn check_srp(report: &mut Report, cfg: &config::Config) {
-    for (name, srp) in &cfg.resources.srp {
-        match check_srp_resource(srp) {
-            Ok(variant) => report.push("srp", Some(name), Status::Ok, &variant),
-            Err(error) => report.push("srp", Some(name), Status::Failed, &error),
-        }
-    }
 }
 
 #[cfg(test)]
