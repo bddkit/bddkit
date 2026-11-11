@@ -1,15 +1,8 @@
 # bddkit
 
-Acceptance testing for backend services — the API and everything behind it —
-written in Gherkin and run by a single Rust binary.
+Acceptance testing for backend services — the API and everything behind it — written in Gherkin and run by a single Rust binary.
 
-A backend test rarely ends at the HTTP response. The interesting question is
-usually what happened *behind* it: did the row change, did the balance move,
-did the state settle a second later. bddkit treats every system a scenario
-touches as a **named resource** — declared once in the config, reachable from
-any scenario — so seeding a row, calling the API, and asserting the row
-changed are three steps in one vocabulary instead of three tools with glue
-between them.
+A backend test rarely ends at the HTTP response. The interesting question is usually what happened *behind* it: did the row change, did the balance move, did the state settle a second later. bddkit treats every system a scenario touches as a **named resource** — declared once in the config, reachable from any scenario — so seeding a row, calling the API, and asserting the row changed are three steps in one vocabulary instead of three tools with glue between them. The core runs the scenarios and owns what they share; the systems themselves are reached through plugins.
 
 ```gherkin
 Scenario: registering a company charges the account
@@ -24,27 +17,21 @@ Scenario: registering a company charges the account
   And I should have "accounts" with "balance: 75"
 ```
 
+The request and response steps are those of the official [`api` plugin](https://github.com/bddkit/bddkit-api), the `I have` and `I should have` steps those of the [`db` plugin](https://github.com/bddkit/bddkit-db). `bddkit init` and `bddkit plugin install` fetch the plugins a suite needs.
+
 ## What it solves
 
-**Extending the vocabulary shouldn't require a rebuild.** Domain steps like
-`I login as user "..."` are declared in YAML and loaded at startup, so
-whoever writes the scenarios can also extend the language they're written in.
+**Extending the vocabulary shouldn't require a rebuild.** Domain steps like `I login as user "..."` are declared in YAML and loaded at startup, so whoever writes the scenarios can also extend the language they're written in.
 
-**A typo shouldn't cost you three minutes of run time.** Unknown steps,
-ambiguous patterns, macro cycles, undeclared connections — all found in one
-pass before the first request. Exit code `2` means "run not started", so CI
-can tell a broken suite from a failing one. Pattern collisions fail loudly
-instead of silently shadowing each other.
+**A typo shouldn't cost you three minutes of run time.** Unknown steps, ambiguous patterns, macro cycles, undeclared connections — all found in one pass before the first request. Exit code `2` means "run not started", so CI can tell a broken suite from a failing one. Pattern collisions fail loudly instead of silently shadowing each other.
 
-**Checking the database shouldn't mean leaving the feature file.** The steps of the official [`db` plugin](https://github.com/bddkit/bddkit-db) introspect the real schema — PostgreSQL, MySQL or MariaDB, the same step text on each: primary keys fill themselves the way the column declares them, values coerce to real column types, and a missing `NOT NULL` column fails by name at the step rather than as a driver error. Hawk signing, SRP-6a, and AES are steps too, so a login handshake stays declarative.
+**Checking the database shouldn't mean leaving the feature file.** The steps of the `db` plugin introspect the real schema — PostgreSQL, MySQL or MariaDB, the same step text on each: primary keys fill themselves the way the column declares them, values coerce to real column types, and a missing `NOT NULL` column fails by name at the step rather than as a driver error. Hawk signing and SRP-6a are steps of the `api` plugin and AES one of the core, so a login handshake stays declarative.
 
 **Async systems shouldn't need sleep loops.** Prefix any assertion with `I expect the next assertion to pass within 10 seconds` and it retries — re-sending the request or re-running the query — until it holds.
 
 **Test data shouldn't collide, and should be removable afterwards.** Every `<<unique()>>` value in a run shares one prefix drawn once per process, so uniqueness is guaranteed rather than probable — and `<<run_id>>` writes that prefix down, so cleanup afterwards is one step: `I delete "companies" where "slug~: u<<run_id>>%"`. `<<unique()>>` is a bare token; `unique(email)`, `unique(slug)` and `unique(url)` are aliases of it and give no address, slug or URL shape, so build the shape around it, as in `user-<<unique()>>@example.com`.
 
-**A failure should explain itself.** Every failed step prints the full last
-exchange — method, URL, headers, bodies, status — with no debug flag and no
-re-run. JSON mismatches point at the path that differs.
+**A failure should explain itself.** Every failed step prints what the scenario was talking to — for an HTTP step the full last exchange: method, URL, headers, bodies, status — with no debug flag and no re-run. JSON mismatches point at the path that differs.
 
 ## Install
 
@@ -105,7 +92,7 @@ A Ctrl-C, the polite "please stop" signal a CI job's cancellation sends, or a cl
 
 `--junit reports/junit.xml` writes JUnit XML — one `<testsuite>` per feature file, one `<testcase>` per scenario, the steps with their status and timing in `<system-out>`, which is what Jenkins, GitLab and GitHub test summaries read. `--cucumber-json reports/cucumber.json` writes Cucumber JSON in the shape cucumber-html-reporter and Allure accept: features with `elements`, elements with `steps`, each step with `keyword`, `name`, `line` and a `result` of `status`, `duration` (nanoseconds) and `error_message`. Features and scenarios also carry `description` (`""` when there is none) and `tags` as `{"name": "@smoke", "line": 3}`, a scenario's being the ones `--tag` sees (for an outline row that includes the tags of its `Examples` block, so `--tag` can pick one block's rows; `@serial` and `@priority` on an `Examples:` block do not schedule anything, they are read from the feature, a rule or a scenario only); a feature's `line` is its `Feature:` line. Both flags are optional and independent, and both are properties of the run, not of the suite — the config never learns them. Console output is unchanged.
 
-Step text is the raw feature text, never interpolated, so two runs' reports differ only in results and timings. A failure carries the same text the console prints — the step error plus the HTTP exchange — and the XML stays well-formed whatever that text contains (a `]]>`, a control character, the NUL bytes of the `<<null>>` sentinel become U+FFFD). Scenarios a `--tag` filtered out and files never started under `--fail-fast` are absent, not skipped; the totals count what ran. A macro call is one step. A file that panicked appears as its one synthetic failed scenario.
+Step text is the raw feature text, never interpolated, so two runs' reports differ only in results and timings. A failure carries the same text the console prints — the step error plus the context the plugins add, an HTTP exchange for one — and the XML stays well-formed whatever that text contains (a `]]>`, a control character, the NUL bytes of the `<<null>>` sentinel become U+FFFD). Scenarios a `--tag` filtered out and files never started under `--fail-fast` are absent, not skipped; the totals count what ran. A macro call is one step. A file that panicked appears as its one synthetic failed scenario.
 
 **Every report path is created — truncated — before the config is read**, its directory made if missing; a path that cannot be prepared is exit 2 before any request. A run that dies on its config therefore leaves an empty file, which a parser rejects loudly, rather than yesterday's green one. A report that cannot be written after the run is also exit 2 — the one exception to "2 = the run never started", because a report silently lost behind a green code is the worse outcome. `bddkit doctor` accepts the same flags and makes the same check (a `reports` row per path); without them it touches nothing.
 
@@ -161,7 +148,7 @@ In CI the report is wanted exactly when `run` exited 1, so it has to run after a
 
 ## Checking a suite before running it
 
-`bddkit doctor` checks a suite without running it. It does every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, plugin steps a plugin's `validate_step` refuses, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and a DSN the driver cannot parse — and lists every problem it finds, one per row, instead of stopping at the first. An unknown step is explained: a typed parameter that refused its literal says which (`parameter <code> expects uint, got "abc"`), otherwise the closest step templates are offered as `did you mean`; `run` prints the same lines:
+`bddkit doctor` checks a suite without running it. It does every check a run makes before its first request — config parse, `${VAR}` expansion, ambiguous `default_*`, the plugin lock file and ABI versions, macro conflicts and cycles, undefined steps, plugin steps a plugin's `validate_step` refuses, malformed `@priority`/`@serial` tags, a `paths` that selects nothing, and every plugin instance its plugin refuses (a DSN the database driver cannot parse, say) — and lists every problem it finds, one per row, instead of stopping at the first. An unknown step is explained: a typed parameter that refused its literal says which (`parameter <code> expects uint, got "abc"`), otherwise the closest step templates are offered as `did you mean`; `run` prints the same lines:
 
 ```console
 $ bddkit doctor --config suite.yaml
@@ -169,7 +156,8 @@ config: suite.yaml
 APP_ENV: dev
 
   ✓ config                parsed, ${VAR} expanded, defaults resolved
-  ✓ plugins               none installed
+  ✓ plugin_lock api       user — /home/me/.config/bddkit/plugins/bddkit-api/0.1.0/libbddkit_api.so
+  ✓ plugins               45 step(s) over 2 group(s)
   ✓ macros                loaded, no conflict or cycle
   ✗ steps features/auth.feature:12  unknown step: "I frobnicate"
   ✗ steps features/auth.feature:14
@@ -183,82 +171,68 @@ APP_ENV: dev
 static checks only — pass --live to also probe the resources
 ```
 
-A bare `doctor` opens no socket: it is fast, offline and deterministic, so it works on a train and a `base_url` pointing at a closed port is not a finding. `--live` adds the one class of check a run does not have — whether the resources the config names actually answer: a `GET` at each `base_url` (any status means reachable), and each declared plugin instance asked to probe its own resource (a database connection, a bucket), every one named individually so one dead DSN says which. A plugin that exports no probe is reported as skipped, never as a failure — a check that never ran has proved nothing. Every declared plugin instance has a row of its own with its resource group as the stage and the instance as the target (`echo main`), and every instance its plugin refuses is reported, not only the first; a refused instance is not probed.
+A bare `doctor` opens no socket: it is fast, offline and deterministic, so it works on a train and an API `base_url` pointing at a closed port is not a finding. `--live` adds the one class of check a run does not have — whether the resources the config names actually answer: each declared plugin instance is asked to probe its own resource (the `api` plugin sends one `GET` at the `base_url`, any status meaning reachable; the `db` plugin opens a connection; an object store checks its bucket), every one named individually so one dead DSN says which. A plugin that exports no probe is reported as skipped, never as a failure — a check that never ran has proved nothing. Every declared plugin instance has a row of its own with its resource group as the stage and the instance as the target (`api main`), and every instance its plugin refuses is reported, not only the first; a refused instance is not probed.
 
 `bddkit doctor` flags: `[--config <path>]` (same default as `run`: `$BDDKIT_CONFIG`, else `./bddkit.yaml`/`./bddkit.yml`), `--env` to pick a `.env.<name>` layer, `--live`, `--json`, and `run`'s `--junit`/`--cucumber-json` to check that a report path can be written. Exit codes: `0` clean, `1` anything was reported — never `2`, so a script's rule is simply "0 or fix something"; a config that cannot be found at all is reported the same way, as a failed `config` row.
 
 The header states which `APP_ENV` layer was selected, which is the first thing that is wrong when a suite passes locally and fails in CI, and — since `--config` is optional — how the config path itself was chosen: `(--config)`, `(BDDKIT_CONFIG)` or `(found in working directory)`. `--json` emits the same report machine-readably, with that same choice as its own `config_source` field (`"flag"` / `"env"` / `"discovered"`, or absent when no config was found at all) rather than only inside the `config` string — plus one object per check with a `probe` flag separating a resource's static row from its live one.
 
-`doctor` never fixes what it finds, and every static stage is a function `run` itself calls — if the two ever disagree about whether a config is valid, that is a bug in `doctor`. The one finding `run` never makes is a step of a resource group with nothing declared to run on — an HTTP step over `resources.api: {}`, a DB step with no `resources.db`, a plugin step whose group was emptied to switch its implicit instance off. `run` accepts that config and fails in the scenario, because a `--tag` may keep the scenario out; `doctor` applies no tag filter, so there the failure is certain, and it is reported as one — once per file and group, at the first step that needs it.
+`doctor` never fixes what it finds, and every static stage is a function `run` itself calls — if the two ever disagree about whether a config is valid, that is a bug in `doctor`. The one finding `run` never makes is a step of a resource group with nothing declared to run on — an HTTP step over `resources.api: {}`, a DB step with no `resources.db`, a step of any plugin whose group was emptied to switch its implicit instance off. `run` accepts that config and fails in the scenario, because a `--tag` may keep the scenario out; `doctor` applies no tag filter, so there the failure is certain, and it is reported as one — once per file and group, at the first step that needs it.
 
 ## What steps exist
 
-`bddkit steps list` prints the whole vocabulary as templates, grouped by resource, with no config and no regex:
+The core has three groups of steps. `general` holds the polling prefixes (`I expect the next assertion to pass …`), `I sleep` and `I include`. `vars` sets variables, asserts over them, extracts from them and encrypts with AES. `debug` prints and marks evidence. Every other step belongs to a plugin: the [`api` plugin](https://github.com/bddkit/bddkit-api) adds the `api` and `srp` groups (requests, response assertions, Hawk, SRP, file attachments), the [`db` plugin](https://github.com/bddkit/bddkit-db) the `db` group, and the others of the official index their own. Which plugins a suite needs follows from its `resources:`, and `bddkit plugin install` with no name fetches them.
+
+`bddkit steps list` prints the whole vocabulary as templates, grouped by resource, with no regex:
 
 ```console
-$ bddkit steps list vars
+$ bddkit steps list --no-config vars
 vars:
   set variable "<name>" to "<value>" global
   set variable "<name>" to "<value>"
-  extract "<path>" from JSON as "<name>" global
-  extract "<path>" from JSON as "<name>"
+  variable "<name>" should not be equal to "<value>"
+  variable "<name>" should be equal to "<value>"
   ...
 ```
 
-Narrow it with a positional resource (`api`, `srp`, `vars`, `debug`, `general`, or a plugin's group such as `db`) and with `--filter <text>`, a case-insensitive substring match. `-v` adds a one-line description under each step — filtering down to one step and adding `-v` is the help-for-one-step path, so there is no separate `describe` command:
+Narrow it with a positional group (`vars`, `debug` and `general` are the core's; a plugin's group such as `api`, `srp` or `db` appears once its plugin is installed) and with `--filter <text>`, a case-insensitive substring match. `-v` adds a one-line description under each step — filtering down to one step and adding `-v` is the help-for-one-step path, so there is no separate `describe` command:
 
 ```console
-$ bddkit steps list --filter "response code" -v
-api:
-  the response code is <code>
-    asserts the HTTP status code of the last response
+$ bddkit steps list --filter "sleep" -v
+general:
+  I sleep <seconds> seconds
+    pauses the scenario — a last resort, an eventual assertion is usually what you want
 ```
 
 `--json` emits the same listing machine-readably, with the raw pattern included. `[--config <path>]` also loads that suite's plugins, so their steps appear under their own groups — resolved the same way as `run`'s, including the `bddkit.yaml`/`bddkit.yml` default, so inside a suite directory this shows that suite's steps with no flag at all; `--no-config` skips that and always answers with builtins only, which also sidesteps a broken default config. Descriptions follow `--lang`, else `$BDDKIT_LANG`, else English; `ru` and `lv` ship with the binary, and an untranslated step falls back to English rather than to a blank line.
 
-### Uploading a file
-
-`I attach the file "<path>" to the request as "<name>"` adds a file part to the request being built; with the form-parameters step the request goes out as `multipart/form-data`, the parameters as its text parts. With no attachment, form parameters stay URL-encoded.
-
-```gherkin
-Given the request form parameters are:
-  | name     | value                                   |
-  | metadata | {"idDocType":"ID_CARD","country":"DEU"} |
-And I attach the file "fixtures/id_front.png" to the request as "content"
-When I request "/applicants/<<applicantId>>/documents" using HTTP POST
-```
-
-The path is relative to the feature file the step is written in — the rule `I include` uses — and `<<variables>>` work in the path and the part name. Attach more than once to send several files, under one part name or several. The part's content type comes from the file extension, `application/octet-stream` when unknown. The multipart `Content-Type` replaces any set by `default_headers` or a header step. A literal path that does not exist is reported by `bddkit doctor` and stops `bddkit run` before the first request (exit 2); a path holding a `<<variable>>` fails at the step. The file is read when the step runs, so a retried assertion replays the same content, and a failure dump lists each part's name, file name, type and size, never its bytes. Hawk signing of a multipart request is refused. The whole file is held in memory.
-
 ### Asserting over a variable
 
-Text reaches a variable from more places than the response body — `I extract` from a column, a plugin's published vars, `extract … from cookies`. The response body's checks work over any of them:
+Text reaches a variable from many places — a response body, a column, a cookie, a plugin's published vars. The `variable` steps check and cut up that text wherever it came from:
 
 | Step | Effect |
 |---|---|
 | `variable "<name>" should contain "<text>"` / `should not contain "<text>"` | plain substring |
 | `variable "<name>" should match "<regex>"` / `should not match "<regex>"` | `regex` crate syntax, unanchored |
-| `variable "<name>" should be empty` | empty or whitespace only, as for the body |
-| `variable "<name>" should contain JSON:` (doc string) | the body's `contains JSON` matching, `@variableType` / `@arrayLength` / `@regExp` included |
-| `variable "<name>" should equal JSON:` (doc string) | the body's `equals JSON` matching |
+| `variable "<name>" should be empty` | empty or whitespace only |
+| `variable "<name>" should contain JSON:` (doc string) | loose JSON matching, `@variableType` / `@arrayLength` / `@regExp` included; the `api` plugin's `the response body contains JSON` matches the same way |
+| `variable "<name>" should equal JSON:` (doc string) | strict JSON matching, as `the response body equals JSON` in the `api` plugin |
 | `variable "<name>" should not contain JSON:` (doc string) | the negation of `should contain JSON:` |
-| `extract "<path>" from variable "<name>" as JSON as "<target>"` | a JSON path of the variable's text into `<target>`; `global` suffix as for `extract … from JSON` |
+| `extract "<path>" from variable "<name>" as JSON as "<target>"` | a JSON path of the variable's text into `<target>`; `global` suffix makes it visible to every scenario of the file |
 | `extract "<regex>" from variable "<name>" as "<target>"` | the first capture group of the first match into `<target>`; a regex with no group is an error; `global` suffix as above |
 
 A variable that is not set fails the step, and so does a JSON step over a variable whose text is not JSON — naming the variable and the parse error, not reporting a mismatch. Every variable assertion, `should be equal to` included, fails on its first mismatch even under `I expect the next assertion to pass …`: nothing runs between two attempts, so the value cannot change and polling it would only burn the timeout.
 
 ### Seeing values while debugging
 
-The `debug` group prints to stderr and changes nothing in the scenario:
+The `debug` group prints to stderr and changes nothing in the scenario. The `api` plugin adds `Print response …` steps of its own:
 
 | Step | Prints |
 |---|---|
 | `Show "<name>" variable` | one variable, failing if it is not set |
 | `Show all variables` | every variable in scope |
 | `Print table:` (data table) | the table as written, `<<variables>>` filled in every cell, the header row included, each column as wide as its longest value |
-| `Print response headers` / `Print response body` | the last response's headers, or its body highlighted |
-| `Print response body as "<path>"` | one JSON path, XPath or CSS selector selection of the last response |
-| `I am in debug mode` / `I am not in debug mode` | turns on/off the generated SQL with its binds and timing, and plugin exchanges |
+| `I am in debug mode` / `I am not in debug mode` | turns on/off the debug output of the plugins that have any, such as the `db` plugin's SQL with its binds and timing |
 | `I am collecting evidence` / `I am not collecting evidence` | prints nothing: marks the steps between the two for `--evidence=marked` (see "What evidence records") |
 
 ```gherkin
@@ -319,21 +293,21 @@ These annotations reach the event stream as `comment`, `step_disabled` and `sect
 
 ### Including other feature files
 
-Scenarios often follow the same setup steps, and duplicating them across files gets tedious. `I include "<file>"` pulls one scenario from another feature file and runs it inline, with access to the same HTTP state, database connection, and plugin instances — giving the caller a chance to reuse setup work and inspect what it left behind. Variables are isolated: the included scenario runs in a fresh `VarStack`, so the caller's globals are invisible inside it, and only variables declared via the `@exports` tag come back.
+Scenarios often follow the same setup steps, and duplicating them across files gets tedious. `I include "<file>"` pulls one scenario from another feature file and runs it inline, with access to the same plugin instances and what they hold, an HTTP exchange or a database connection for two — giving the caller a chance to reuse setup work and inspect what it left behind. Variables are isolated: the included scenario runs in a fresh `VarStack`, so the caller's globals are invisible inside it, and only variables declared via the `@exports` tag come back.
 
 | Step | Effect |
 |---|---|
-| `I include "<file>"` | Runs the file's sole scenario. A Scenario Outline with no `Examples:` block at all is a plain Scenario for this purpose, run as written. A Scenario Outline with an `Examples:` table is only includable this way if that table holds exactly one data row; more than one row (or an Examples table present with zero data rows) requires a `with:` table to pick one, and is otherwise a validation error; the included scenario's HTTP/DB/plugin state flows back to the caller, but variables are isolated |
+| `I include "<file>"` | Runs the file's sole scenario. A Scenario Outline with no `Examples:` block at all is a plain Scenario for this purpose, run as written. A Scenario Outline with an `Examples:` table is only includable this way if that table holds exactly one data row; more than one row (or an Examples table present with zero data rows) requires a `with:` table to pick one, and is otherwise a validation error; the included scenario's plugin state flows back to the caller, but variables are isolated |
 | `I include "<file>" scenario "<name>"` | Runs the scenario named exactly `<name>` from `<file>` — no match, or more than one scenario sharing that name, is a validation error |
 | `I include "<file>" with prefix "<p>"` / `I include "<file>" scenario "<name>" with prefix "<p>"` | Same as above, but every exported variable comes back renamed `<p>_<name>` instead of `<name>` |
 
 A `with:` table feeds a single row of parameters into an included Scenario Outline — the table must have exactly one data row (a header row plus one values row); anything else (zero data rows, or two or more) is a hard validation error, "with: must have exactly one data row." The caller builds the cells by interpolating `<<...>>` values **against the caller's own variables**, not the included file's scope. `with prefix "<p>"` can be combined with a `with:` table (`I include "<file>" with prefix "<p>" with:`) — the prefix comes first, since `as "<name>"` elsewhere already means "store the export in `<name>`", not "prefix it". The included scenario's `@exports(a,b,*)` tag declares which result variables come back to the caller; undeclared variables are discarded when the scenario ends. `@exports(*)` brings back all of them, `@exports(user_id,token)` brings back only those two — the comma-separated names take no space between them, since Gherkin tags cannot contain spaces. For a scenario with no `@exports` tag, nothing returns. A prefix renames every exported variable the same way, including ones matched by a `*` glob — this is what lets the same flow be included twice in one scenario (registering a buyer, then a seller) without the second call's exports overwriting the first's.
 
-State that carries across the include boundary unchanged — no reset happens because of the include itself: the HTTP response from the last request, the current API resource and its headers, the current database connection, and plugin instances with their per-scenario state. (Separately, and unrelated to including: a plugin's instance selection resets like the API does, but only at an ordinary scenario boundary — an include does not introduce one.) Variables do not carry across — only what the `@exports` tag names comes back; all other variables are discarded.
+State that carries across the include boundary unchanged — no reset happens because of the include itself: the plugin instances a scenario selected and each one's per-scenario state — the last HTTP response and the current API with its headers, the current database connection. (Separately, and unrelated to including: a plugin's instance selection resets to its group's default, but only at an ordinary scenario boundary — an include does not introduce one.) Variables do not carry across — only what the `@exports` tag names comes back; all other variables are discarded.
 
 An include can nest up to 16 levels deep, checked at validation time; a cycle (file A includes file B which includes file A) is a static error, reported before the first request, naming every file in the cycle. The path `"<file>"` is a compile-time literal — a string, never a variable — and is resolved relative to the directory of the feature file that wrote the step. A missing file, a file that isn't `.feature`, or — when `scenario "<name>"` is used — a name that matches zero or more than one scenario in the resolved file, is caught at validation time, before the first request.
 
-`bddkit doctor` adds two hints under its `steps` row, with `file:line`, and never fails on them: an `extract … from JSON`, `cookies` or `response body` on the line right after an `I include` reads the response the helper happened to leave last, which changes the day the helper sends one more request — export the value with `@exports` instead; and an `@exports` name that no `set variable`, `extract … as`, macro or nested include in the helper writes. A plugin step gets the first hint when its plugin declares that it reads state and sets a variable. It counts towards the second through the variables it declares; a helper with a plugin step that declares nothing gets no second hint at all, because a plugin can publish variables `doctor` cannot see.
+`bddkit doctor` adds two hints under its `steps` row, with `file:line`, and never fails on them: a plugin step on the line right after an `I include` that reads state and sets a variable (the `api` plugin's `extract … from JSON`, `cookies` or `response body`, for one) reads the response the helper happened to leave last, which changes the day the helper sends one more request — export the value with `@exports` instead; and an `@exports` name that no `set variable`, `extract … as`, macro or nested include in the helper writes. A step gets the first hint only when its plugin declares that it reads state and sets a variable. A plugin step counts towards the second through the variables it declares; a helper with a plugin step that declares nothing gets no second hint at all, because a plugin can publish variables `doctor` cannot see.
 
 **Known limitations, deliberately out of scope:**
 - Calling every scenario in a file, or every Examples row of a Scenario Outline, in one include step — would require a new step form that has not yet been designed.
@@ -344,27 +318,26 @@ A macro file is a YAML list of `step:` templates with a `do:` body. A template i
 
 An alternation takes the whole word between spaces, optional parts included: `(the )post/article` means `(the )post` or `article`, not an optional `the` in front of either.
 
-A typed position also accepts a whole `<<variable>>`, and the variable's value is checked against the type when the step runs: `the response code is <<expected>>` works, and a value that is not a number fails that step. The same holds for the built-in steps' own typed positions (a status code, an array length, seconds and milliseconds, the HTTP method).
+A typed position also accepts a whole `<<variable>>`, and the variable's value is checked against the type when the step runs: `I sleep <<seconds>> seconds` works, and a value that is not a number fails that step. The same holds for the typed positions of the core's own steps (seconds and milliseconds) and of a plugin's (the `api` plugin's status code and HTTP method, say).
 
 A literal `(`, `)`, `/`, `\` or `{` in a template must be escaped. Unescaped, a malformed template (an unclosed `{`, an invalid escape, a `/` next to a parameter as in `"/users/{id}"`) is refused at load with an error naming the file and line, and a well-formed one that no longer reads as intended (`(setup)`, `a/b`) stops the run before the first request with an "unknown step" for every caller.
 
 ## What a resource's config takes
 
-`bddkit resource fields` prints the keys each kind of `resources` entry accepts, which key is mandatory, what value it takes, and what it is for:
+`bddkit resource fields` prints the keys each group of `resources` entries accepts, which key is mandatory, what value it takes, and what it is for. The core serves no group itself, so the listing is made of the installed plugins' groups:
 
 ```console
-$ bddkit resource fields srp
-srp:
-  variant           string    required  hex-string or rfc5054
-  prime             string              group prime in hexadecimal (default: the RFC 5054 4096-bit group)
-  generator         string              generator as a decimal number (default 5)
-  hash              string              sha-1, sha-256 or sha-512 (default sha-256)
-  options           nonscalar           polling.timeout_secs / polling.interval_ms for eventual assertions using this configuration
+$ bddkit resource fields api --config suite.yaml
+api:
+  base_url          string    required  root URL every request is resolved against
+  timeout_secs      number              per-request timeout in seconds (default 20)
+  default_headers   nonscalar           headers sent with every request until a scenario replaces them
+  ...
 ```
 
 The type column is the answer to "can I set this with a flag": `string`, `boolean` and `number` can, and `nonscalar` — a map or a list — is what `resource add --json` is for. A plugin's group is described by the plugin itself, and a field whose manifest declares no type is a string.
 
-Narrow it with a positional kind (`api`, `srp`, or a plugin's group such as `db`). `[--config <path>]` also loads that suite's plugins, so the groups they serve are described too — by the plugins themselves, since only a plugin knows what its own group takes; resolved the same way as `steps list`'s, `bddkit.yaml`/`bddkit.yml` default included, with `--no-config` as the same escape hatch. A plugin whose manifest describes nothing says so and is not an error. `--json` emits the same listing machine-readably.
+Narrow it with a positional group (`api`, `srp`, `db`, or another plugin's). `[--config <path>]` also loads that suite's plugins, so the groups they serve are described too — by the plugins themselves, since only a plugin knows what its own group takes; resolved the same way as `steps list`'s, `bddkit.yaml`/`bddkit.yml` default included, with `--no-config` as the same escape hatch. A plugin whose manifest describes nothing says so and is not an error. `--json` emits the same listing machine-readably.
 
 ### `bddkit resource add`
 
@@ -377,7 +350,7 @@ $ bddkit resource add api staging --config suite.yaml --base_url http://staging.
 $ bddkit resource add s3 main --config suite.yaml --no-check --bucket photos --endpoint https://s3.local
 ```
 
-Writes one new resource into the config's YAML and reports whether it happened. `--config` is resolved the same way as `run`'s (`$BDDKIT_CONFIG`, else `./bddkit.yaml`/`./bddkit.yml`); nothing found is refused with exit 1, same as any other check this command makes, never exit 2. A `--<field> <value>` becomes a body key; the value always arrives as a string, and it is the group's own field table (the host's for `api`/`db`/`srp`, a plugin's manifest for its own group) that converts it — `timeout_secs` becomes a YAML number, and a field the table calls a map or a list refuses the flag and names `--json` instead. `--json '{...}'` supplies the whole body at once and is applied first; any `--<field>` on the same command line then overrides that key, one key at a time, leaving the rest of the JSON body untouched. A name the group's table does not know is refused rather than silently added. The command's own flags (`--config`, `--env`, `--json`, `--no-check`) must be typed before any `--<field>` value — clap treats everything after the first flag it does not itself recognize as more field arguments, so one of these typed later would otherwise vanish into the resource body or be rejected as an unknown field. Before writing anything, the exact prospective file text is assembled, re-parsed and put through the checks `doctor` makes about a config and its resources — the suite's feature files, steps, macros and scheduling tags are deliberately not among them, since a broken `.feature` elsewhere is no reason to refuse a resource. A `${VAR}` placeholder in a value is written out literally and only *expanded* for that check. The live probe that `doctor --live` runs against this one new resource is also run here, by default; `--no-check` skips only that probe, the shape validation still happens. A resource that already exists under that name is refused rather than replaced, because rewriting the surrounding YAML block is how hand-written comments in it get lost — insertion only ever splices in a new block next to the existing text. Exit code is 0 when the file was written and 1 when it was not (a malformed flag, a rejected field, a failed check, an existing resource), matching `doctor`'s "0, or fix something" convention; the command itself never answers 2, though a usage error the argument parser catches before it starts still does.
+Writes one new resource into the config's YAML and reports whether it happened. `--config` is resolved the same way as `run`'s (`$BDDKIT_CONFIG`, else `./bddkit.yaml`/`./bddkit.yml`); nothing found is refused with exit 1, same as any other check this command makes, never exit 2. A `--<field> <value>` becomes a body key; the value always arrives as a string, and it is the group's own field table (the plugin's manifest) that converts it — `timeout_secs` becomes a YAML number, and a field the table calls a map or a list refuses the flag and names `--json` instead. `--json '{...}'` supplies the whole body at once and is applied first; any `--<field>` on the same command line then overrides that key, one key at a time, leaving the rest of the JSON body untouched. A name the group's table does not know is refused rather than silently added. The command's own flags (`--config`, `--env`, `--json`, `--no-check`) must be typed before any `--<field>` value — clap treats everything after the first flag it does not itself recognize as more field arguments, so one of these typed later would otherwise vanish into the resource body or be rejected as an unknown field. Before writing anything, the exact prospective file text is assembled, re-parsed and put through the checks `doctor` makes about a config and its resources — the suite's feature files, steps, macros and scheduling tags are deliberately not among them, since a broken `.feature` elsewhere is no reason to refuse a resource. A `${VAR}` placeholder in a value is written out literally and only *expanded* for that check. The live probe that `doctor --live` runs against this one new resource is also run here, by default; `--no-check` skips only that probe, the shape validation still happens. A resource that already exists under that name is refused rather than replaced, because rewriting the surrounding YAML block is how hand-written comments in it get lost — insertion only ever splices in a new block next to the existing text. Exit code is 0 when the file was written and 1 when it was not (a malformed flag, a rejected field, a failed check, an existing resource), matching `doctor`'s "0, or fix something" convention; the command itself never answers 2, though a usage error the argument parser catches before it starts still does.
 
 ## Config
 
@@ -390,12 +363,12 @@ tags: []                   # run only these tags; --tag replaces them
 macro_paths: [macros/]
 paths: [features/]
 
-resources:
-  api:
+resources:                  # every key is a group a plugin serves
+  api:                      # the `api` plugin
     review:
       base_url: http://review.local
       default_headers: { X-Client: bddkit }
-  db:
+  db:                       # the `db` plugin
     default:
       dsn: postgres://${DB_USER}:${DB_PASS}@db:5432/review
       search_path: [app, public]
@@ -406,25 +379,18 @@ options:
 evidence: [marked, failures]   # when a run has --events and no --evidence; see "What evidence records"
 ```
 
-`${VAR}` expands docker-compose style (`:-`, `:?`, `:+` and friends) from the
-real environment and a `.env` / `.env.local` / `.env.<APP_ENV>` layer stack
-next to the config. With one resource of a kind its `default_*` is inferred;
-with several it must be explicit. `options` set at the root cascades into
-every resource and can be overridden per resource.
+`${VAR}` expands docker-compose style (`:-`, `:?`, `:+` and friends) from the real environment and a `.env` / `.env.local` / `.env.<APP_ENV>` layer stack next to the config. With one resource of a group its `default_<group>` is inferred; with several it must be explicit. `options` set at the root cascades into every resource and can be overridden per resource. The keys a resource takes are its plugin's, see `bddkit resource fields`; a plugin that is not installed makes its group an error that names `bddkit plugin install`.
 
-Variables live for the whole **feature file**, so a later scenario can read
-what an earlier one produced. Request state and the current connection reset
-per **scenario**. Files run in parallel; `@serial(name)` chains files that
-contend, `@priority(N)` moves one up the queue.
+Variables live for the whole **feature file**, so a later scenario can read what an earlier one produced. A plugin's per-scenario state — the request being built, the selected connection — resets per **scenario**. Files run in parallel; `@serial(name)` chains files that contend, `@priority(N)` moves one up the queue.
 
 ## Privacy
 
 bddkit hides secrets in everything it prints or writes about a run: the failure text on the console, both reports (`--junit`, `--cucumber-json`), the event stream (`--events`), the debug output on stderr, `bddkit doctor` in its text and `--json` forms, the block `bddkit resource add` prints, and the `error:` line of a command that failed. There is one set of secret values and one filter that replaces every occurrence of a value with `***`. A value enters the set in five ways.
 
-1. **The step's author marks a parameter `secret`.** `{key:secret}` in a step declaration or a macro template matches exactly what `{key}` does, and the interpolated value joins the set when the step runs. A literal value is also written `***` in the step text of the console, both reports and the stream; a value that came through a `<<slot>>` leaves the text as written. The Hawk key, the AES key and the SRP password are `secret`, and the SRP steps also register their private `<prefix>_a` and `<prefix>_sessionKey`.
+1. **The step's author marks a parameter `secret`.** `{key:secret}` in a step declaration or a macro template matches exactly what `{key}` does, and the interpolated value joins the set when the step runs. A literal value is also written `***` in the step text of the console, both reports and the stream; a value that came through a `<<slot>>` leaves the text as written. The AES key is `secret`; so are the Hawk key and the SRP password of the `api` plugin, whose SRP steps also register their private `<prefix>_a` and `<prefix>_sessionKey`.
 2. **The scenario's author puts a privacy word in a variable's name.** A variable is sensitive when `secret` is one of the `_`-separated words of its name, at any position, in any case: `access_token_secret`, `secret_reg_verifier` and `reg_secret_verifier` are, `secretary_id` and `sessionSecret` are not. Its value joins the set whenever it is written. To mask a token an API returned, save it as `as "login_secret"`, and write `"Bearer <<login_secret>>"` rather than a literal token in the step that uses it.
-3. **A resource names its own sensitive headers.** On an API resource, `authorization`, `cookie` and `set-cookie` are masked by default: the header keeps its name and shows `***`. Add `sensitive_headers: [x-api-key]` to mask more, or `sensitive_headers_only: [x-api-key]` to replace the defaults (`[]` masks no header at all). The usable part of the value — the credential after `Bearer `, each cookie value — is registered too.
-4. **The system under test names a field.** A JSON key, form field or query parameter is sensitive when `password`, `secret` or `token` is one of its words, split on `_`, `-` and lower-to-upper case: `access_token`, `accessToken` and `refresh-token` are, `tokenizer` is not. The value is hidden where it stands, in the request and in the response, and the text around it is left exactly as it was. It joins the set before the failure dump of the step that received it is built, and what a request carries is registered before the request leaves. A string that is at least `min_length` characters long joins the set; a number is hidden where it stands and never joins. The scalars of an array take the sensitivity of the key above it.
+3. **A resource names its own sensitive headers.** On an API resource (the `api` plugin's, which reports them with each exchange), `authorization`, `cookie` and `set-cookie` are masked by default: the header keeps its name and shows `***`. Add `sensitive_headers: [x-api-key]` to mask more, or `sensitive_headers_only: [x-api-key]` to replace the defaults (`[]` masks no header at all). The usable part of the value — the credential after `Bearer `, each cookie value — is registered too.
+4. **The system under test names a field.** In an HTTP exchange of the `api` plugin a JSON key, form field or query parameter is sensitive when `password`, `secret` or `token` is one of its words, split on `_`, `-` and lower-to-upper case: `access_token`, `accessToken` and `refresh-token` are, `tokenizer` is not. The value is hidden where it stands, in the request and in the response, and the text around it is left exactly as it was. It joins the set before the failure dump of the step that received it is built, and what a request carries is registered before the request leaves. A string that is at least `min_length` characters long joins the set; a number is hidden where it stands and never joins. The scalars of an array take the sensitivity of the key above it.
 5. **The configuration.** As soon as `bddkit.yaml` is parsed and its `${…}` references expanded, the value under every key with a field word in its name (`password`, `secret_access_key`, `client_secret`) and the password of every URL with credentials (`postgres://app:hunter22@db/app`) join the set, plugin groups included. A secret that arrives through `${DB_PASSWORD}` or a `.env` file is caught the same way.
 
 ```yaml
@@ -468,7 +434,7 @@ What masking does not do:
 
 - It works forwards. A value is hidden from the moment it enters the set, so a secret in a body that is not JSON, or under a name no field word matches, stays visible until a later step saves it into a sensitive variable.
 - A field word can be too eager. With `token` in the list, `next_page_token` is hidden wherever it appears afterwards; replace the list with `fields_only` when that hurts.
-- Database steps are not covered by `fields`: a column called `password` in `I have … with "password: …"` is not recognised. Pass the value through a sensitive variable.
+- The `db` plugin's steps are not covered by `fields`: a column called `password` in `I have … with "password: …"` is not recognised. Pass the value through a sensitive variable.
 - A derived value — a hash, a signature, a ciphertext of a secret — is a different string and is not recognised.
 - Marking is by name. `_secert` hides nothing and only the `doctor` hint notices. A family is hidden whole: `as "secret_reg"` hides every SRP variable of that login, the public ones included.
 - Some places hide a short value only by value, so only when it is long enough: a multipart text part, the message of an assertion that quotes a body, and `Print response body as "<path>"`.
@@ -481,11 +447,11 @@ What masking does not do:
 
 ## Telemetry
 
-bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which kinds of resources suites use (APIs, SRP, which official plugins, the databases' `db` among them) and where the steps spend their time.
+bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which official plugins suites use and where the steps spend their time.
 
 **Sending.** While telemetry is on, each command writes its payload to `telemetry-last.json` in your user layer (`bddkit telemetry show` prints it), and to the file `BDDKIT_TELEMETRY_LOG` names if you set one, then sends it once as `POST https://telemetry.bddkit.dev/v1/run`. The request waits at most 500 ms to connect and 1.5 s in all, DNS included, so a dead network or a broken resolver costs a command at most 1.5 s; it is not retried, prints nothing and never changes the exit code, a run you interrupt sends nothing, and a signal while the request is out ends the command at once with its own exit code. `BDDKIT_TELEMETRY_URL` points it at a collector of your own. Since sending starts with this release, an existing yes now takes effect: turn it off with `bddkit telemetry off`, `BDDKIT_TELEMETRY=0`, `DO_NOT_TRACK=1` or `telemetry: false` in `bddkit.yaml`.
 
-**What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had and how many of those failures were of each class (`assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`), how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many APIs and SRP configurations, how many instances of which official plugin, and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
+**What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had and how many of those failures were of each class (`assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`), how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many instances of which official plugin (`api`, `srp` and `db` among them), and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
 
 **What is never in it.** Addresses, host names, URLs, DSNs, file paths; the names of feature files, features, scenarios, tags, resources, connections, environments, macros and private plugins; step text, variable values, request or response bodies, headers, SQL; any config value; your user name, host name, repository or git remote; error and panic messages. There is no identifier of any kind: nothing links two runs.
 
@@ -534,11 +500,9 @@ Feature: cleaning up what this run created
 
 Four things to know about it:
 
-- **The operator lives on the column, never in the value.** `slug: 20%` is still exact equality against the text `20%`; only `slug~:` is a pattern. That direction is deliberate: a `%` that arrives through a variable — from an API response, say — must never be able to widen a `DELETE` on its own.
-- **The condition grammar is four operators**, and they work in every step that takes a condition: `col:` is `=`, `col!:` is `<>`, `col~:` is `LIKE`, `col!~:` is `NOT LIKE`. With `<<null>>`: `col:` reads `IS NULL` and `col!:` reads `IS NOT NULL`. Under a `~` the value is an SQL `LIKE` pattern in full — `_` matches any single character too, and `\%` / `\_` are the literal characters.
-- **A negation with a value never matches a NULL column.** `name!: keeper` is SQL's `name <> 'keeper'`, and that is unknown — not true — for a row whose `name` is NULL, so "everything that isn't `keeper`" quietly leaves those rows behind. It is ordinary three-valued logic and the engine is right; it is just rarely what the sentence in your head meant. Add `name: <<null>>` as a second condition if you want them too.
-- **`<<run_id>>` is now a reserved name.** Like `<<null>>`, `<<uuid()>>` and `<<unique()>>`, it is answered before your own variables are looked at, so a variable you set called `run_id` — plausible, if you extract one from a column — is shadowed rather than read.
+- **The operator lives on the column, never in the value**, and the condition grammar, the NULL rule and `LIKE` patterns are the `db` plugin's: its README has them.
 - **Only `<<unique()>>` carries the run prefix** — the `token` kind and its `email`, `slug`, `url` aliases. `<<unique(number)>>` is microseconds plus a counter, with no prefix in it, so a `LIKE` on `<<run_id>>` never reaches a column filled that way: delete those rows by a column that does carry a token, or by their key.
+- **`<<run_id>>` is a reserved name.** Like `<<null>>`, `<<uuid()>>` and `<<unique()>>`, it is answered before your own variables are looked at, so a variable you set called `run_id` — plausible, if you extract one from a column — is shadowed rather than read.
 - **`@priority(-100)` makes the file last in *its own chain*, not last in the run.** Chains run in parallel, so the cleanup file and the files whose data it removes belong in one `@serial(<name>)` chain — otherwise it can delete rows another chain is still using.
 
 ## Plugins
@@ -565,7 +529,7 @@ Given I use "archive" s3
 When I upload file "report.pdf"
 ```
 
-The selection resets to `default_<group>` at every scenario boundary, exactly like the current API and the current connection. With one instance in a group its `default_<group>` is inferred; with several it must be spelled out.
+The selection resets to `default_<group>` at every scenario boundary, exactly like the plugins' other per-scenario state. With one instance in a group its `default_<group>` is inferred; with several it must be spelled out.
 
 `bddkit plugin install <name>` fetches a plugin release and registers it in a lock file for you — see [`docs/plugin-authoring.md` §7](docs/plugin-authoring.md#7-installing-a-plugin) for `update`, `remove`, `show` and `list` alongside it. `bddkit plugin install` with no name reads the suite's config (`--config`, `$BDDKIT_CONFIG` or `./bddkit.yaml`) and installs into the user layer every plugin it needs and no lock file has, matching each non-empty `resources.<group>` to the plugin index entry that lists the group; a second run installs nothing, and a plugin with no release for this bddkit is a warning while the others are still installed. `bddkit init` does the same for the config it writes, and `run` and `doctor` name this command when a group has no plugin. A plugin used only through its defaults, with no `resources` key (`exec`, `script`), is installed by name.
 
