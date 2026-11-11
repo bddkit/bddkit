@@ -55,7 +55,7 @@ jobs:
           else
             echo "installers=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$files" | grep -qE '^plugin-registry\.yaml$'; then
+          if echo "$files" | grep -qE '^(plugin-registry\.yaml|\.github/scripts/(test_)?update_registry_abi\.py)$'; then
             echo "registry=true" >> "$GITHUB_OUTPUT"
           else
             echo "registry=false" >> "$GITHUB_OUTPUT"
@@ -73,6 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: pip install pyyaml
+      - run: python3 .github/scripts/test_update_registry_abi.py
       - run: python3 .github/scripts/update_registry_abi.py --check
 
   lint-install-scripts:
