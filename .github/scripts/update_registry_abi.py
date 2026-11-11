@@ -8,6 +8,10 @@ the whole file: it parses, and every listed release exists and declares the ABI
 it is listed under. Exit 1 on a failed check; the file is written only when the
 checks pass. A release without the asset is skipped, not guessed at.
 
+A repository with no stable release (only candidates) has no `releases/latest`:
+its entry is checked through the newest release its `abi` map names, groups
+included, and the map is left as it is (bddkit/bddkit#243).
+
 When the latest release's `bddkit-plugin.json` has `groups` (ABI 4 and newer),
 they must equal the entry's `groups` as a set (bddkit/bddkit#229); a release
 without `groups` is not checked. `--check` runs every check and writes nothing.
@@ -74,10 +78,16 @@ def main(path, check=False):
         name, repo = entry["name"], entry["repo"]
         abi_map = {str(k): str(v) for k, v in (entry.get("abi") or {}).items()}
         version = latest(repo)
+        if version is None and abi_map:
+            # `releases/latest` never returns a pre-release: a repository that
+            # has only candidates is checked through the release its `abi` map
+            # names (the newest ABI), not skipped (bddkit/bddkit#243).
+            version = abi_map[max(abi_map, key=int)]
+            print(f"{name}: no stable release of {repo}, checking the listed {version}")
         m = manifest(repo, version) if version else None
         abi = int(m["abi"]) if m else None
         if abi is None:
-            print(f"{name}: latest release of {repo} has no bddkit-plugin.json, not recorded")
+            print(f"{name}: no release of {repo} with a bddkit-plugin.json, not recorded")
         else:
             abi_map[str(abi)] = version
             text = splice(text, name, abi_map)
