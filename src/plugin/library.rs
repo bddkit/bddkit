@@ -2,7 +2,8 @@
 //! `String -> String` calls and typed payloads.
 
 use super::abi::{
-    ABI_VERSION, Concurrency, DispatchResult, Envelope, InitResponse, Manifest, StepSpec,
+    ABI_MIN, ABI_VERSION, Concurrency, ConfigReply, DispatchResult, Envelope, InitFailure,
+    InitResponse, Manifest, StepSpec,
 };
 use anyhow::{Context, Result, bail};
 use std::ffi::{CStr, CString, c_char};
@@ -16,6 +17,7 @@ type DispatchFn = unsafe extern "C" fn(u64, u32, *const c_char) -> *mut c_char;
 type HandleFn = unsafe extern "C" fn(u64) -> *mut c_char;
 type FreeFn = unsafe extern "C" fn(*mut c_char);
 type StepValidateFn = unsafe extern "C" fn(u32, *const c_char) -> *mut c_char;
+type SelectInstanceFn = unsafe extern "C" fn(u64, *const c_char) -> *mut c_char;
 
 /// One loaded plugin binary.
 ///
@@ -34,6 +36,8 @@ pub struct Library {
     reset_scenario: Option<HandleFn>,
     probe_config: Option<JsonFn>,
     validate_step: Option<StepValidateFn>,
+    select_instance: Option<SelectInstanceFn>,
+    failure_context: Option<HandleFn>,
     free_string: FreeFn,
     _library: libloading::Library,
 }
@@ -128,6 +132,19 @@ impl Library {
                 .ok()
                 .map(|symbol| *symbol);
 
+        // Optional: a plugin that needs no notice of `I use "<name>" <group>`
+        // exports nothing.
+        let select_instance: Option<SelectInstanceFn> =
+            unsafe { library.get(b"bddkit_select_instance\0") }
+                .ok()
+                .map(|symbol| *symbol);
+
+        // Optional: a plugin that adds nothing to a failure's dump exports
+        // nothing.
+        let failure_context: Option<HandleFn> = unsafe { library.get(b"bddkit_failure_context\0") }
+            .ok()
+            .map(|symbol| *symbol);
+
         // SAFETY: `manifest_fn` takes no arguments, and the pointer it returns
         // is handed straight back to this same plugin's `free_string` inside
         // `take` — the host never frees plugin memory itself.
@@ -141,13 +158,16 @@ impl Library {
         // SAFETY: as for `manifest_fn` above.
         let steps_json = unsafe { take(free_string, list_steps_fn()) }
             .with_context(|| format!("plugin {name:?} returned no step list"))?;
-        let steps: Vec<StepSpec> = serde_json::from_str(&steps_json)
+        let mut steps: Vec<StepSpec> = serde_json::from_str(&steps_json)
             .with_context(|| format!("plugin {name:?} returned a malformed step list"))?;
+        prepare_steps(name, &mut steps)?;
         check_step_groups(name, &manifest, &steps)?;
         check_field_groups(name, &manifest)?;
         check_field_types(name, &manifest)?;
         check_implicit_groups(name, &manifest)?;
         check_secret_groups(name, &steps)?;
+        check_eager_init(name, &manifest)?;
+        check_deprecated_targets(name, &manifest)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -160,6 +180,8 @@ impl Library {
             reset_scenario,
             probe_config,
             validate_step,
+            select_instance,
+            failure_context,
             free_string,
             _library: ManuallyDrop::into_inner(library),
         })
@@ -169,12 +191,28 @@ impl Library {
         self.reset_scenario.is_some()
     }
 
+    pub fn has_select_instance(&self) -> bool {
+        self.select_instance.is_some()
+    }
+
+    pub fn has_failure_context(&self) -> bool {
+        self.failure_context.is_some()
+    }
+
+    /// The raw reply of `bddkit_failure_context`; `None` when the plugin
+    /// exports no such symbol, which is not a failure. The caller parses it:
+    /// a malformed reply is quoted nowhere, and its `secrets` still count.
+    pub fn failure_context(&self, handle: u64) -> Option<Result<String>> {
+        let function = self.failure_context?;
+        Some(self.call_handle(function, handle, "failure_context"))
+    }
+
     pub fn has_probe_config(&self) -> bool {
         self.probe_config.is_some()
     }
 
-    pub fn validate_config(&self, request: &str) -> Result<Result<(), String>> {
-        self.envelope_call(self.validate_config, request, "validate_config")
+    pub fn validate_config(&self, request: &str) -> Result<Result<Option<String>, String>> {
+        self.config_call(self.validate_config, request, "validate_config")
     }
 
     /// `None` means the plugin exports no probe at all — "not available",
@@ -183,9 +221,9 @@ impl Library {
     /// reachability check that never ran has proved nothing, so the caller
     /// must be able to tell the two apart.
     ///
-    pub fn probe_config(&self, request: &str) -> Option<Result<Result<(), String>>> {
+    pub fn probe_config(&self, request: &str) -> Option<Result<Result<Option<String>, String>>> {
         let function = self.probe_config?;
-        Some(self.envelope_call(function, request, "probe_config"))
+        Some(self.config_call(function, request, "probe_config"))
     }
 
     /// `None` means the plugin exports no hook — every step is accepted.
@@ -206,7 +244,7 @@ impl Library {
         Some(verdict.map_or_else(|e| Err(format!("{e:#}")), Envelope::into_result))
     }
 
-    pub fn init_instance(&self, request: &str) -> Result<Result<u64, String>> {
+    pub fn init_instance(&self, request: &str) -> Result<Result<u64, InitFailure>> {
         let reply = self.call_json(self.init_instance, request, "init_instance")?;
         let response: InitResponse = serde_json::from_str(&reply)
             .with_context(|| self.malformed("init_instance", &reply))?;
@@ -239,6 +277,22 @@ impl Library {
         })
     }
 
+    /// `I use "<instance>" <group>` on a group-scoped handle. Absent symbol:
+    /// nothing to tell, so `Ok`.
+    pub fn select_instance(&self, handle: u64, request: &str) -> Result<Result<(), String>> {
+        let Some(function) = self.select_instance else {
+            return Ok(Ok(()));
+        };
+        let reply = self.call_with("select_instance", request, |argument| {
+            // SAFETY: `function` was resolved from this library with this
+            // exact signature, and the plugin only reads from `argument`.
+            unsafe { function(handle, argument) }
+        })?;
+        let envelope: Envelope = serde_json::from_str(&reply)
+            .with_context(|| self.malformed("select_instance", &reply))?;
+        Ok(envelope.into_result())
+    }
+
     pub fn drop_instance(&self, handle: u64) -> Result<Result<(), String>> {
         let reply = self.call_handle(self.drop_instance, handle, "drop_instance")?;
         let envelope: Envelope = serde_json::from_str(&reply)
@@ -256,17 +310,29 @@ impl Library {
         Ok(envelope.into_result())
     }
 
-    /// The shared body of the two `JsonFn` calls that reply with an envelope.
-    fn envelope_call(
+    /// The two config replies. Their `secrets` are recorded into the process
+    /// sink before anything else reads the reply, `ok` or not, and also from a
+    /// reply that does not parse as a whole: `malformed` quotes it.
+    fn config_call(
         &self,
         function: JsonFn,
         request: &str,
         what: &str,
-    ) -> Result<Result<(), String>> {
+    ) -> Result<Result<Option<String>, String>> {
         let reply = self.call_json(function, request, what)?;
-        let envelope: Envelope =
+        if let Some(secrets) = serde_json::from_str::<serde_json::Value>(&reply)
+            .ok()
+            .as_ref()
+            .and_then(|value| value.get("secrets")?.as_array())
+        {
+            secrets
+                .iter()
+                .filter_map(|secret| secret.as_str())
+                .for_each(crate::privacy::record_value);
+        }
+        let parsed: ConfigReply =
             serde_json::from_str(&reply).with_context(|| self.malformed(what, &reply))?;
-        Ok(envelope.into_result())
+        Ok(parsed.into_result())
     }
 
     fn call_json(&self, function: JsonFn, request: &str, what: &str) -> Result<String> {
@@ -309,14 +375,85 @@ impl Library {
     }
 }
 
-/// The host speaks exactly one ABI generation. A pure predicate over the
-/// reported number, extracted for the same reason as `check_reset_scenario`: it is
-/// reachable from a unit test without building a cdylib per rejection case.
+/// The host speaks the generations `ABI_MIN` to `ABI_VERSION`. A pure
+/// predicate over the reported number, extracted for the same reason as
+/// `check_reset_scenario`: it is reachable from a unit test without building a
+/// cdylib per rejection case.
 fn check_abi_version(name: &str, reported: u32) -> Result<()> {
-    if reported != ABI_VERSION {
+    if reported > ABI_VERSION {
         bail!(
-            "plugin {name:?} was built for ABI version {reported}, this bddkit speaks {ABI_VERSION}"
+            "plugin {name:?} was built for ABI version {reported}, newer than the {ABI_VERSION} this bddkit speaks: upgrade bddkit"
         );
+    }
+    if reported < ABI_MIN {
+        bail!(
+            "plugin {name:?} was built for ABI version {reported}, older than the {ABI_MIN} this bddkit still loads: the plugin is not updated for this bddkit yet"
+        );
+    }
+    Ok(())
+}
+
+/// What a step spec declares is checked and compiled once, here: exactly one of
+/// `pattern` and `expression`, `secret_groups` only on a `pattern`, and every
+/// effect placeholder naming an argument. A placeholder cannot name a secret
+/// one, because `doctor` prints what an effect holds. A pattern that does not
+/// compile is left to the registry, which names it.
+///
+/// Reached from a unit test without building a cdylib per rejection case.
+fn prepare_steps(name: &str, steps: &mut [StepSpec]) -> Result<()> {
+    for step in steps {
+        match (&step.pattern, &step.expression) {
+            (Some(_), Some(_)) => bail!(
+                "plugin {name:?} declares a step with both pattern and expression: {:?}",
+                step.declaration()
+            ),
+            (None, None) => bail!(
+                "plugin {name:?} declares a step with neither pattern nor expression, in group {:?}",
+                step.group
+            ),
+            (Some(pattern), None) => {
+                let Ok(regex) = regex::Regex::new(pattern) else {
+                    continue;
+                };
+                // A group can nest inside a secret one and `regex` does not say
+                // so, so a pattern holding a secret names no group at all. Such
+                // a step can be an `expression`, whose parameters are flat.
+                step.arg_names = regex
+                    .capture_names()
+                    .skip(1)
+                    .map(|group| {
+                        group
+                            .filter(|_| step.secret_groups.is_empty())
+                            .map(str::to_string)
+                    })
+                    .collect();
+            }
+            (None, Some(expression)) => {
+                if !step.secret_groups.is_empty() {
+                    bail!(
+                        "plugin {name:?} declares secret_groups on the expression {expression:?}; write {{name:secret}} instead"
+                    );
+                }
+                let compiled = crate::steps::expression::compile(expression, "text")
+                    .map_err(|error| anyhow::anyhow!("plugin {name:?}: {error}"))?;
+                step.arg_names = compiled
+                    .params
+                    .iter()
+                    .map(|param| (!param.ty.secret).then(|| param.name.clone()))
+                    .collect();
+                step.compiled = Some(compiled);
+            }
+        }
+        for template in step.effect_templates() {
+            for placeholder in StepSpec::placeholders(template) {
+                if !step.arg_names.iter().flatten().any(|n| n == placeholder) {
+                    bail!(
+                        "plugin {name:?} step {:?}: the effect {template:?} names {{{placeholder}}}, which is no parameter of the step, or a secret one, or a group of a pattern with secret_groups",
+                        step.declaration()
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -333,7 +470,7 @@ fn check_step_groups(name: &str, manifest: &Manifest, steps: &[StepSpec]) -> Res
         if !manifest.groups.contains(&step.group) {
             bail!(
                 "plugin {name:?} declares step {:?} in group {:?}, which it does not claim",
-                step.pattern,
+                step.declaration(),
                 step.group
             );
         }
@@ -379,7 +516,7 @@ fn check_implicit_groups(name: &str, manifest: &Manifest) -> Result<()> {
 /// A pure predicate over the already-parsed step list, like its neighbours.
 fn check_secret_groups(name: &str, steps: &[StepSpec]) -> Result<()> {
     for step in steps.iter().filter(|step| !step.secret_groups.is_empty()) {
-        let Ok(pattern) = regex::Regex::new(&step.pattern) else {
+        let Some(Ok(pattern)) = step.pattern.as_deref().map(regex::Regex::new) else {
             continue;
         };
         let groups = pattern.captures_len() - 1;
@@ -390,7 +527,7 @@ fn check_secret_groups(name: &str, steps: &[StepSpec]) -> Result<()> {
         {
             bail!(
                 "plugin {name:?} marks capture group {bad} of {:?} as secret, but the pattern has {groups} (groups count from 1)",
-                step.pattern
+                step.declaration()
             );
         }
     }
@@ -422,30 +559,118 @@ fn check_field_types(name: &str, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// A `shared` instance serves every worker at once, so its per-scenario reset
-/// cannot be scoped to the worker whose scenario just ended: one worker's
-/// boundary would clear state another is mid-scenario in — the reviewer saw
-/// both an assertion that never passed because its counter kept being zeroed,
-/// and a file with no plugin steps at all failing on another file's instance.
-/// `per_worker` has no such problem — its instances belong to one file — so it
-/// is allowed at any concurrency, and declaring it is the remedy this message
-/// offers.
+/// A `shared` handle serves every worker at once, so a per-worker notion
+/// cannot be scoped to one: a per-scenario reset would clear state another
+/// worker is mid-scenario in (the reviewer saw both an assertion that never
+/// passed because its counter kept being zeroed, and a file with no plugin
+/// steps failing on another file's instance), and an instance selection is
+/// per file, which a shared handle is not. `per_worker` has no such problem,
+/// so it is allowed at any concurrency, and declaring it is the remedy the
+/// message offers.
 ///
-/// A free function over already-parsed data, so it is reachable from a unit
-/// test without building a cdylib per rejection case.
+/// `symbol` is the export that cannot be kept (`bddkit_reset_scenario`,
+/// `bddkit_select_instance`), `what` says why. A free function over
+/// already-parsed data, so it is reachable from a unit test without building a
+/// cdylib per rejection case.
+pub fn check_per_file_symbol(
+    name: &str,
+    concurrency_mode: Concurrency,
+    symbol: &str,
+    exported: bool,
+    why: &str,
+    concurrency: usize,
+) -> Result<()> {
+    if exported && concurrency_mode == Concurrency::Shared && concurrency > 1 {
+        bail!(
+            "plugin {name:?} declares concurrency \"shared\" and exports \
+             {symbol}, but this run has concurrency {concurrency}: {why}. Declare \
+             \"per_worker\" in the manifest, or set concurrency: 1"
+        );
+    }
+    Ok(())
+}
+
 pub fn check_reset_scenario(
     name: &str,
     concurrency_mode: Concurrency,
     exports_reset: bool,
     concurrency: usize,
 ) -> Result<()> {
-    if exports_reset && concurrency_mode == Concurrency::Shared && concurrency > 1 {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_reset_scenario",
+        exports_reset,
+        "a shared instance cannot have its per-scenario reset scoped to one worker",
+        concurrency,
+    )
+}
+
+pub fn check_select_instance(
+    name: &str,
+    concurrency_mode: Concurrency,
+    exports_select: bool,
+    concurrency: usize,
+) -> Result<()> {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_select_instance",
+        exports_select,
+        "the selection is per feature file and a shared handle is not",
+        concurrency,
+    )
+}
+
+pub fn check_failure_context(
+    name: &str,
+    concurrency_mode: Concurrency,
+    exports_context: bool,
+    concurrency: usize,
+) -> Result<()> {
+    check_per_file_symbol(
+        name,
+        concurrency_mode,
+        "bddkit_failure_context",
+        exports_context,
+        "the scenario's handles are listed per feature file and a shared handle is not",
+        concurrency,
+    )
+}
+
+/// `eager_init` names groups whose `shared` handle the host builds at startup:
+/// a group the manifest does not claim has no handle, and a `per_worker` one
+/// belongs to a file that does not exist yet.
+fn check_eager_init(name: &str, manifest: &Manifest) -> Result<()> {
+    if manifest.eager_init.is_empty() {
+        return Ok(());
+    }
+    if manifest.concurrency != Concurrency::Shared {
         bail!(
-            "plugin {name:?} declares concurrency \"shared\" and exports \
-             bddkit_reset_scenario, but this run has concurrency {concurrency}: a shared \
-             instance cannot have its per-scenario reset scoped to one worker. Declare \
-             \"per_worker\" in the manifest, or set concurrency: 1"
+            "plugin {name:?} declares eager_init but not concurrency \"shared\": only a shared \
+             handle exists before the first file"
         );
+    }
+    for group in &manifest.eager_init {
+        if !manifest.groups.contains(group) {
+            bail!(
+                "plugin {name:?} declares eager_init for the group {group:?}, which it does not claim"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A deprecated word maps to a group this plugin claims; clashes with other
+/// plugins and the host are checked once every plugin is loaded
+/// (`Plugins::check_deprecated_words`).
+fn check_deprecated_targets(name: &str, manifest: &Manifest) -> Result<()> {
+    for (word, target) in &manifest.deprecated {
+        if !manifest.groups.contains(target) {
+            bail!(
+                "plugin {name:?} maps the deprecated word {word:?} to the group {target:?}, which it does not claim"
+            );
+        }
     }
     Ok(())
 }
@@ -499,6 +724,68 @@ mod tests {
             .join(crate::plugin::install::dll_name("echo_plugin"))
     }
 
+    fn prepared(step: &str) -> Result<Vec<StepSpec>> {
+        let mut steps: Vec<StepSpec> =
+            serde_json::from_str(&format!(r#"[{{"group":"w","kind":"action",{step}}}]"#))
+                .expect("steps parse");
+        prepare_steps("widget", &mut steps)?;
+        Ok(steps)
+    }
+
+    #[test]
+    fn a_step_declares_exactly_one_of_pattern_and_expression() {
+        prepared(r#""pattern":"^a$""#).expect("a pattern alone");
+        let steps = prepared(r#""expression":"a {n:uint}""#).expect("an expression alone");
+        assert!(steps[0].compiled.is_some());
+        for (step, needle) in [
+            (r#""pattern":"^a$","expression":"a""#, "both"),
+            (r#""description":"d""#, "neither"),
+            (r#""expression":"a {n:nope}""#, "unknown type"),
+            (
+                r#""expression":"a {n}","secret_groups":[1]"#,
+                "secret_groups",
+            ),
+        ] {
+            let error = prepared(step).expect_err("refused").to_string();
+            assert!(error.contains(needle), "{step}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_builtins_expression_compiles_as_it_does_for_the_builtin() {
+        // The API and DB plugins declare built-in expressions verbatim.
+        for (def, builtin) in crate::steps::BUILTIN_STEPS
+            .iter()
+            .zip(crate::steps::COMPILED_BUILTINS.iter())
+        {
+            let expression = serde_json::to_string(def.expression).expect("encodes");
+            let steps = prepared(&format!(r#""expression":{expression}"#)).expect("compiles");
+            let compiled = steps[0].compiled.as_ref().expect("compiled");
+            assert_eq!(compiled.regex.as_str(), builtin.regex.as_str());
+            assert_eq!(compiled.template, builtin.template);
+        }
+    }
+
+    #[test]
+    fn an_effect_may_name_only_an_argument_the_step_has_and_shows() {
+        prepared(r#""expression":"a {n}","sets_vars":["{n}_*"],"reads":["s:{n}"],"writes":["w"]"#)
+            .expect("n is a parameter");
+        prepared(r#""pattern":"^a (?P<n>x)$","writes":["{n}"]"#).expect("n is a named group");
+        for step in [
+            r#""expression":"a {n}","sets_vars":["{m}"]"#,
+            r#""expression":"a {n}","reads":["{m}"]"#,
+            r#""expression":"a {n}","writes":["{m}"]"#,
+            r#""pattern":"^a (x)$","sets_vars":["{m}"]"#,
+            r#""expression":"a {key:secret}","reads":["{key}"]"#,
+            r#""pattern":"^a (?P<key>x)$","secret_groups":[1],"reads":["{key}"]"#,
+            r#""pattern":"^a (?P<key>x(?P<inner>y))$","secret_groups":[1],"reads":["{inner}"]"#,
+            r#""pattern":"^a (?P<key>x) (?P<n>y)$","secret_groups":[1],"reads":["{n}"]"#,
+        ] {
+            let error = prepared(step).expect_err("refused").to_string();
+            assert!(error.contains("no parameter"), "{step}: {error}");
+        }
+    }
+
     #[test]
     fn a_secret_group_no_pattern_group_has_is_refused() {
         let step = |groups: &str| -> Vec<StepSpec> {
@@ -535,7 +822,7 @@ mod tests {
     #[test]
     fn lists_the_steps() {
         let lib = Library::load("echo", &fixture()).expect("loads");
-        assert_eq!(lib.steps.len(), 19);
+        assert_eq!(lib.steps.len(), 29);
         assert!(!lib.steps[0].is_assertion());
         assert!(lib.steps[1].is_assertion());
         assert_eq!(lib.steps[0].group, "echo");
@@ -596,12 +883,24 @@ mod tests {
 
     #[test]
     fn an_abi_mismatch_names_both_versions() {
-        let error = check_abi_version("ancient", ABI_VERSION + 1).expect_err("refused");
-        let text = format!("{error:#}");
-        assert!(text.contains("ancient"), "{text}");
-        assert!(text.contains(&(ABI_VERSION + 1).to_string()), "{text}");
-        assert!(text.contains(&ABI_VERSION.to_string()), "{text}");
-        check_abi_version("current", ABI_VERSION).expect("the host's own version is accepted");
+        let text = |reported| {
+            format!(
+                "{:#}",
+                check_abi_version("odd", reported).expect_err("refused")
+            )
+        };
+        let newer = text(ABI_VERSION + 1);
+        assert!(
+            newer.contains("odd") && newer.contains(&(ABI_VERSION + 1).to_string()),
+            "{newer}"
+        );
+        assert!(newer.contains("upgrade bddkit"), "{newer}");
+        let older = text(ABI_MIN - 1);
+        assert!(older.contains(&(ABI_MIN - 1).to_string()), "{older}");
+        assert!(older.contains("not updated"), "{older}");
+        for accepted in ABI_MIN..=ABI_VERSION {
+            check_abi_version("current", accepted).expect("inside the range");
+        }
     }
 
     #[test]
@@ -760,5 +1059,30 @@ mod tests {
         )
         .expect("manifest parses");
         check_field_groups("widget", &manifest).expect("its own group is fine");
+    }
+
+    #[test]
+    fn a_shared_plugin_with_a_select_instance_is_refused_in_parallel_only() {
+        let error = check_select_instance("db", Concurrency::Shared, true, 2).expect_err("refused");
+        assert!(
+            format!("{error}").contains("bddkit_select_instance"),
+            "{error}"
+        );
+        check_select_instance("db", Concurrency::Shared, true, 1).expect("sequential");
+        check_select_instance("api", Concurrency::PerWorker, true, 8).expect("per_worker");
+        check_select_instance("db", Concurrency::Shared, false, 8).expect("no export");
+    }
+
+    #[test]
+    fn a_shared_plugin_with_a_failure_context_is_refused_in_parallel_only() {
+        let error =
+            check_failure_context("api", Concurrency::Shared, true, 2).expect_err("refused");
+        assert!(
+            format!("{error}").contains("bddkit_failure_context"),
+            "{error}"
+        );
+        check_failure_context("api", Concurrency::Shared, true, 1).expect("sequential");
+        check_failure_context("api", Concurrency::PerWorker, true, 8).expect("per_worker");
+        check_failure_context("db", Concurrency::Shared, false, 8).expect("no export");
     }
 }

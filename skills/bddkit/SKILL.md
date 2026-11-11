@@ -5,7 +5,7 @@ description: Use when writing, running, fixing or reading the results of bddkit 
 
 # bddkit
 
-Runs Gherkin `.feature` files against an HTTP API, PostgreSQL/MySQL/MariaDB and plugin-served groups. A suite is `bddkit.yaml` plus features; `${VAR}` comes from the environment or a `.env.local` beside the config:
+Runs Gherkin `.feature` files against an HTTP API and plugin-served groups, PostgreSQL/MySQL/MariaDB (`db`) among them; `bddkit plugin install` installs the plugins a config needs. A suite is `bddkit.yaml` plus features; `${VAR}` comes from the environment or a `.env.local` beside the config:
 
 ```yaml
 paths: [features/]

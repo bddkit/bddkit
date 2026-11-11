@@ -6,7 +6,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bddkit_crate_json::{matcher, path};
 
-use super::markup::{self, MarkupError};
 use regex::Regex;
 
 fn hex_nibble(byte: u8) -> Option<u8> {
@@ -83,21 +82,6 @@ fn scalar(v: &serde_json::Value) -> String {
     }
 }
 
-pub fn extract_from_json(
-    w: &mut World,
-    p: &str,
-    name: &str,
-    global: bool,
-) -> Result<(), StepError> {
-    let ex = w
-        .http
-        .last()
-        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
-    let v = ex.json().map_err(StepError::assertion)?;
-    let value = scalar(path::read(&v, p).map_err(|e| StepError::assertion(e.to_string()))?);
-    set_variable(w, name, &value, global)
-}
-
 pub fn extract_json_from_variable(
     w: &mut World,
     p: &str,
@@ -142,36 +126,6 @@ pub fn extract_regex_from_variable(
         .as_str()
         .to_string();
     set_variable(w, name, &value, global)
-}
-
-pub fn extract_from_cookies(
-    w: &mut World,
-    cookie: &str,
-    name: &str,
-    global: bool,
-) -> Result<(), StepError> {
-    let ex = w
-        .http
-        .last()
-        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
-    let value = ex.set_cookie(cookie).ok_or_else(|| {
-        StepError::assertion(format!("cookie {cookie:?} not found in the response"))
-    })?;
-    set_variable(w, name, &value, global)
-}
-
-pub fn extract_from_markup(w: &mut World, selector: &str, name: &str) -> Result<(), StepError> {
-    let ex = w
-        .http
-        .last()
-        .ok_or_else(|| StepError::input("no request has been sent yet"))?;
-    let kind = markup::classify(markup::content_type(&ex.resp_headers));
-    let value = markup::select(kind, &ex.body, selector, false).map_err(|e| match e {
-        MarkupError::NoMatch(msg) => StepError::assertion(msg),
-        MarkupError::Fatal(msg) => StepError::input(msg),
-    })?;
-    w.vars.set(name, value);
-    Ok(())
 }
 
 fn variable<'a>(w: &'a World, name: &str) -> Result<&'a str, AttemptError> {
@@ -331,29 +285,11 @@ mod tests {
     use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn world() -> World {
-        let resources = HashMap::from([(
-            "main".to_string(),
-            crate::http::ApiResource::new(
-                "http://x.local",
-                5,
-                Vec::new(),
-                crate::options::Options::default(),
-            )
-            .expect("valid base URL"),
-        )]);
-        let apis = Arc::new(
-            crate::http::Apis::new(resources, Some("main".to_string()))
-                .expect("default API exists"),
-        );
         World::new(
-            apis,
             Arc::new(crate::unique::Generator::new()),
-            crate::db::DbHandle::new(None, String::new()),
-            None,
             None,
             crate::options::Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -436,47 +372,6 @@ mod tests {
         assert!(error.message.contains("64"), "{error}");
         assert_eq!(world.vars.get("otp_ciphertext"), None);
         assert_eq!(world.vars.get("otp_ivHex"), None);
-    }
-
-    #[test]
-    fn extract_from_markup_writes_the_selected_text() {
-        let mut w = world();
-        w.http.store_test_exchange(crate::http::Exchange {
-            method: "GET".to_string(),
-            url: "http://x.local/".to_string(),
-            req_headers: Vec::new(),
-            req_body: None,
-            status: 200,
-            resp_headers: vec![("content-type".to_string(), "text/html".to_string())],
-            body: r#"<html><body><h1 id="title">Hi</h1></body></html>"#.to_string(),
-            masked_headers: Vec::new(),
-            body_form: Default::default(),
-            api: String::new(),
-        });
-
-        extract_from_markup(&mut w, "h1#title", "pageTitle").expect("extraction succeeds");
-        assert_eq!(w.vars.get("pageTitle"), Some("Hi"));
-    }
-
-    #[test]
-    fn extract_from_markup_propagates_the_error_without_setting_the_variable() {
-        let mut w = world();
-        w.http.store_test_exchange(crate::http::Exchange {
-            method: "GET".to_string(),
-            url: "http://x.local/".to_string(),
-            req_headers: Vec::new(),
-            req_body: None,
-            status: 200,
-            resp_headers: vec![("content-type".to_string(), "text/html".to_string())],
-            body: r#"<html><body></body></html>"#.to_string(),
-            masked_headers: Vec::new(),
-            body_form: Default::default(),
-            api: String::new(),
-        });
-
-        let err = extract_from_markup(&mut w, ".missing", "pageTitle").unwrap_err();
-        assert!(err.message.contains("missing"), "{err}");
-        assert_eq!(w.vars.get("pageTitle"), None);
     }
 
     fn world_with(name: &str, value: &str) -> World {

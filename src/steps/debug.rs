@@ -1,8 +1,6 @@
 use crate::failure::StepError;
 use crate::world::World;
 
-use super::markup::{self, BodyKind};
-
 pub fn debug_on(w: &mut World) -> Result<(), StepError> {
     w.debug = true;
     Ok(())
@@ -24,24 +22,6 @@ fn headers_table(headers: &[(String, String)]) -> String {
         .map(|(k, v)| format!("{k:width$} : {v}"))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub fn print_headers(w: &World) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    debug_eprintln!(
-        w,
-        "=== Response headers ===\n{}",
-        headers_table(
-            &ex.resp_headers
-                .iter()
-                .map(|(name, value)| (
-                    name.clone(),
-                    crate::diagnostic::shown_header(&ex.masked_headers, name, value, &w.redactor)
-                ))
-                .collect::<Vec<_>>()
-        )
-    );
-    Ok(())
 }
 
 /// Rows as a `| a | b |` grid, each column padded to its longest cell.
@@ -143,57 +123,41 @@ fn highlight_inner(code: &str, extension: &str, colorize: bool) -> String {
     out
 }
 
-pub fn print_body(w: &World) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    match markup::classify(markup::content_type(&ex.resp_headers)) {
-        BodyKind::Json => {
-            let v = ex.json()?;
-            let pretty = serde_json::to_string_pretty(&v)
-                .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            // Masked before highlighting: colour codes may split what a
-            // masked value would otherwise match whole.
-            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
+/// A text as the debug prints show it. `json` is expected pretty-printed
+/// already and is masked by position and by value; `xml` and `html` are masked
+/// by value, then beautified; any other syntax is masked by value and kept as
+/// is. Masked before highlighting: colour codes may split what a masked value
+/// would otherwise match whole.
+pub(crate) fn render_text(
+    redactor: &crate::privacy::Redactor,
+    syntax: Option<&str>,
+    text: &str,
+) -> String {
+    match syntax {
+        Some("json") => highlight(&redactor.mask_json(text), "json"),
+        Some(markup @ ("xml" | "html")) => {
+            highlight(&beautify_markup(&redactor.mask(text)), markup)
         }
-        BodyKind::Xml => debug_eprintln!(
-            w,
-            "{}",
-            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "xml")
-        ),
-        BodyKind::Html => debug_eprintln!(
-            w,
-            "{}",
-            highlight(&beautify_markup(&w.redactor.mask(&ex.body)), "html")
-        ),
-        BodyKind::Plain => debug_eprintln!(w, "{}", ex.body),
+        _ => redactor.mask(text),
     }
-    Ok(())
 }
 
-pub fn print_body_as(w: &World, path: &str) -> Result<(), String> {
-    let ex = super::assert::last(w)?;
-    let kind = markup::classify(markup::content_type(&ex.resp_headers));
-    match kind {
-        BodyKind::Json => {
-            let root = ex.json()?;
-            let sub = bddkit_crate_json::path::read(&root, path).map_err(|e| e.to_string())?;
-            let pretty = serde_json::to_string_pretty(sub)
-                .map_err(|e| format!("failed to serialize JSON: {e}"))?;
-            debug_eprintln!(w, "{}", highlight(&w.redactor.mask_json(&pretty), "json"));
-        }
-        BodyKind::Xml | BodyKind::Html => {
-            debug_eprintln!(
-                w,
-                "{}",
-                markup::select(kind, &ex.body, path, false).map_err(|e| e.to_string())?
-            );
-        }
-        BodyKind::Plain => {
-            return Err(
-                "path selection is not supported: content-type is not JSON/XML/HTML".to_string(),
-            );
-        }
-    }
-    Ok(())
+/// A title line and the headers under it, aligned; a name listed as
+/// sensitive shows `***` whatever the value's length.
+pub(crate) fn render_headers(
+    redactor: &crate::privacy::Redactor,
+    title: &str,
+    headers: &[(String, String)],
+    sensitive_headers: &[String],
+) -> String {
+    let shown: Vec<_> = headers
+        .iter()
+        .map(|(name, value)| {
+            let value = crate::diagnostic::shown_header(sensitive_headers, name, value, redactor);
+            (name.clone(), value)
+        })
+        .collect();
+    format!("{title}\n{}", headers_table(&shown))
 }
 
 #[cfg(test)]

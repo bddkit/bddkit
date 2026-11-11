@@ -235,8 +235,6 @@ fn execute_step<'a>(
         if let (Some(group), Some(counters)) = (&leaf_group, &world.counters) {
             counters.leaf(group, started.elapsed());
         }
-        // Still the innermost step in flight: this is whose exchanges they are.
-        world.flush_evidence();
         world.trace.step_finished(
             result.as_ref().err().map(|error| error.kind),
             started.elapsed(),
@@ -264,40 +262,25 @@ async fn run_step(
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
             let args = args.expect("resolve interpolates every step but an include");
-            if id == StepId::AttachFile {
-                // Needs the directory of the file the step is written in,
-                // which `dispatch` does not carry — same reason as Include.
-                let base_dir = source.parent().unwrap_or(std::path::Path::new("."));
-                return crate::steps::api::attach_file(world, base_dir, args.cap(0), args.cap(1));
-            }
             match kind {
-                StepKind::Action => dispatch(world, id, &args, 0)
+                StepKind::Action => dispatch(world, id, &args)
                     .await
                     .map_err(AttemptError::into_error),
                 StepKind::Assertion(source_kind) => {
                     let Some(layer) = world.take_options() else {
-                        return dispatch(world, id, &args, 0)
+                        return dispatch(world, id, &args)
                             .await
                             .map_err(AttemptError::into_error);
                     };
                     let base = match source_kind {
                         OptionsSource::Global => world.options.clone(),
-                        OptionsSource::Http => world
-                            .http
-                            .options_for_last_response()
-                            .map_err(StepError::input)?
-                            .clone(),
-                        OptionsSource::Db => world.db.options().map_err(StepError::input)?.clone(),
                     };
                     let effective = base.apply(&layer).map_err(StepError::input)?;
                     let shown = reg.display_text(&step.text, &world.redactor);
                     let mut polling = Polling::new(&shown, &effective.polling);
                     let mut attempt = 0;
                     loop {
-                        let outcome = dispatch(world, id, &args, attempt).await;
-                        // A replay stored an exchange: it is evidence before
-                        // the attempt it belongs to is reported.
-                        world.flush_evidence();
+                        let outcome = dispatch(world, id, &args).await;
                         match outcome {
                             Ok(()) => return Ok(()),
                             Err(AttemptError::Fatal(error)) => return Err(error),
@@ -416,10 +399,12 @@ async fn run_step(
             } else {
                 None
             };
-            let effective = match &layer {
+            let mut effective = match &layer {
                 Some(layer) => base.apply(layer).map_err(StepError::input)?,
                 None => base,
             };
+            let source_dir =
+                crate::validate::source_dir(source.parent().unwrap_or(std::path::Path::new("")));
             let shown = reg.display_text(&step.text, &world.redactor);
             let mut polling = layer
                 .as_ref()
@@ -445,6 +430,7 @@ async fn run_step(
             loop {
                 let dispatch_dir = world.artifacts.next_dir();
                 let request = serde_json::to_string(&DispatchRequest {
+                    instance: &instance,
                     args: &args.caps,
                     docstring: args.docstring.as_ref(),
                     table: args.table.as_ref(),
@@ -458,6 +444,8 @@ async fn run_step(
                     } else {
                         Default::default()
                     },
+                    attempt: attempts + 1,
+                    source_dir: source_dir.clone(),
                 })
                 .map_err(|error| {
                     StepError::plugin(format!("failed to encode the plugin request: {error}"))
@@ -500,62 +488,100 @@ async fn run_step(
                 world
                     .plugins
                     .record(&group, &instance, lib, handle, per_worker);
-                // Every secret this reply carries is registered before
-                // anything else is read from it, on any status: the error,
-                // a diagnostic or a `not_yet` message may quote one.
+                // Everything this reply reveals is registered before anything
+                // else is read from it, on any status and in a fixed order
+                // (`plugin::reply::absorb`): the error, a diagnostic or a
+                // `not_yet` message may quote it.
                 let mut result = result;
-                for secret in &result.secrets {
-                    world.redactor.secret(secret);
-                }
-                // A diagnostic may also quote a value another one, or a
-                // published variable, marks as secret.
+                let blamed = Some((lib, handle));
+                let shown = crate::plugin::reply::absorb(&result, &world.redactor, &instance)
+                    .map_err(|why| StepError::plugin(why).with_handle(blamed))?;
+                // Read before anything is written, so a reply whose `output` is
+                // refused changes nothing and its diagnostics still show.
+                let output = crate::plugin::reply::outputs(&result).map_err(|why| {
+                    StepError::plugin(why)
+                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                        .with_handle(blamed)
+                })?;
                 if matches!(result.status, Status::Passed) {
                     // Variables are published only on success: an
                     // intermediate observation must not leak into the
                     // scenario.
-                    for (name, value) in std::mem::take(&mut result.vars) {
-                        world.vars.set(&name, value);
-                    }
+                    crate::plugin::reply::publish_vars(world, &mut result);
                 }
-                for diagnostic in &result.diagnostics {
-                    if diagnostic.kind == "json"
-                        && let Some(content) = &diagnostic.content
-                    {
-                        world.redactor.register(&world.redactor.json_hits(content));
-                    }
-                }
+                // Printed once per reply, after everything it revealed is
+                // registered, its variables included: a passing reply may
+                // quote a value it just stored under a sensitive name. A
+                // polled step prints once per attempt.
+                crate::plugin::reply::print_output(&output, &world.redactor);
+                let class = if matches!(result.status, Status::Passed) {
+                    None
+                } else {
+                    let (class, note) = crate::plugin::reply::class(&result, &plugins);
+                    world.warnings.extend(note);
+                    class
+                };
                 // Whatever the status: the console shows diagnostics only of
                 // a failure, the stream of every reply.
-                for diagnostic in &result.diagnostics {
-                    let notes =
-                        world
-                            .trace
-                            .diagnostic(&group, &instance, &dispatch_dir, diagnostic);
+                for diagnostic in &shown {
+                    let notes = diagnostic.emit(&world.trace, &group, &instance, &dispatch_dir);
                     world.warnings.extend(notes);
                 }
+                // The failing reply's diagnostics ride on the error, apart
+                // from its text.
+                let failure = |error: StepError| {
+                    error
+                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
+                        .with_handle(blamed)
+                };
 
                 match result.status {
                     Status::Passed => return Ok(()),
                     Status::Fatal => {
-                        return Err(StepError::plugin(result.render_failure(&world.redactor)));
+                        return Err(failure(StepError::new(
+                            class.unwrap_or(FailureKind::Plugin),
+                            result.message(),
+                        )));
                     }
                     Status::NotYet if !assertion => {
-                        return Err(StepError::plugin(format!(
-                            "a plugin action answered not_yet, which only an assertion may do: {}",
-                            result.render_failure(&world.redactor)
+                        return Err(failure(StepError::new(
+                            class.unwrap_or(FailureKind::Plugin),
+                            format!(
+                                "a plugin action answered not_yet, which only an assertion may do: {}",
+                                result.message()
+                            ),
                         )));
                     }
                     Status::NotYet => match &mut polling {
                         // Without an armed modifier there is no second
                         // attempt, so not_yet is simply a failure.
                         None => {
-                            return Err(StepError::assertion(
-                                result.render_failure(&world.redactor),
-                            ));
+                            return Err(failure(StepError::new(
+                                class.unwrap_or(FailureKind::Assertion),
+                                result.message(),
+                            )));
                         }
                         Some(polling) => {
-                            let error =
-                                StepError::assertion(result.render_failure(&world.redactor));
+                            let error = failure(StepError::new(
+                                class.unwrap_or(FailureKind::Assertion),
+                                result.message(),
+                            ));
+                            // `options_instance` is read from the first `not_yet` only.
+                            if attempts == 0
+                                && let Some(name) = &result.options_instance
+                            {
+                                // Before the first wait, so it already sleeps
+                                // this instance's interval.
+                                let base = plugins
+                                    .options_for(&group, name)
+                                    .map_err(|e| failure(StepError::plugin(e)))?;
+                                effective = match &layer {
+                                    Some(layer) => base.apply(layer),
+                                    None => Ok(base.clone()),
+                                }
+                                .map_err(|e| failure(StepError::plugin(e)))?;
+                                polling.retarget(&effective.polling);
+                            }
                             attempts += 1;
                             world.trace.attempt(attempts, &error.message);
                             polling.after_not_yet(&error).await?
@@ -569,7 +595,7 @@ async fn run_step(
 
 /// Runs `I include "<file>"` / `I include "<file>" scenario "<name>"`. The
 /// caller's `World` is reused in place — HTTP state, the current API
-/// resource, the DB connection, debug mode and every plugin instance carry
+/// resource, debug mode and every plugin instance carry
 /// over in both directions, because `reset_scenario` is never called here.
 /// Only `world.vars` is swapped for a fresh, isolated `VarStack`: the spec
 /// requires the caller's globals to be invisible inside the include, which a
@@ -773,7 +799,7 @@ fn run_include<'a>(
 }
 
 /// The SQL-NULL sentinel prints as `<<null>>` in debug output, never the raw
-/// NUL bytes — the same rule `steps/db.rs`'s debug lines already follow.
+/// NUL bytes.
 fn debug_display(value: &str) -> &str {
     if value == crate::vars::NULL_SENTINEL {
         "<<null>>"
@@ -786,12 +812,8 @@ fn debug_display(value: &str) -> &str {
 /// a single reference instead of six.
 pub struct RunContext {
     pub reg: Registry,
-    pub apis: Arc<crate::http::Apis>,
     pub generator: Arc<Generator>,
     pub filter: crate::feature::TagFilter,
-    pub db: Option<Arc<crate::db::Db>>,
-    pub default_db: String,
-    pub srp: Option<Arc<crate::srp::SrpParams>>,
     pub plugins: Option<Arc<crate::plugin::Plugins>>,
     pub options: Options,
     pub artifacts: Arc<crate::artifacts::Artifacts>,
@@ -814,16 +836,12 @@ pub struct RunContext {
 
 impl RunContext {
     // An aggregator for run-wide config: the parameter list grows with each
-    // resource (db, srp, …), a separate builder for a single constructor is overkill.
+    // resource (srp, …), a separate builder for a single constructor is overkill.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         reg: Registry,
-        apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         filter: crate::feature::TagFilter,
-        db: Option<Arc<crate::db::Db>>,
-        default_db: String,
-        srp: Option<Arc<crate::srp::SrpParams>>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
         options: Options,
         artifacts: Arc<crate::artifacts::Artifacts>,
@@ -836,12 +854,8 @@ impl RunContext {
         Self {
             counters,
             reg,
-            apis,
             generator,
             filter,
-            db,
-            default_db,
-            srp,
             plugins,
             options,
             artifacts,
@@ -894,16 +908,44 @@ impl RunContext {
     }
 }
 
+/// What the plugins add to a failing step's dump: the context of every handle
+/// the scenario dispatched to, in first-use order. The failing reply's own
+/// handle is left out when the reply already showed something in the dump, and
+/// asked like any other when it showed nothing (an assertion that sent no
+/// request). Called here, once, with the innermost step's error, so a macro or
+/// an include shows each context once.
+async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) -> Vec<String> {
+    // An interrupt's cleanup may already have dropped the handles.
+    let Some(plugins) = ctx.plugins.clone().filter(|_| !ctx.interrupted()) else {
+        return Vec::new();
+    };
+    let covered = error.handle.filter(|_| !error.diagnostics.is_empty());
+    let handles: Vec<_> = world
+        .plugins
+        .scenario_handles()
+        .iter()
+        .copied()
+        .filter(|handle| Some(*handle) != covered)
+        .collect();
+    if handles.is_empty() {
+        return Vec::new();
+    }
+    let replies = match tokio::task::spawn_blocking(move || plugins.failure_contexts(&handles))
+        .await
+    {
+        Ok(replies) => replies,
+        Err(_) => return vec!["failure context unavailable: the plugin task failed".to_string()],
+    };
+    crate::plugin::reply::context_dumps(replies, &world.redactor)
+}
+
 /// Runs one feature file. The variable frame is shared for the file; HTTP
 /// state is recreated for each scenario; the Background reruns before each
 /// one. Arguments are owned (`Arc`), not borrowed: a file is one `tokio`
 /// task, and `tokio::spawn` requires `'static`.
 pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResult {
     let mut world = World::new(
-        ctx.apis.clone(),
         ctx.generator.clone(),
-        crate::db::DbHandle::new(ctx.db.clone(), ctx.default_db.clone()),
-        ctx.srp.clone(),
         ctx.plugins.clone(),
         ctx.options.clone(),
         ctx.artifacts.clone(),
@@ -1003,12 +1045,13 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
                         ctx.reg.display_text(&step.text, &world.redactor),
                         e.message
                     ));
-                    if let Some(dump) = world
-                        .http
-                        .last()
-                        .and_then(|ex| ex.diagnostic(None).dump(&world.redactor))
-                    {
-                        msg.push_str(&format!("\n\n{dump}"));
+                    for dump in &e.diagnostics {
+                        msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
+                    }
+                    // Before the next scenario's reset: the plugins' state is
+                    // still the failing one's.
+                    for dump in failure_contexts(&world, &ctx, &e).await {
+                        msg.push_str(&format!("\n\n{}", world.redactor.mask(&dump)));
                     }
                     failure = Some((msg, e.kind));
                     StepStatus::Failed
@@ -1295,36 +1338,17 @@ pub async fn run_all(
 mod tests {
     use super::*;
     use crate::macros::MacroCatalog;
-    use crate::unique::UniqueKind;
     use std::path::PathBuf;
-
-    fn apis() -> Arc<crate::http::Apis> {
-        apis_at("http://example.test")
-    }
-
-    fn apis_at(base: &str) -> Arc<crate::http::Apis> {
-        let mut by_name = std::collections::HashMap::new();
-        by_name.insert(
-            "default".to_string(),
-            crate::http::ApiResource::new(base, 1, Vec::new(), Options::default()).unwrap(),
-        );
-        Arc::new(crate::http::Apis::new(by_name, Some("default".to_string())).unwrap())
-    }
 
     fn context_with(
         registry: Registry,
-        apis: Arc<crate::http::Apis>,
         generator: Arc<Generator>,
         plugins: Option<Arc<crate::plugin::Plugins>>,
     ) -> Arc<RunContext> {
         Arc::new(RunContext::new(
             registry,
-            apis,
             generator,
             crate::feature::TagFilter::new(&[]),
-            None,
-            String::new(),
-            None,
             plugins,
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -1333,7 +1357,7 @@ mod tests {
     }
 
     fn context(registry: Registry) -> Arc<RunContext> {
-        context_with(registry, apis(), Arc::new(Generator::new()), None)
+        context_with(registry, Arc::new(Generator::new()), None)
     }
 
     /// The fixture plugin, with one declared instance "a" that is also the
@@ -1363,13 +1387,12 @@ mod tests {
         let steps: Vec<_> = plugins
             .steps()
             .into_iter()
-            .map(|(lib, index, pattern, assertion, secret_groups)| {
+            .map(|(lib, index, declared, assertion)| {
                 (
                     lib,
                     index,
-                    pattern,
+                    declared,
                     assertion && force_action != Some(index),
-                    secret_groups,
                 )
             })
             .collect();
@@ -1387,10 +1410,7 @@ mod tests {
     fn echo_world(plugins: crate::plugin::Plugins) -> (World, Arc<crate::plugin::Plugins>) {
         let plugins = Arc::new(plugins);
         let world = World::new(
-            apis(),
             Arc::new(Generator::new()),
-            crate::db::DbHandle::new(None, String::new()),
-            None,
             Some(plugins.clone()),
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
@@ -1399,6 +1419,16 @@ mod tests {
     }
 
     async fn run_step(world: &mut World, reg: &Registry, text: &str) -> Result<(), String> {
+        run_step_error(world, reg, text)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    async fn run_step_error(
+        world: &mut World,
+        reg: &Registry,
+        text: &str,
+    ) -> Result<(), StepError> {
         let step = ExpandedStep {
             keyword: String::new(),
             text: text.to_string(),
@@ -1413,9 +1443,7 @@ mod tests {
             index: None,
             comment: None,
         };
-        execute_step(world, reg, &step, source, &generator, 0, origin)
-            .await
-            .map_err(|error| error.message)
+        execute_step(world, reg, &step, source, &generator, 0, origin).await
     }
 
     #[tokio::test]
@@ -1539,12 +1567,20 @@ mod tests {
         let plugins = echo_plugins();
         let reg = echo_registry(&plugins, None);
         let (mut world, _) = echo_world(plugins);
-        let error = run_step(&mut world, &reg, "the echo should fail")
+        let error = run_step_error(&mut world, &reg, "the echo should fail")
             .await
             .expect_err("the step is asked to fail");
-        assert!(error.contains("the echo step was asked to fail"), "{error}");
-        assert!(error.contains("echo state"), "{error}");
-        assert!(error.contains("prefix=p-"), "{error}");
+        assert!(
+            error.message.contains("the echo step was asked to fail"),
+            "{error}"
+        );
+        assert!(
+            !error.message.contains("echo state"),
+            "the message is the error alone: {error}"
+        );
+        let dump = error.diagnostics.join("\n");
+        assert!(dump.contains("echo state"), "{dump}");
+        assert!(dump.contains("prefix=p-"), "{dump}");
     }
 
     fn macro_catalog(name: &str, source: &str) -> MacroCatalog {
@@ -1753,7 +1789,7 @@ Feature: macro
     async fn macro_call_rejects_docstring_argument() {
         let registry = registry(
             "call-docstring",
-            "- step: I do business\n  do: [the response code is 200]\n",
+            "- step: I do business\n  do: [Show all variables]\n",
         );
         let result = run(
             r#"
@@ -1776,7 +1812,7 @@ Feature: macro
     async fn macro_call_rejects_table_argument() {
         let registry = registry(
             "call-table",
-            "- step: I do business\n  do: [the response code is 200]\n",
+            "- step: I do business\n  do: [Show all variables]\n",
         );
         let result = run(
             r#"
@@ -1820,7 +1856,6 @@ Feature: macro
             .expect("the plugin registry builds");
             let context = context_with(
                 registry,
-                apis(),
                 Arc::new(Generator::new()),
                 Some(Arc::new(plugins)),
             );
@@ -1884,29 +1919,28 @@ Feature: eventual assertion
             assert_eq!(Instant::now(), started);
         }
 
-        // moves-to: api
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[tokio::test(start_paused = true)]
         async fn a_retrying_assertion_prepares_unique_capture_once() {
-            // Real time and a real stub: the built-in path is the one under
-            // test, and a built-in retry needs a response it can re-request.
-            let app =
-                axum::Router::new().route("/state", axum::routing::get(|| async { "pending" }));
-            let (base, _server) = crate::http::tests::spawn_app(app).await;
-            let generator = Arc::new(Generator::new());
-            let context = context_with(
-                Registry::new().unwrap(),
-                apis_at(&base),
-                generator.clone(),
+            let plugins = echo_plugins();
+            let registry = Registry::with_macros_and_plugins(
+                MacroCatalog::default(),
+                &plugins.steps(),
+                &["echo".to_string()],
                 None,
-            );
-            let before = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
+            )
+            .expect("the plugin registry builds");
+            let generator = Arc::new(Generator::new());
+            let context = context_with(registry, generator.clone(), Some(Arc::new(plugins)));
+            let before = generator
+                .next(crate::unique::UniqueKind::Number)
+                .parse::<u64>()
+                .unwrap();
             let result = run_in(
                 r#"
 Feature: eventual assertion
   Scenario: stable preparation
-    When I request "/state"
-    And I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
-    Then the response body contains "<<unique(number)>>"
+    Given I expect the next assertion to pass within "1" seconds, checking every "100" milliseconds
+    Then the echo should not be ready yet declaring "<<unique(number)>>" secret
 "#,
                 context,
             )
@@ -1918,7 +1952,10 @@ Feature: eventual assertion
                 .and_then(|caps| caps[1].parse().ok())
                 .unwrap_or_else(|| panic!("no attempt count in {failure}"));
             assert!(attempts > 1, "the assertion was never retried: {failure}");
-            let after = generator.next(UniqueKind::Number).parse::<u64>().unwrap();
+            let after = generator
+                .next(crate::unique::UniqueKind::Number)
+                .parse::<u64>()
+                .unwrap();
 
             assert_eq!(after - before, 2, "unique() must be evaluated only once");
         }

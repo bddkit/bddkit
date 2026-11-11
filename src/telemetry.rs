@@ -606,10 +606,8 @@ mod tests {
     #[test]
     fn the_builtin_groups_are_the_ones_the_table_declares() {
         let groups: std::collections::BTreeSet<_> = builtin_groups().collect();
-        assert_eq!(
-            groups.into_iter().collect::<Vec<_>>(),
-            ["api", "db", "debug", "general", "srp", "vars"]
-        );
+        let expected = ["debug", "general", "vars"];
+        assert_eq!(groups.into_iter().collect::<Vec<_>>(), expected);
     }
 
     #[test]

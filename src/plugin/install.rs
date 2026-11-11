@@ -490,7 +490,7 @@ pub async fn latest_version(client: &reqwest::Client, github: &str, repo: &str) 
     Ok(version)
 }
 
-/// The ABI a release declares in its `bddkit-plugin.json` asset (`{"abi": 3}`),
+/// The ABI a release declares in its `bddkit-plugin.json` asset (`{"abi": 4}`),
 /// or `None` when it publishes none — the 404 is the answer, not a failure.
 pub async fn release_abi(
     client: &reqwest::Client,
@@ -533,7 +533,7 @@ pub fn abi_label(abis: &RangeInclusive<u32>) -> String {
 }
 
 /// The newest release of `repo` that speaks a plugin ABI in `abis` — the
-/// running host's `ABI_VERSION` as both ends, or the range the staged binary
+/// running host's `ABI_MIN..=ABI_VERSION`, or the range the staged binary
 /// of `bddkit upgrade` accepts: `Ok(Ok(version))`, or `Ok(Err(why))` when it
 /// has none yet — a refusal for `install`, a report for `update`. The index's
 /// `abi` map answers without a request, with the release under the highest key

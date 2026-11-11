@@ -1,12 +1,7 @@
-pub mod api;
-pub mod assert;
-pub mod db;
 pub mod debug;
 pub mod expression;
 pub mod help;
-mod markup;
 pub mod plugin;
-pub mod srp;
 mod suggest;
 pub mod vars;
 
@@ -19,54 +14,13 @@ use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepId {
-    // request
-    SetRequestHeader,
-    AddRequestHeader,
-    SetQueryParam,
-    SetRequestBody,
-    EmptyRequestBody,
-    SetFormParams,
-    AttachFile,
-    RequestPath,
-    RequestPathWithMethod,
-    UseApi,
     UsePluginInstance,
-    SignNextRequestWithHawk,
     ExpectEventually,
     ExpectWithin,
     ExpectWithinEvery,
-    // response checks
-    ResponseCode,
-    ResponseBodyContainsJson,
-    ResponseBodyEqualsJson,
-    ResponseArrayLength,
-    ResponseHeader,
-    ResponseHeaderContains,
-    ResponseHeaderNotContains,
-    ResponseHeaderMatches,
-    ResponseHeaderNotMatches,
-    JsonNodeExists,
-    JsonNodeNotExists,
-    JsonNodeIsNull,
-    JsonNodeNotNull,
-    ResponseBodyNotContainsJson,
-    JsonNodeNotContainsSubstring,
-    ResponseBodyEmpty,
-    ResponseBodyContains,
-    ResponseBodyNotContains,
-    ResponseBodyMatches,
-    ResponseBodyNotMatches,
-    ResponseBodyHasElement,
-    ResponseBodyHasElementWithText,
-    ResponseBodyNotHasElement,
     // variables
     SetVariable,
     SetVariableGlobal,
-    ExtractFromJson,
-    ExtractFromJsonGlobal,
-    ExtractFromCookies,
-    ExtractFromCookiesGlobal,
-    ExtractFromMarkup,
     VariableEquals,
     VariableNotEquals,
     VariableContains,
@@ -82,38 +36,15 @@ pub enum StepId {
     ExtractRegexFromVariable,
     ExtractRegexFromVariableGlobal,
     EncryptWithAes,
-    // database
-    UseConnection,
+    // debug
     DebugOn,
     DebugOff,
     EvidenceOn,
     EvidenceOff,
-    HaveWith,
-    HaveWhere,
-    HaveMulti,
-    Update,
-    DeleteWhere,
-    DeleteAll,
-    ExtractFromDb,
-    ShouldHaveWith,
-    ShouldHaveTable,
-    ShouldNotHaveWith,
-    ShouldNotHaveTable,
-    CallProcedure,
-    CallFunction,
-    GetSequence,
     Sleep,
     ShowAllVariables,
     ShowVariable,
-    PrintResponseHeaders,
-    PrintResponseBody,
-    PrintResponseBodyAsPath,
     PrintTable,
-    // SRP
-    SrpVerifier,
-    SrpVerifierWithSalt,
-    SrpStartLogin,
-    SrpCompleteLogin,
     // include
     Include,
     IncludeScenario,
@@ -122,8 +53,6 @@ pub enum StepId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptionsSource {
     Global,
-    Http,
-    Db,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +64,7 @@ pub enum StepKind {
 pub struct StepDef {
     pub id: StepId,
     /// The resource this step belongs to, and the heading `bddkit steps list`
-    /// prints it under: `api`, `db`, `srp`, `vars`, `debug`, or `general` for
+    /// prints it under: `vars`, `debug`, or `general` for
     /// the few steps that belong to no resource at all.
     pub group: &'static str,
     /// A Cucumber Expression with bddkit's parameter extension: `{name}` is a
@@ -187,66 +116,6 @@ const fn assertion(
 /// is declared twice, without and with `with prefix "{prefix}"`.
 pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
-        StepId::SetRequestHeader,
-        "api",
-        r#"the "{name}" request header is "{value}""#,
-        "sets a header on the request being built, replacing any previous value",
-    ),
-    action(
-        StepId::AddRequestHeader,
-        "api",
-        r#"I add "{value}" to the "{name}" request header"#,
-        "appends another value to a request header, keeping what is already there",
-    ),
-    action(
-        StepId::SetQueryParam,
-        "api",
-        r#"the query parameter "{name}" is "{value}""#,
-        "sets a query string parameter on the request being built",
-    ),
-    action(
-        StepId::SetRequestBody,
-        "api",
-        "the request body is:",
-        "sets the request body from the docstring below the step",
-    ),
-    action(
-        StepId::EmptyRequestBody,
-        "api",
-        "the request body is empty",
-        "clears the request body built so far",
-    ),
-    action(
-        StepId::SetFormParams,
-        "api",
-        "the request form parameters are:",
-        "sends the table below as form-encoded parameters instead of a body",
-    ),
-    action(
-        StepId::AttachFile,
-        "api",
-        r#"I attach the file "{file}" to the request as "{name}""#,
-        "attaches a file, path relative to this feature file, as a multipart/form-data part",
-    ),
-    action(
-        StepId::RequestPathWithMethod,
-        "api",
-        r#"I request "{path}" using HTTP {method:method}"#,
-        "performs the request against the current API with this method",
-    ),
-    action(
-        StepId::RequestPath,
-        "api",
-        r#"I request "{path}""#,
-        "performs a GET request against the current API",
-    ),
-    action(
-        StepId::SignNextRequestWithHawk,
-        "api",
-        r#"I sign the next request with Hawk id "{id}" and key "{key:secret}""#,
-        "signs the next request with these Hawk credentials, and every replay of it",
-    ),
-    action(
         StepId::ExpectEventually,
         "general",
         "I expect the next assertion to pass eventually",
@@ -264,167 +133,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"I expect the next assertion to pass within {seconds:uint} seconds"#,
         "lets the next assertion retry for this long, at the configured interval",
     ),
-    assertion(
-        StepId::ResponseCode,
-        "api",
-        "the response code is {code:uint}",
-        "asserts the HTTP status code of the last response",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyContainsJson,
-        "api",
-        "the response body contains JSON:",
-        "asserts the response body contains this JSON — object subsets pass, array order is ignored",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyEqualsJson,
-        "api",
-        "the response body equals JSON:",
-        "asserts the response body equals this JSON exactly, key for key and element for element",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseArrayLength,
-        "api",
-        "the response body is a JSON array of length {length:uint}",
-        "asserts the response body is a JSON array holding this many elements",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseHeader,
-        "api",
-        r#"the "{name}" response header is "{value}""#,
-        "asserts a response header holds exactly this value — on any line, when the server sent the header more than once",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseHeaderContains,
-        "api",
-        r#"the "{name}" response header contains "{text:any}""#,
-        "asserts a response header's value contains this text — on any line, when the header repeats",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseHeaderNotContains,
-        "api",
-        r#"the "{name}" response header does not contain "{text:any}""#,
-        "asserts no line of a response header contains this text — passes when the header is absent",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseHeaderMatches,
-        "api",
-        r#"the "{name}" response header matches "{pattern:any}""#,
-        "asserts a response header's value matches this regular expression — on any line, when the header repeats",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseHeaderNotMatches,
-        "api",
-        r#"the "{name}" response header does not match "{pattern:any}""#,
-        "asserts no line of a response header matches this regular expression — passes when the header is absent",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::JsonNodeExists,
-        "api",
-        r#"the JSON node "{path}" should exist"#,
-        "asserts the response body has a node at this JSON path",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::JsonNodeNotExists,
-        "api",
-        r#"the JSON node "{path}" should not exist"#,
-        "asserts the response body has no node at this JSON path — a null value still counts as existing",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::JsonNodeIsNull,
-        "api",
-        r#"the JSON node "{path}" should be null"#,
-        "asserts the node at this JSON path exists and is JSON null",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::JsonNodeNotNull,
-        "api",
-        r#"the JSON node "{path}" should not be null"#,
-        "asserts the node at this JSON path exists and is not JSON null",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyNotContainsJson,
-        "api",
-        "the response body does not contain JSON:",
-        "asserts the response body does not contain this JSON — same subset/order-independent matching as `contains`, inverted",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::JsonNodeNotContainsSubstring,
-        "api",
-        r#"the JSON node "{path}" should not contain "{substring}""#,
-        "asserts a string node does not contain this substring",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyEmpty,
-        "api",
-        "the response body should be empty",
-        "asserts the response body is empty",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyContains,
-        "api",
-        r#"the response body contains "{text}""#,
-        "asserts the raw response body contains this text — works for any content type",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyNotContains,
-        "api",
-        r#"the response body does not contain "{text}""#,
-        "asserts the raw response body does not contain this text",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyMatches,
-        "api",
-        r#"the response body matches "{pattern}""#,
-        "asserts the raw response body matches this regular expression",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyNotMatches,
-        "api",
-        r#"the response body does not match "{pattern}""#,
-        "asserts the raw response body does not match this regular expression",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyHasElement,
-        "api",
-        r#"the response body has element "{selector}""#,
-        "asserts an HTML (CSS selector) or XML (XPath) element matches in the response body",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyHasElementWithText,
-        "api",
-        r#"the response body has element "{selector}" with text "{text}""#,
-        "asserts the matched elements' text, newline-joined if more than one, equals this value exactly",
-        OptionsSource::Http,
-    ),
-    assertion(
-        StepId::ResponseBodyNotHasElement,
-        "api",
-        r#"the response body does not have element "{selector}""#,
-        "asserts no element matches this selector in the response body",
-        OptionsSource::Http,
-    ),
     action(
         StepId::SetVariableGlobal,
         "vars",
@@ -436,36 +144,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "vars",
         r#"set variable "{name}" to "{value}""#,
         "sets a variable for the whole feature file",
-    ),
-    action(
-        StepId::ExtractFromJsonGlobal,
-        "vars",
-        r#"extract "{path}" from JSON as "{name}" global"#,
-        "reads a JSON path of the response into a variable the whole file can see",
-    ),
-    action(
-        StepId::ExtractFromJson,
-        "vars",
-        r#"extract "{path}" from JSON as "{name}""#,
-        "reads a JSON path of the response into a variable",
-    ),
-    action(
-        StepId::ExtractFromCookiesGlobal,
-        "vars",
-        r#"extract "{cookie}" from cookies as "{name}" global"#,
-        "reads a response cookie into a variable the whole file can see",
-    ),
-    action(
-        StepId::ExtractFromCookies,
-        "vars",
-        r#"extract "{cookie}" from cookies as "{name}""#,
-        "reads a response cookie into a variable",
-    ),
-    action(
-        StepId::ExtractFromMarkup,
-        "vars",
-        r#"extract "{selector}" from response body as "{name}""#,
-        "reads the matched elements' text, newline-joined if more than one, into a variable",
     ),
     assertion(
         StepId::VariableNotEquals,
@@ -568,18 +246,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "encrypts a value with an AES key and stores the result in a variable",
     ),
     action(
-        StepId::UseApi,
-        "api",
-        r#"I use "{name}" api"#,
-        "switches to another API resource and its default headers, until the scenario ends",
-    ),
-    action(
-        StepId::UseConnection,
-        "db",
-        r#"I use "{name}" connection"#,
-        "switches to another database connection, until the scenario ends",
-    ),
-    action(
         StepId::DebugOn,
         "debug",
         "I am in debug mode",
@@ -604,94 +270,6 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "ends the mark set earlier in the scenario",
     ),
     action(
-        StepId::HaveWhere,
-        "db",
-        r#"I have "{table}" where:"#,
-        "inserts one row per line of the table below, its header naming the columns",
-    ),
-    action(
-        StepId::HaveWith,
-        "db",
-        r#"I have "{table}" with "{pairs}""#,
-        "inserts one row, filling required columns the pairs omit from the table schema",
-    ),
-    action(
-        StepId::HaveMulti,
-        "db",
-        "I have:",
-        "inserts rows into several tables, the first column of the table below naming each one",
-    ),
-    action(
-        StepId::Update,
-        "db",
-        r#"I update "{table}" with "{pairs}" where "{condition}""#,
-        "updates matching rows and stores the affected count in updated_<table>",
-    ),
-    action(
-        StepId::DeleteAll,
-        "db",
-        r#"I delete all "{table}""#,
-        "wipes the whole table — no WHERE, and no awareness of files running in parallel",
-    ),
-    action(
-        StepId::DeleteWhere,
-        "db",
-        r#"I delete "{table}" where "{condition}""#,
-        "deletes matching rows and stores the affected count in deleted_<table>",
-    ),
-    action(
-        StepId::ExtractFromDb,
-        "db",
-        r#"I extract "{column}" from "{table}" with "{condition}" as "{name}""#,
-        "reads a column of the first matching row into a variable",
-    ),
-    assertion(
-        StepId::ShouldNotHaveTable,
-        "db",
-        r#"I should not have "{table}" with:"#,
-        "asserts no row matches any line of the table below",
-        OptionsSource::Db,
-    ),
-    assertion(
-        StepId::ShouldNotHaveWith,
-        "db",
-        r#"I should not have "{table}" with "{pairs}""#,
-        "asserts no row matches these column values",
-        OptionsSource::Db,
-    ),
-    assertion(
-        StepId::ShouldHaveTable,
-        "db",
-        r#"I should have "{table}" with:"#,
-        "asserts a row matches each line of the table below",
-        OptionsSource::Db,
-    ),
-    assertion(
-        StepId::ShouldHaveWith,
-        "db",
-        r#"I should have "{table}" with "{pairs}""#,
-        "asserts at least one row matches these column values",
-        OptionsSource::Db,
-    ),
-    action(
-        StepId::CallProcedure,
-        "db",
-        r#"I call procedure "{name}" with "{arguments}""#,
-        "calls a stored procedure with these arguments",
-    ),
-    action(
-        StepId::CallFunction,
-        "db",
-        r#"I call function "{name}" with "{arguments}" as "{variable}""#,
-        "calls a function and stores its return value in a variable",
-    ),
-    action(
-        StepId::GetSequence,
-        "db",
-        r#"I get next value of sequence "{name}" as "{variable}""#,
-        "advances a sequence and stores the new value in a variable",
-    ),
-    action(
         StepId::Sleep,
         "general",
         r#"I sleep {seconds:uint} seconds"#,
@@ -710,52 +288,10 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "prints one variable to stderr, failing if it is not set",
     ),
     action(
-        StepId::PrintResponseHeaders,
-        "debug",
-        "Print response headers",
-        "prints the headers of the last response to stderr",
-    ),
-    action(
-        StepId::PrintResponseBody,
-        "debug",
-        "Print response body",
-        "prints the body of the last response to stderr, highlighted",
-    ),
-    action(
-        StepId::PrintResponseBodyAsPath,
-        "debug",
-        r#"Print response body as "{path}""#,
-        "prints one JSON path, XPath (XML) or CSS selector (HTML) selection of the last response to stderr",
-    ),
-    action(
         StepId::PrintTable,
         "debug",
         "Print table:",
         "prints the table below to stderr with variables filled in and columns aligned",
-    ),
-    action(
-        StepId::SrpVerifierWithSalt,
-        "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" and salt "{salt}" as "{prefix}""#,
-        "computes an SRP verifier from this salt into <prefix>_salt and <prefix>_verifier",
-    ),
-    action(
-        StepId::SrpVerifier,
-        "srp",
-        r#"I generate an SRP verifier for "{username}" with password "{password:secret}" as "{prefix}""#,
-        "computes an SRP verifier from a fresh salt into <prefix>_salt and <prefix>_verifier",
-    ),
-    action(
-        StepId::SrpStartLogin,
-        "srp",
-        r#"I start an SRP login as "{prefix}""#,
-        "starts an SRP login, storing the client values in <prefix>_a and <prefix>_A",
-    ),
-    action(
-        StepId::SrpCompleteLogin,
-        "srp",
-        r#"I complete SRP login "{prefix}" for "{username}" with password "{password:secret}" salt "{salt}" and "{server_public}""#,
-        "answers the server challenge into <prefix>_M1, <prefix>_M2 and <prefix>_sessionKey",
     ),
     action(
         StepId::Include,
@@ -839,12 +375,26 @@ struct Entry {
     /// `optional` one owns two capture groups, see `Param::groups`). A
     /// group-switch regex has none; a plugin's has them only up to its last
     /// secret group (`expression::plugin_params`). Captures of either are
-    /// never type-checked.
+    /// never type-checked; a plugin's `expression` is an expression like any
+    /// other.
     params: Vec<expression::Param>,
     /// What `steps list` prints for this entry.
     template: String,
-    /// `expression::Compiled::loose`; `None` for a plugin or group-switch regex.
+    /// `expression::Compiled::loose`; `None` for a plugin's or a group-switch
+    /// regex.
     loose: Option<Regex>,
+}
+
+impl Entry {
+    fn compiled(target: StepTarget, compiled: &expression::Compiled) -> Self {
+        Self {
+            target,
+            regex: compiled.regex.clone(),
+            params: compiled.params.clone(),
+            template: compiled.template.clone(),
+            loose: compiled.loose.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -883,41 +433,54 @@ impl Registry {
     /// time, macro bodies included.
     pub fn with_macros_and_plugins(
         catalog: MacroCatalog,
-        plugin_steps: &[(usize, usize, String, bool, Vec<usize>)],
+        plugin_steps: &[(usize, usize, crate::plugin::Declared, bool)],
         plugin_groups: &[String],
         plugins: Option<std::sync::Arc<crate::plugin::Plugins>>,
     ) -> Result<Self, String> {
         let mut entries = Vec::with_capacity(BUILTIN_STEPS.len());
         for (def, compiled) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
-            entries.push(Entry {
-                target: StepTarget::Builtin {
-                    id: def.id,
-                    kind: def.kind,
-                },
-                regex: compiled.regex.clone(),
-                params: compiled.params.clone(),
-                template: compiled.template.clone(),
-                loose: compiled.loose.clone(),
-            });
+            let target = StepTarget::Builtin {
+                id: def.id,
+                kind: def.kind,
+            };
+            entries.push(Entry::compiled(target, compiled));
         }
         for (index, definition) in catalog.definitions.iter().enumerate() {
-            entries.push(Entry {
-                target: StepTarget::Macro(index),
-                regex: definition.compiled.regex.clone(),
-                params: definition.compiled.params.clone(),
-                template: definition.compiled.template.clone(),
-                loose: definition.compiled.loose.clone(),
-            });
+            entries.push(Entry::compiled(
+                StepTarget::Macro(index),
+                &definition.compiled,
+            ));
         }
         let mut registry = Self {
             entries,
             macros: catalog.definitions,
             plugins,
         };
-        for (lib, step, pattern, assertion, secret_groups) in plugin_steps {
-            registry.add_plugin_step(*lib, *step, pattern, *assertion, secret_groups)?;
+        let mut expressions = Vec::new();
+        for (lib, step, declared, assertion) in plugin_steps {
+            match declared {
+                crate::plugin::Declared::Pattern {
+                    text,
+                    secret_groups,
+                } => registry.add_plugin_step(*lib, *step, text, *assertion, secret_groups)?,
+                crate::plugin::Declared::Expression(compiled) => {
+                    let target = StepTarget::Plugin {
+                        lib: *lib,
+                        step: *step,
+                        assertion: *assertion,
+                    };
+                    registry.entries.push(Entry::compiled(target, compiled));
+                    expressions.push(compiled);
+                }
+            }
         }
-        registry.add_use_group_step(plugin_groups)?;
+        // A deprecated word switches exactly as the group it names does.
+        let mut words = plugin_groups.to_vec();
+        if let Some(plugins) = &registry.plugins {
+            words.extend(plugins.deprecated_words().map(str::to_string));
+        }
+        registry.add_use_group_step(&words)?;
+        registry.check_plugin_conflicts(&expressions)?;
         registry.validate_macros()?;
         Ok(registry)
     }
@@ -952,10 +515,15 @@ impl Registry {
         match hits.len() {
             0 => Ok(None),
             1 => Ok(Some(hits.remove(0))),
-            _ => Err(format!(
-                "step {text:?} matches several definitions: {:?}",
-                hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
-            )),
+            _ => Err({
+                for (_, caps, params) in &hits {
+                    record_literal_secrets(params, caps);
+                }
+                format!(
+                    "step {text:?} matches several definitions: {:?}",
+                    hits.iter().map(|(target, _, _)| target).collect::<Vec<_>>()
+                )
+            }),
         }
     }
 
@@ -967,6 +535,7 @@ impl Registry {
         let refused = self.entries.iter().find_map(|entry| {
             let caps = entry.loose.as_ref()?.captures(text)?;
             let values = expression::arguments(&entry.params, &caps);
+            record_literal_secrets(&entry.params, &values);
             entry
                 .params
                 .iter()
@@ -1037,6 +606,23 @@ impl Registry {
         &self.macros
     }
 
+    /// `(word, name, replacement group)` when `text` is `I use "<name>" <word>`
+    /// with a plugin's deprecated word, for `doctor`'s hint. `run` never asks.
+    pub fn deprecated_switch(&self, text: &str) -> Option<(String, String, String)> {
+        let Ok(Some((
+            StepTarget::Builtin {
+                id: StepId::UsePluginInstance,
+                ..
+            },
+            caps,
+        ))) = self.find(text)
+        else {
+            return None;
+        };
+        let group = self.plugins.as_ref()?.resolve_group(&caps[1]).to_string();
+        (group != caps[1]).then(|| (caps[1].clone(), caps[0].clone(), group))
+    }
+
     pub fn macro_def(&self, index: usize) -> &MacroDef {
         &self.macros[index]
     }
@@ -1075,8 +661,8 @@ impl Registry {
 
     /// Registers `I use "<name>" <group>` over the groups the loaded plugins
     /// actually claim. The alternation is built from the real group names, so
-    /// the pattern cannot overlap `I use "<name>" api` or
-    /// `I use "<conn>" connection` and no existing .feature changes meaning.
+    /// the pattern cannot overlap `I use "<name>" api` and no existing
+    /// .feature changes meaning.
     pub fn add_use_group_step(&mut self, groups: &[String]) -> Result<(), String> {
         if groups.is_empty() {
             return Ok(());
@@ -1099,6 +685,41 @@ impl Registry {
             params: Vec::new(),
             loose: None,
         });
+        Ok(())
+    }
+
+    /// A plugin's expression meets the check a macro does. A `pattern` is an
+    /// arbitrary regex with no token model, so `find` reports its overlaps.
+    fn check_plugin_conflicts(&self, expressions: &[&expression::Compiled]) -> Result<(), String> {
+        for (index, left) in expressions.iter().enumerate() {
+            for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
+                if expression::conflicts(&left.variants, &builtin.variants) {
+                    return Err(format!(
+                        "plugin step {:?} conflicts with builtin step {:?}",
+                        left.template, def.expression
+                    ));
+                }
+            }
+            for definition in &self.macros {
+                if expression::conflicts(&definition.compiled.variants, &left.variants) {
+                    return Err(format!(
+                        "macro step {:?} from {}:{} conflicts with plugin step {:?}",
+                        definition.step,
+                        definition.source.display(),
+                        definition.line,
+                        left.template
+                    ));
+                }
+            }
+            for right in expressions.iter().skip(index + 1) {
+                if expression::conflicts(&left.variants, &right.variants) {
+                    return Err(format!(
+                        "plugin step {:?} conflicts with plugin step {:?}",
+                        left.template, right.template
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1134,27 +755,6 @@ impl Registry {
         for (index, definition) in self.macros.iter().enumerate() {
             for step in &definition.body {
                 match self.find(&step.text)? {
-                    Some((
-                        StepTarget::Builtin {
-                            id: StepId::AttachFile,
-                            ..
-                        },
-                        caps,
-                    )) => {
-                        // Relative to the macro's own file, as at run time.
-                        let base = definition
-                            .source
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."));
-                        crate::validate::check_attached_file(&caps[0], base).map_err(|e| {
-                            format!(
-                                "{e}, in macro {:?} from {}:{}",
-                                definition.step,
-                                definition.source.display(),
-                                definition.line,
-                            )
-                        })?;
-                    }
                     Some((StepTarget::Builtin { .. }, _)) => {}
                     Some((target @ StepTarget::Plugin { .. }, caps)) => {
                         // ponytail: a file included from a macro body is not
@@ -1166,6 +766,10 @@ impl Registry {
                             step.docstring.as_deref(),
                             // A macro body step has no table.
                             None,
+                            definition
+                                .source
+                                .parent()
+                                .unwrap_or(std::path::Path::new(".")),
                         )
                         .map_err(|e| {
                             format!(
@@ -1250,6 +854,21 @@ impl Registry {
     }
 }
 
+/// A message about to quote a step that no single entry matched cannot hide a
+/// secret by position, as `Registry::display_text` does, so the literal goes to
+/// the process sink, which every such message passes through.
+// ponytail: masked by value, so `privacy.min_length` applies and a shorter
+// secret prints; carry the spans into the message if that ever matters.
+fn record_literal_secrets(params: &[expression::Param], values: &[String]) {
+    for (_, value) in params
+        .iter()
+        .zip(values)
+        .filter(|(param, value)| param.ty.secret && !crate::vars::is_whole_slot(value))
+    {
+        crate::privacy::record_value(value);
+    }
+}
+
 fn macro_depth(index: usize, graph: &[Vec<usize>], memo: &mut [Option<usize>]) -> usize {
     if let Some(depth) = memo[index] {
         return depth;
@@ -1277,21 +896,8 @@ impl Args {
 }
 
 /// One `match` instead of boxed futures and trait objects.
-pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> AttemptResult {
+pub async fn dispatch(w: &mut World, id: StepId, a: &Args) -> AttemptResult {
     let result: Result<(), StepError> = match id {
-        StepId::SetRequestHeader => api::set_header(w, a.cap(0), a.cap(1)),
-        // The step names the value before the name: `I add "V" to the "H" request header`.
-        StepId::AddRequestHeader => api::add_header(w, a.cap(1), a.cap(0)),
-        StepId::SetQueryParam => api::set_query(w, a.cap(0), a.cap(1)),
-        StepId::SetRequestBody => api::set_body(w, a.docstring.as_ref()),
-        StepId::EmptyRequestBody => api::clear_body(w),
-        StepId::SetFormParams => api::set_form(w, a.table.as_ref()),
-        StepId::SignNextRequestWithHawk => api::sign_next_request_with_hawk(w, a.cap(0), a.cap(1)),
-        StepId::RequestPath => api::request(w, a.cap(0), "GET").await,
-        StepId::RequestPathWithMethod => {
-            let (p, m) = (a.cap(0).to_string(), a.cap(1).to_string());
-            api::request(w, &p, &m).await
-        }
         StepId::ExpectEventually => {
             w.arm_options(OptionsLayer::default());
             Ok(())
@@ -1323,105 +929,8 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
                 Ok(())
             }
         }
-        StepId::ResponseCode => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_code(w, a.cap(0));
-        }
-        StepId::ResponseHeader => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header(w, a.cap(0), a.cap(1));
-        }
-        StepId::ResponseHeaderContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_contains(w, a.cap(0), a.cap(1), false);
-        }
-        StepId::ResponseHeaderNotContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_contains(w, a.cap(0), a.cap(1), true);
-        }
-        StepId::ResponseHeaderMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_matches(w, a.cap(0), a.cap(1), false);
-        }
-        StepId::ResponseHeaderNotMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::response_header_matches(w, a.cap(0), a.cap(1), true);
-        }
-        StepId::ResponseBodyContainsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_contains_json(w, a.docstring.as_ref());
-        }
-        StepId::ResponseBodyEqualsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_equals_json(w, a.docstring.as_ref());
-        }
-        StepId::ResponseArrayLength => {
-            assert::replay_response(w, attempt).await?;
-            return assert::array_length(w, a.cap(0));
-        }
-        StepId::JsonNodeExists => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_exists(w, a.cap(0));
-        }
-        StepId::JsonNodeNotExists => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_exists(w, a.cap(0));
-        }
-        StepId::JsonNodeIsNull => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_is_null(w, a.cap(0));
-        }
-        StepId::JsonNodeNotNull => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_null(w, a.cap(0));
-        }
-        StepId::ResponseBodyNotContainsJson => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_contains_json(w, a.docstring.as_ref());
-        }
-        StepId::JsonNodeNotContainsSubstring => {
-            assert::replay_response(w, attempt).await?;
-            return assert::json_node_not_contains(w, a.cap(0), a.cap(1));
-        }
-        StepId::ResponseBodyEmpty => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_empty(w);
-        }
-        StepId::ResponseBodyContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_contains_text(w, a.cap(0));
-        }
-        StepId::ResponseBodyNotContains => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_contains_text(w, a.cap(0));
-        }
-        StepId::ResponseBodyMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_matches(w, a.cap(0));
-        }
-        StepId::ResponseBodyNotMatches => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_matches(w, a.cap(0));
-        }
-        StepId::ResponseBodyHasElement => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_has_element(w, a.cap(0));
-        }
-        StepId::ResponseBodyHasElementWithText => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_has_element_with_text(w, a.cap(0), a.cap(1));
-        }
-        StepId::ResponseBodyNotHasElement => {
-            assert::replay_response(w, attempt).await?;
-            return assert::body_not_has_element(w, a.cap(0));
-        }
         StepId::SetVariable => vars::set_variable(w, a.cap(0), a.cap(1), false),
         StepId::SetVariableGlobal => vars::set_variable(w, a.cap(0), a.cap(1), true),
-        StepId::ExtractFromJson => vars::extract_from_json(w, a.cap(0), a.cap(1), false),
-        StepId::ExtractFromJsonGlobal => vars::extract_from_json(w, a.cap(0), a.cap(1), true),
-        StepId::ExtractFromCookies => vars::extract_from_cookies(w, a.cap(0), a.cap(1), false),
-        StepId::ExtractFromCookiesGlobal => vars::extract_from_cookies(w, a.cap(0), a.cap(1), true),
-        StepId::ExtractFromMarkup => vars::extract_from_markup(w, a.cap(0), a.cap(1)),
         StepId::VariableEquals => {
             return vars::variable_equals(w, a.cap(0), a.cap(1), false);
         }
@@ -1455,11 +964,7 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
             vars::extract_regex_from_variable(w, a.cap(0), a.cap(1), a.cap(2), true)
         }
         StepId::EncryptWithAes => vars::encrypt_with_aes(w, a.cap(0), a.cap(1), a.cap(2)),
-        StepId::UseApi => api::use_api(w, a.cap(0)),
-        StepId::UsePluginInstance => {
-            plugin::use_instance(w, a.cap(1), a.cap(0)).map_err(StepError::input)
-        }
-        StepId::UseConnection => db::use_connection(w, a.cap(0)),
+        StepId::UsePluginInstance => plugin::use_instance(w, a.cap(1), a.cap(0)).await,
         StepId::DebugOn => debug::debug_on(w),
         StepId::DebugOff => debug::debug_off(w),
         StepId::EvidenceOn => {
@@ -1470,52 +975,12 @@ pub async fn dispatch(w: &mut World, id: StepId, a: &Args, attempt: u64) -> Atte
             w.trace.mark(false);
             Ok(())
         }
-        StepId::HaveWith => db::have_with(w, a.cap(0), a.cap(1)).await,
-        StepId::HaveWhere => db::have_where(w, a.cap(0), a.table.as_ref()).await,
-        StepId::HaveMulti => db::have_multi(w, a.table.as_ref()).await,
-        StepId::Update => db::update(w, a.cap(0), a.cap(1), a.cap(2)).await,
-        StepId::DeleteWhere => db::delete_where(w, a.cap(0), a.cap(1)).await,
-        StepId::DeleteAll => db::delete_all(w, a.cap(0)).await,
-        StepId::ExtractFromDb => {
-            db::extract_from_db(w, a.cap(0), a.cap(1), a.cap(2), a.cap(3)).await
-        }
-        StepId::ShouldHaveWith => return db::should_have(w, a.cap(0), a.cap(1)).await,
-        StepId::ShouldHaveTable => {
-            return db::should_have_table(w, a.cap(0), a.table.as_ref()).await;
-        }
-        StepId::ShouldNotHaveWith => return db::should_not_have(w, a.cap(0), a.cap(1)).await,
-        StepId::ShouldNotHaveTable => {
-            return db::should_not_have_table(w, a.cap(0), a.table.as_ref()).await;
-        }
-        StepId::CallProcedure => db::call_procedure(w, a.cap(0), a.cap(1)).await,
-        StepId::CallFunction => db::call_function(w, a.cap(0), a.cap(1), a.cap(2)).await,
-        StepId::GetSequence => db::get_sequence(w, a.cap(0), a.cap(1)).await,
         StepId::Sleep => sleep(a.cap(0)).await.map_err(StepError::input),
         StepId::ShowAllVariables => show_all_variables(w).map_err(StepError::input),
         StepId::ShowVariable => show_variable(w, a.cap(0)).map_err(StepError::input),
-        StepId::PrintResponseHeaders => debug::print_headers(w).map_err(StepError::input),
-        StepId::PrintResponseBody => debug::print_body(w).map_err(StepError::input),
-        StepId::PrintResponseBodyAsPath => {
-            debug::print_body_as(w, a.cap(0)).map_err(StepError::input)
-        }
         StepId::PrintTable => debug::print_table(w, a.table.as_ref()).map_err(StepError::input),
-        StepId::SrpVerifier => {
-            srp::generate_verifier(w, a.cap(0), a.cap(1), None, a.cap(2)).map_err(StepError::input)
-        }
-        StepId::SrpVerifierWithSalt => {
-            srp::generate_verifier(w, a.cap(0), a.cap(1), Some(a.cap(2)), a.cap(3))
-                .map_err(StepError::input)
-        }
-        StepId::SrpStartLogin => srp::start_login(w, a.cap(0)).map_err(StepError::input),
-        StepId::SrpCompleteLogin => {
-            srp::complete_login(w, a.cap(0), a.cap(1), a.cap(2), a.cap(3), a.cap(4))
-                .map_err(StepError::input)
-        }
         StepId::Include | StepId::IncludeScenario => {
             unreachable!("execute_step intercepts Include/IncludeScenario before calling dispatch")
-        }
-        StepId::AttachFile => {
-            unreachable!("execute_step intercepts AttachFile before calling dispatch")
         }
     };
     result.map_err(AttemptError::Fatal)
@@ -1616,27 +1081,15 @@ mod tests {
     fn a_typed_position_accepts_a_whole_placeholder() {
         let reg = reg();
         let (target, caps, params) = reg
-            .find_with_params("the response code is <<code>>")
+            .find_with_params("I sleep <<n>> seconds")
             .unwrap()
             .expect("matches");
-        assert!(target == StepId::ResponseCode);
-        assert_eq!(caps, ["<<code>>"]);
-        assert_eq!(params[0].name, "code");
+        assert!(target == StepId::Sleep);
+        assert_eq!(caps, ["<<n>>"]);
+        assert_eq!(params[0].name, "seconds");
         assert!(params[0].check("abc").is_err());
         assert!(reg.find(r#"I sleep "<<n>>" seconds"#).unwrap().is_some());
-        assert!(reg.find("the response code is abc").unwrap().is_none());
-    }
-
-    #[test]
-    fn a_method_slot_is_type_checked() {
-        let reg = reg();
-        let (_, _, params) = reg
-            .find_with_params(r#"I request "/a" using HTTP <<m>>"#)
-            .unwrap()
-            .expect("matches");
-        let method = params.iter().find(|p| p.name == "method").expect("method");
-        assert!(method.check("FETCH").is_err());
-        assert!(method.check("PATCH").is_ok());
+        assert!(reg.find("I sleep abc seconds").unwrap().is_none());
     }
 
     #[test]
@@ -1649,6 +1102,48 @@ mod tests {
             .unwrap()
             .expect("matches");
         assert!(params.is_empty());
+    }
+
+    fn expression_registry(expressions: &[&str]) -> Result<Registry, String> {
+        let steps: Vec<_> = expressions
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let compiled = expression::compile(text, "text").expect("compiles");
+                (
+                    0,
+                    index,
+                    crate::plugin::Declared::Expression(compiled),
+                    false,
+                )
+            })
+            .collect();
+        Registry::with_macros_and_plugins(MacroCatalog::default(), &steps, &[], None)
+    }
+
+    #[test]
+    fn a_plugin_expression_is_found_with_one_argument_per_parameter() {
+        let reg = expression_registry(&[r#"I ship {n:uint} to "{city}""#]).expect("builds");
+        for text in [r#"I ship 5 to "Riga""#, r#"I ship "5" to "Riga""#] {
+            let (target, caps) = reg.find(text).expect("no ambiguity").expect("matched");
+            assert!(matches!(target, StepTarget::Plugin { step: 0, .. }));
+            assert_eq!(caps, ["5", "Riga"], "{text}");
+        }
+        assert!(
+            reg.unknown_step_detail(r#"I ship abc to "Riga""#)
+                .contains(r#"parameter <n> expects uint, got "abc""#)
+        );
+    }
+
+    #[test]
+    fn a_plugin_expression_conflict_is_refused_as_a_macros_is() {
+        let error = expression_registry(&[r#"set variable "{a}" to "{b}""#])
+            .expect_err("overlaps a builtin");
+        assert!(error.contains("conflicts with builtin step"), "{error}");
+        let error = expression_registry(&["I ship {n:uint}", "I ship {n:word}"])
+            .expect_err("overlaps the other plugin step");
+        assert!(error.contains("conflicts with plugin step"), "{error}");
+        expression_registry(&["I ship {n:uint}", "I ship all"]).expect("no overlap");
     }
 
     #[test]
@@ -1741,64 +1236,12 @@ mod tests {
         // every match, and validate::check runs `find` over every selected step
         // before the first request.
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 0, r#"^the response code is (\d+)$"#, true, &[])
+        reg.add_plugin_step(0, 0, r#"^I sleep (\d+) seconds$"#, true, &[])
             .expect("valid pattern");
         let error = reg
-            .find("the response code is 200")
+            .find("I sleep 2 seconds")
             .expect_err("two definitions match");
         assert!(error.contains("several definitions"), "{error}");
-    }
-
-    #[test]
-    fn the_group_switch_step_does_not_shadow_api_or_connection() {
-        let reg = Registry::with_macros_and_plugins(
-            MacroCatalog::default(),
-            &[],
-            &["widget".to_string(), "browser".to_string()],
-            None,
-        )
-        .expect("registry");
-
-        let (api_target, _) = reg
-            .find(r#"I use "main" api"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            api_target,
-            StepTarget::Builtin {
-                id: StepId::UseApi,
-                kind: StepKind::Action
-            }
-        );
-
-        let (conn_target, _) = reg
-            .find(r#"I use "pg" connection"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            conn_target,
-            StepTarget::Builtin {
-                id: StepId::UseConnection,
-                kind: StepKind::Action
-            }
-        );
-
-        let (group_target, caps) = reg
-            .find(r#"I use "bucket-a" widget"#)
-            .expect("no ambiguity")
-            .expect("matched");
-        assert_eq!(
-            group_target,
-            StepTarget::Builtin {
-                id: StepId::UsePluginInstance,
-                kind: StepKind::Action
-            }
-        );
-        assert_eq!(
-            caps,
-            vec!["bucket-a".to_string(), "widget".to_string()],
-            "name before group"
-        );
     }
 
     #[test]
@@ -1831,7 +1274,7 @@ mod tests {
     fn every_builtin_declares_a_known_group_and_a_description() {
         // The group is what `bddkit steps list` prints and filters on: a typo
         // there hides a whole step from discovery without failing anything else.
-        const GROUPS: &[&str] = &["api", "db", "srp", "vars", "debug", "general"];
+        const GROUPS: &[&str] = &["vars", "debug", "general"];
         for def in BUILTIN_STEPS {
             assert!(
                 GROUPS.contains(&def.group),
@@ -1850,16 +1293,14 @@ mod tests {
     #[test]
     fn a_macro_conflicting_with_a_named_builtin_is_still_rejected() {
         // A parameterless macro against a builtin whose capture must expand:
-        // the builtin side of the conflict check is the one under test. The
-        // YAML writes `\/ping` because an unescaped `/` in a macro template is
-        // Cucumber alternation.
+        // the builtin side of the conflict check is the one under test.
         let path = std::env::temp_dir().join(format!(
             "bddkit-steps-named-group-conflict-{}.yaml",
             std::process::id()
         ));
         std::fs::write(
             &path,
-            "- step: I request \"\\/ping\"\n  do: [Show all variables]\n",
+            "- step: variable \"a\" should be empty\n  do: [Show all variables]\n",
         )
         .expect("write macro file");
         let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
@@ -1903,38 +1344,6 @@ mod tests {
     }
 
     #[test]
-    fn a_macro_body_attaching_a_missing_literal_file_is_refused_at_startup() {
-        let dir =
-            std::env::temp_dir().join(format!("bddkit-steps-macro-attach-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        std::fs::write(dir.join("present.bin"), b"x").expect("write fixture");
-        let path = dir.join("m.yaml");
-        let load = |file: &str| {
-            std::fs::write(
-                &path,
-                format!(
-                    "- step: I send the document\n  do: [\"I attach the file \\\"{file}\\\" to the request as \\\"c\\\"\"]\n"
-                ),
-            )
-            .expect("write macro file");
-            Registry::with_macros(
-                MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads"),
-            )
-        };
-
-        let error = load("gone.bin").expect_err("a missing literal file is refused");
-        assert!(error.contains("gone.bin"), "{error}");
-        assert!(
-            load("present.bin").is_ok(),
-            "resolved beside the macro file"
-        );
-        assert!(
-            load("<<name>>.bin").is_ok(),
-            "a variable is left to the step"
-        );
-    }
-
-    #[test]
     fn a_macro_body_may_call_a_plugin_step() {
         // Macros exist to compose steps and plugins exist to add steps.
         // Validating macros before the plugin patterns are registered made a
@@ -1956,9 +1365,11 @@ mod tests {
             &[(
                 0,
                 1,
-                r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
+                crate::plugin::Declared::Pattern {
+                    text: r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
+                    secret_groups: Vec::new(),
+                },
                 false,
-                Vec::new(),
             )],
             &[],
             None,
@@ -1976,37 +1387,22 @@ mod tests {
     fn an_unknown_step_names_the_typed_parameter_that_refused_its_literal() {
         let reg = Registry::new().unwrap();
         assert_eq!(
-            reg.unknown_step_detail("the response code is abc"),
-            "\n  parameter <code> expects uint, got \"abc\""
+            reg.unknown_step_detail("I sleep abc seconds"),
+            "\n  parameter <seconds> expects uint, got \"abc\""
         );
         assert_eq!(
-            reg.unknown_step_detail(r#"the response code is "abc""#),
-            "\n  parameter <code> expects uint, got \"abc\""
-        );
-        assert_eq!(
-            reg.unknown_step_detail(r#"I request "/ping" using HTTP POSTT"#),
-            "\n  parameter <method> expects method, got \"POSTT\""
+            reg.unknown_step_detail(r#"I sleep "abc" seconds"#),
+            "\n  parameter <seconds> expects uint, got \"abc\""
         );
     }
 
     #[test]
     fn an_unknown_step_suggests_the_closest_templates() {
         let reg = Registry::new().unwrap();
-        let cases = [
-            ("the response status is 200", "the response code is <code>"),
-            (
-                r#"the JSON node "a" should be nul"#,
-                r#"the JSON node "<path>" should be null"#,
-            ),
-            (
-                r#"I request "/x" using HTTP"#,
-                r#"I request "<path>" using HTTP <method>"#,
-            ),
-            (
-                r#"the response body contain "x""#,
-                r#"the response body contains "<text>" or the response body matches "<pattern>""#,
-            ),
-        ];
+        let cases = [(
+            r#"variable "a" should be empt"#,
+            r#"variable "<name>" should be empty"#,
+        )];
         for (text, suggestion) in cases {
             assert_eq!(
                 reg.unknown_step_detail(text),
@@ -2021,10 +1417,6 @@ mod tests {
             ""
         );
         // An unterminated quote swallows the rest as one token, not drops it.
-        assert_eq!(
-            reg.unknown_step_detail(r#"I request "/x using HTTP GET"#),
-            "\n  did you mean: I request \"<path>\""
-        );
         let mut grouped = Registry::new().unwrap();
         grouped.add_use_group_step(&["echo".to_string()]).unwrap();
         assert_eq!(
@@ -2054,7 +1446,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "- step: I do the mystery thing\n  do: [the response status is 200]\n",
+            "- step: I do the mystery thing\n  do: [Show all variable]\n",
         )
         .expect("write macro file");
         let catalog = MacroCatalog::load(std::slice::from_ref(&path)).expect("macro loads");
@@ -2063,7 +1455,7 @@ mod tests {
         let error = Registry::with_macros_and_plugins(catalog, &[], &[], None)
             .expect_err("no step matches the body");
         assert!(
-            error.contains("did you mean: the response code is <code>"),
+            error.contains("did you mean: Show all variables"),
             "{error}"
         );
     }
@@ -2120,17 +1512,10 @@ mod tests {
 
     #[test]
     fn assertions_keep_their_option_source_in_registry_metadata() {
-        let cases = [
-            ("the response code is 200", OptionsSource::Http),
-            (
-                r#"variable "state" should be equal to "ready""#,
-                OptionsSource::Global,
-            ),
-            (
-                r#"I should have "users" with "state: ready""#,
-                OptionsSource::Db,
-            ),
-        ];
+        let cases = [(
+            r#"variable "state" should be equal to "ready""#,
+            OptionsSource::Global,
+        )];
 
         for (text, source) in cases {
             let (target, _) = reg().find(text).unwrap().expect("assertion is registered");
@@ -2145,34 +1530,8 @@ mod tests {
     fn no_two_builtin_steps_are_ambiguous() {
         // Every pattern is checked against all the others on concrete examples.
         let samples = [
-            r#"the "Accept" request header is "application/json""#,
-            r#"I add "b" to the "Accept" request header"#,
-            r#"the query parameter "q" is "1""#,
-            "the request body is:",
-            "the request body is empty",
-            "the request form parameters are:",
-            r#"I request "/ping" using HTTP POST"#,
-            r#"I request "/ping""#,
-            "the response code is 200",
-            "the response body contains JSON:",
-            "the response body equals JSON:",
-            "the response body is a JSON array of length 3",
-            r#"the response body contains "hello""#,
-            r#"the response body does not contain "hello""#,
-            r#"the response body matches "h[0-9]""#,
-            r#"the response body does not match "h[0-9]""#,
-            r#"the response body has element "h1#title""#,
-            r#"the response body has element "h1#title" with text "Hi""#,
-            r#"the response body does not have element "h1#title""#,
-            r#"the "X-Trace" response header is "abc""#,
-            r#"the JSON node "data.id" should exist"#,
             r#"set variable "a" to "1""#,
             r#"set variable "a" to "1" global"#,
-            r#"extract "id" from JSON as "userId""#,
-            r#"extract "id" from JSON as "userId" global"#,
-            r#"extract "jwt" from cookies as "t""#,
-            r#"extract "jwt" from cookies as "t" global"#,
-            r#"extract "h1#title" from response body as "pageTitle""#,
             r#"variable "a" should be equal to "1""#,
             r#"variable "a" should not be equal to "1""#,
             r#"variable "a" should contain "1""#,
@@ -2188,33 +1547,13 @@ mod tests {
             r#"extract "(\d+)" from variable "a" as "b""#,
             r#"extract "(\d+)" from variable "a" as "b" global"#,
             r#"I encrypt "555555" with AES using key "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" as "otp""#,
-            r#"I use "main" connection"#,
-            r#"I use "billing" api"#,
             "I am in debug mode",
             "I am not in debug mode",
             "I am collecting evidence",
             "I am not collecting evidence",
-            r#"I have "users" where:"#,
-            r#"I have "users" with "email: a@b.net""#,
-            "I have:",
-            r#"I update "companies" with "name: x" where "id: 1""#,
-            r#"I delete "companies" where "slug: x""#,
-            r#"I delete all "companies""#,
-            r#"I extract "id" from "companies" with "slug: x" as "cid""#,
-            r#"I call procedure "p" with "a: 1""#,
-            r#"I call function "f" with "a: 1" as "r""#,
-            r#"I get next value of sequence "s" as "n""#,
             r#"I sleep "5" seconds"#,
             "Show all variables",
             r#"Show "userId" variable"#,
-            "Print response headers",
-            "Print response body",
-            r#"Print response body as "status""#,
-            r#"I generate an SRP verifier for "u@example.test" with password "p" as "reg""#,
-            r#"I generate an SRP verifier for "u@example.test" with password "p" and salt "ab" as "reg""#,
-            r#"I start an SRP login as "srp""#,
-            r#"I complete SRP login "srp" for "u@example.test" with password "p" salt "ab" and "cd""#,
-            r#"I sign the next request with Hawk id "session-1" and key "abc""#,
             r#"I include "a.feature""#,
             r#"I include "a.feature" with:"#,
             r#"I include "a.feature" with prefix "p""#,
@@ -2239,33 +1578,23 @@ mod tests {
         );
         let shown = |text: &str| r.display_text(text, &redactor).into_owned();
         assert_eq!(
-            shown(r#"I sign the next request with Hawk id "session-1" and key "abc""#),
-            r#"I sign the next request with Hawk id "session-1" and key "***""#
+            shown(r#"I encrypt "x" with AES using key "abc" as "y""#),
+            r#"I encrypt "x" with AES using key "***" as "y""#
         );
         assert_eq!(
-            shown(r#"I sign the next request with Hawk id "session-1" and key "<<key>>""#),
-            r#"I sign the next request with Hawk id "session-1" and key "<<key>>""#
+            shown(r#"I encrypt "x" with AES using key "<<key>>" as "y""#),
+            r#"I encrypt "x" with AES using key "<<key>>" as "y""#
         );
         // A literal glued to a slot is still a literal.
         assert_eq!(
-            shown(r#"I sign the next request with Hawk id "i" and key "ab<<key>>""#),
-            r#"I sign the next request with Hawk id "i" and key "***""#
+            shown(r#"I encrypt "x" with AES using key "ab<<key>>" as "y""#),
+            r#"I encrypt "x" with AES using key "***" as "y""#
         );
         assert_eq!(
             shown(r#"I include "a.feature""#),
             r#"I include "a.feature""#
         );
         assert_eq!(shown("no such step"), "no such step");
-    }
-
-    #[test]
-    fn the_use_api_step_resolves_to_its_builtin() {
-        let (target, caps) = reg()
-            .find(r#"I use "billing" api"#)
-            .expect("pattern is not ambiguous")
-            .expect("step is declared");
-        assert!(target == StepId::UseApi, "the step must resolve to UseApi");
-        assert_eq!(caps, vec!["billing".to_string()]);
     }
 
     #[test]
@@ -2286,36 +1615,6 @@ mod tests {
                 "otp",
             ]
         );
-    }
-
-    #[test]
-    fn the_sign_next_request_with_hawk_step_resolves_to_its_builtin() {
-        let (target, caps) = reg()
-            .find(r#"I sign the next request with Hawk id "session-1" and key "abc""#)
-            .expect("pattern is not ambiguous")
-            .expect("step is declared");
-        assert!(
-            target == StepId::SignNextRequestWithHawk,
-            "the step must resolve to SignNextRequestWithHawk"
-        );
-        assert_eq!(caps, vec!["session-1".to_string(), "abc".to_string()]);
-    }
-
-    #[test]
-    fn captures_path_and_method() {
-        let (id, caps) = reg()
-            .find(r#"I request "/api/v1/x" using HTTP PATCH"#)
-            .unwrap()
-            .unwrap();
-        assert_eq!(id, StepId::RequestPathWithMethod);
-        assert_eq!(caps, vec!["/api/v1/x".to_string(), "PATCH".to_string()]);
-    }
-
-    #[test]
-    fn bare_request_defaults_to_get_variant() {
-        let (id, caps) = reg().find(r#"I request "/ping""#).unwrap().unwrap();
-        assert_eq!(id, StepId::RequestPath);
-        assert_eq!(caps, vec!["/ping".to_string()]);
     }
 
     #[test]

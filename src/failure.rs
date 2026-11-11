@@ -58,6 +58,16 @@ impl fmt::Display for FailureKind {
 pub struct StepError {
     pub kind: FailureKind,
     pub message: String,
+    /// What a plugin's failing reply showed besides its message, already
+    /// rendered: the console dump appends it once. It is kept apart from
+    /// `message` so a polled assertion's `attempt` event and the timeout text
+    /// quote the mismatch alone, and it survives `wrap`.
+    pub diagnostics: Vec<String>,
+    /// The plugin handle (library index, handle) whose reply caused this
+    /// failure, so the failure dump asks every OTHER handle of the scenario
+    /// for its context, and this one too when the reply showed nothing. Kept
+    /// through `wrap` and a polling timeout like `diagnostics`.
+    pub handle: Option<(usize, u64)>,
 }
 
 impl StepError {
@@ -65,15 +75,25 @@ impl StepError {
         Self {
             kind,
             message: message.into(),
+            diagnostics: Vec::new(),
+            handle: None,
         }
+    }
+
+    /// The same error, blamed on the plugin handle that replied.
+    pub fn with_handle(mut self, handle: Option<(usize, u64)>) -> Self {
+        self.handle = handle;
+        self
+    }
+
+    /// The same error with the diagnostics of the reply that caused it.
+    pub fn with_diagnostics(mut self, diagnostics: Vec<String>) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 
     pub fn assertion(message: impl Into<String>) -> Self {
         Self::new(FailureKind::Assertion, message)
-    }
-
-    pub fn transport(message: impl Into<String>) -> Self {
-        Self::new(FailureKind::Transport, message)
     }
 
     pub fn input(message: impl Into<String>) -> Self {
@@ -95,7 +115,7 @@ impl StepError {
     pub fn wrap(self, f: impl FnOnce(&str) -> String) -> Self {
         Self {
             message: f(&self.message),
-            kind: self.kind,
+            ..self
         }
     }
 }

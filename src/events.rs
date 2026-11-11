@@ -10,7 +10,7 @@ use crate::artifacts::{Artifacts, media_type};
 use crate::diagnostic::{HttpDiagnostic, SqlDiagnostic};
 use crate::failure::FailureKind;
 use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
-use crate::plugin::abi::Diagnostic;
+use crate::plugin::reply::Plain;
 use crate::privacy::Redactor;
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
@@ -831,33 +831,32 @@ impl Trace {
         self.record("evidence", fields);
     }
 
-    /// One `http` diagnostic, rendered by the host: hidden by position, then
-    /// by value, and only then is a body weighed against the limit.
-    pub fn http(&self, diagnostic: &HttpDiagnostic) {
+    /// An `http` diagnostic of a plugin's group, with the title it may give.
+    pub fn http_in(&self, group: &str, diagnostic: &HttpDiagnostic, title: Option<&str>) {
         if !self.evidence_on() {
             return;
         }
         let place = |text: String, name: &str| self.text(text, name);
         let content = diagnostic.content(&self.redactor, &place);
         self.evidence_event(
-            "api",
+            group,
             &diagnostic.resource,
             "http",
-            None,
+            title,
             json!({ "content": content }),
         );
     }
 
-    /// One `sql` diagnostic, after the statement ran.
-    pub fn sql(&self, diagnostic: &SqlDiagnostic) {
+    /// An `sql` diagnostic of a plugin's group, with the title it may give.
+    pub fn sql_in(&self, group: &str, diagnostic: &SqlDiagnostic, title: Option<&str>) {
         if !self.evidence_on() {
             return;
         }
         self.evidence_event(
-            "db",
+            group,
             &diagnostic.resource,
             "sql",
-            None,
+            title,
             json!({ "content": diagnostic.content(&self.redactor) }),
         );
     }
@@ -870,7 +869,7 @@ impl Trace {
         group: &str,
         instance: &str,
         dispatch_dir: &Path,
-        diagnostic: &Diagnostic,
+        diagnostic: &Plain,
     ) -> Vec<String> {
         let Some(artifacts) = self.evidence.as_ref().filter(|_| self.evidence_on()) else {
             return Vec::new();
@@ -1099,7 +1098,9 @@ mod tests {
         };
         trace.step_started("Given ", "s", origin, Path::new("a.feature"), Vec::new());
         assert!(trace.evidence_on(), "a plugin is told evidence is wanted");
-        trace.sql(&SqlDiagnostic::new("main", "select 1", &[], Duration::ZERO));
+        let statement = json!({"sql": "select 1", "binds": [], "duration_us": 0});
+        let statement = SqlDiagnostic::from_plugin(&statement, "main").expect("its shape");
+        trace.sql_in("db", &statement, None);
         trace.step_finished(Some(FailureKind::Assertion), Duration::ZERO, &[]);
         let failure = Some(("boom", FailureKind::Assertion));
         trace.scenario_finished(failure, Duration::ZERO, interrupted);

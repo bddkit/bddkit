@@ -9,15 +9,12 @@ macro_rules! debug_eprintln {
 mod annotate;
 mod artifacts;
 mod config;
-mod db;
 mod diagnostic;
 mod dirs;
 mod doctor;
 mod events;
 mod failure;
 mod feature;
-mod hawk;
-mod http;
 mod include;
 mod init;
 mod macros;
@@ -29,7 +26,6 @@ mod report;
 mod resource;
 mod runner;
 mod settings;
-mod srp;
 mod steps;
 mod telemetry;
 mod unique;
@@ -449,7 +445,7 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit resource fields                      every resource kind bddkit serves itself
-  bddkit resource fields db                   only the database connection keys
+  bddkit resource fields srp                  only the SRP configuration keys
   bddkit resource fields --config suite.yaml  also the groups this suite's plugins serve
   bddkit resource fields --json               the same listing, machine-readable
   bddkit resource add api staging --config suite.yaml --base_url http://staging.local
@@ -470,7 +466,7 @@ enum ResourceCommand {
 
 #[derive(Args)]
 struct AddArgs {
-    /// api, db, srp, or a plugin group
+    /// a plugin group
     group: String,
     /// The name the resource is reachable by
     name: String,
@@ -493,7 +489,7 @@ struct AddArgs {
 
 #[derive(Args)]
 struct FieldsArgs {
-    /// Only this kind: api, db, srp, or a plugin group
+    /// Only this kind: a plugin group
     kind: Option<String>,
     /// Also describe the groups the plugins this config loads serve [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
@@ -553,7 +549,7 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
 }
 
 fn list_fields(args: FieldsArgs) -> Result<i32> {
-    let mut kinds = resource::host_kinds();
+    let mut kinds = Vec::new();
 
     // A plugin's field list lives inside its `cdylib`, so reading it means
     // loading the plugin — which is why `--config` is optional here, exactly
@@ -803,7 +799,7 @@ impl ReportArgs {
 #[derive(Args)]
 #[command(after_help = "Examples:
   bddkit steps list                          every builtin step, grouped by resource
-  bddkit steps list db                       only the database steps
+  bddkit steps list vars                     only the variable steps
   bddkit steps list --filter response -v     narrow, and describe what is left
   bddkit steps list --json                   the same listing, machine-readable
   bddkit steps list --config suite.yaml      also the steps of that suite's plugins")]
@@ -820,7 +816,7 @@ enum StepsCommand {
 
 #[derive(Args)]
 struct ListArgs {
-    /// Only this resource: api, db, srp, vars, debug, general, or a plugin group
+    /// Only this resource: vars, debug, general, or a plugin group
     resource: Option<String>,
     /// Case-insensitive substring match on the step template
     #[arg(long)]
@@ -917,14 +913,11 @@ fn list_steps(args: ListArgs) -> Result<i32> {
 }
 
 /// Everything that fails before the first request must exit with code 2 (invariant 6):
-/// config loading, path traversal, building API resources and DB pools, parsing
+/// config loading, path traversal, building API resources, parsing
 /// scheduling tags — this is a "nothing ran" failure, while 1 is reserved for
 /// a failed scenario.
 #[tokio::main]
 async fn main() {
-    // Every path that can build a pool runs through here first — `AnyPool`
-    // panics rather than erroring if a driver is not installed.
-    sqlx::any::install_default_drivers();
     // The default hook prints the payload as it is, and a payload can hold a
     // value (an `unwrap` on a parsed secret). Same text, masked.
     std::panic::set_hook(Box::new(|info| {
@@ -958,6 +951,7 @@ async fn main() {
                     "version": env!("CARGO_PKG_VERSION"),
                     "target": target,
                     "plugin_abi": plugin::abi::ABI_VERSION,
+                    "plugin_abi_min": plugin::abi::ABI_MIN,
                 })
             );
             (Ok(0), "nothing printed")
@@ -1026,13 +1020,11 @@ fn load_plugins_collecting(
     if strict {
         plugins.ensure_valid()?;
     }
-    // Only meaningful once a plugin is loaded. With none there are no resource
-    // groups at all, so every top-level `default_*` key is the unknown key
-    // `Config` has always tolerated — it has never had `deny_unknown_fields`,
-    // and a suite written before plugins existed must keep running unchanged.
-    if !plugins.is_empty() {
-        cfg.check_group_defaults()?;
-    }
+    // With no plugin loaded there are no resource groups at all, so every
+    // top-level `default_*` key but `default_api`, `default_db` and
+    // `default_srp` is the unknown key `Config` has always tolerated — it has never had `deny_unknown_fields`, and a
+    // suite written before plugins existed must keep running unchanged.
+    cfg.check_group_defaults(!plugins.is_empty())?;
     let mut defaults = std::collections::BTreeMap::new();
     for group in &groups_in_config {
         if let Some(name) = cfg.resolve_default_group(group)? {
@@ -1323,7 +1315,6 @@ fn note_config(
         paths: !cli.paths.is_empty() || env_var("BDDKIT_PATHS").is_some(),
         env: cli.env.is_some(),
     };
-    probe.resources = telemetry::run::resources_of(cfg);
     probe.read = true;
 }
 
@@ -1476,62 +1467,22 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     probe.concurrency = cfg.concurrency.clamp(1, chains.len().max(1)) as u64;
 
     probe.stage = Some(telemetry::payload::Stage::Resources);
-    let mut by_name = std::collections::HashMap::new();
-    for (name, api) in &cfg.resources.api {
-        let headers = api
-            .default_headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        by_name.insert(
-            name.clone(),
-            http::ApiResource::new(
-                &api.base_url,
-                api.timeout_secs,
-                headers,
-                api.effective_options.clone(),
-            )?
-            .with_sensitive_headers(api.effective_sensitive_headers.clone()),
-        );
-    }
-    let apis = Arc::new(http::Apis::new(by_name, cfg.resolve_default_api()?)?);
 
-    // Every declared SRP resource, not only the default: a malformed
-    // `variant:` in a second block must not sit there until someone points
-    // `default_srp` at it. This is also what keeps `doctor` — which reports on
-    // every declared resource — from being stricter than the run it predicts.
-    //
-    // Before the pools: this costs microseconds, and connecting can cost
-    // thirty seconds against a database that is down. A suite with both faults
-    // should learn about both on the first attempt, not one per attempt.
-    for (name, srp) in &cfg.resources.srp {
-        srp.to_params()
-            .with_context(|| format!("resources.srp.{name}"))?;
+    // After every fallible resolution above, so no later `?` can leave a handle
+    // that came up unswept. A plugin group that asked for `eager_init` is connected here too, so an
+    // unreachable resource is exit 2 before `run <id>`. Blocking FFI, off the
+    // executor; a handle that did come up is swept before the process leaves.
+    if let Some(plugins) = &plugins {
+        let eager = Arc::clone(plugins);
+        let outcome = tokio::task::spawn_blocking(move || eager.eager_init())
+            .await
+            .map_err(anyhow::Error::new)?;
+        if let Err(error) = outcome {
+            let sweep = Arc::clone(plugins);
+            let _ = tokio::task::spawn_blocking(move || sweep.shutdown()).await;
+            return Err(anyhow::Error::msg(error));
+        }
     }
-
-    // Pools are created once per run, sized to the worker pool's own
-    // concurrency so every worker can hold a connection at once.
-    let db = if cfg.resources.db.is_empty() {
-        None
-    } else {
-        Some(Arc::new(
-            db::Db::connect(&cfg.resources.db, cfg.concurrency as u32)
-                .await
-                .map_err(anyhow::Error::msg)?,
-        ))
-    };
-    if let Some(db) = &db {
-        probe.resources.db = db.engines().fold(Default::default(), |mut engines, name| {
-            telemetry::payload::Engines::add(&mut engines, name);
-            engines
-        });
-    }
-    let default_db = cfg.resolve_default_db()?.unwrap_or_default();
-    let srp = match cfg.resolve_default_srp()? {
-        Some(name) => Some(Arc::new(cfg.resources.srp[&name].to_params()?)),
-        None => None,
-    };
-
     // Before anything is announced, and before the handler task is first
     // polled: see `Interrupts`.
     let interrupts = Interrupts::install();
@@ -1571,12 +1522,8 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     }
     let mut ctx = runner::RunContext::new(
         reg,
-        apis,
         generator.clone(),
         filter,
-        db,
-        default_db,
-        srp,
         plugins.clone(),
         cfg.effective_options.clone(),
         artifacts,

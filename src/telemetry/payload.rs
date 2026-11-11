@@ -234,32 +234,9 @@ impl PrivacyFlags {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Resources {
-    pub api: u64,
-    pub srp: u64,
-    pub db: Engines,
     /// Instances per official plugin name.
     pub plugins: BTreeMap<String, u64>,
     pub plugins_other: u64,
-}
-
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct Engines {
-    pub postgres: u64,
-    pub mysql: u64,
-    pub mariadb: u64,
-}
-
-impl Engines {
-    /// By the platform's own name; a name this binary does not know is not
-    /// counted, rather than invented.
-    pub fn add(&mut self, platform: &str) {
-        match platform {
-            "postgres" => self.postgres += 1,
-            "mysql" => self.mysql += 1,
-            "mariadb" => self.mariadb += 1,
-            _ => {}
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]

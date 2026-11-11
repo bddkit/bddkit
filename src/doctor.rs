@@ -2,8 +2,8 @@
 //! without starting a run — plus, under `--live`, the one class of check a run
 //! does not have: whether the resources the config names actually answer.
 
-use crate::steps::{BUILTIN_STEPS, StepTarget};
-use crate::{config, db, dirs, feature, http, validate};
+use crate::steps::StepTarget;
+use crate::{config, dirs, feature, validate};
 use serde::Serialize;
 use std::path::Path;
 
@@ -429,9 +429,6 @@ pub async fn check(
     );
     let stream = events_path.is_some() || crate::privacy::process_env("BDDKIT_EVENTS").is_some();
     push_evidence(&mut report, &cfg, stream);
-    check_apis(&mut report, &cfg, live).await;
-    check_databases(&mut report, &cfg, live).await;
-    check_srp(&mut report, &cfg);
     if let Some(plugins) = plugins.as_ref() {
         check_plugin_instances(&mut report, plugins, live);
     }
@@ -440,7 +437,7 @@ pub async fn check(
             .as_ref()
             .ok()
             .map(crate::telemetry::payload::PrivacyFlags::of);
-        let mut resources = crate::telemetry::run::resources_of(&cfg);
+        let mut resources = crate::telemetry::payload::Resources::default();
         if let Some(plugins) = &plugins {
             (resources.plugins, resources.plugins_other) = plugins.instance_counts();
         }
@@ -451,8 +448,8 @@ pub async fn check(
 
 /// One static row and one live row per declared instance, stage the group and
 /// target the instance, like an `api` or `db` resource. The static row is what
-/// `validate_config` said when the plugins loaded; its `ok` has no detail yet,
-/// because a plugin cannot supply one under the current ABI.
+/// `validate_config` said when the plugins loaded; its `ok` carries the plugin's
+/// `detail`, if it gave one.
 ///
 /// A plugin that exports no `bddkit_probe_config` is `Skipped`, never
 /// `Failed`: the symbol is optional, and a check that never ran has proved
@@ -476,13 +473,23 @@ fn push_plugin_instances(report: &mut Report, plugins: &crate::plugin::Plugins, 
             report.push_live(&group, &instance, Status::Skipped, "not probed: refused");
             continue;
         }
-        report.push(&group, Some(&instance), Status::Ok, "");
+        report.push(
+            &group,
+            Some(&instance),
+            Status::Ok,
+            plugins.detail(&group, &instance).unwrap_or(""),
+        );
         if !live {
             report.push_live(&group, &instance, Status::Skipped, "live probe skipped");
             continue;
         }
         match plugins.probe_config(&group, &instance) {
-            Some(Ok(())) => report.push_live(&group, &instance, Status::Ok, "probed clean"),
+            Some(Ok(detail)) => report.push_live(
+                &group,
+                &instance,
+                Status::Ok,
+                detail.as_deref().unwrap_or("probed clean"),
+            ),
             Some(Err(error)) => report.push_live(&group, &instance, Status::Failed, &error),
             None => report.push_live(
                 &group,
@@ -586,7 +593,7 @@ fn check_features(
                 &borrowed,
                 registry,
                 &filter,
-                |target| unserved_group(cfg, plugins, target),
+                |target| unserved_group(plugins, target),
             ));
             problems.extend(found.into_iter().map(|p| {
                 (
@@ -661,6 +668,10 @@ fn check_features(
             if !hints.is_empty() {
                 detail.push_str(&format!("\ninclude hints:\n{}", hints.join("\n")));
             }
+            let deprecated = deprecated_hints(&loaded, registry);
+            if !deprecated.is_empty() {
+                detail.push_str(&format!("\ndeprecated:\n{}", deprecated.join("\n")));
+            }
         }
         report.push("steps", None, Status::Ok, &detail);
     }
@@ -683,8 +694,8 @@ fn check_features(
 /// variables the host cannot see, so neither finding is certain enough for
 /// `validate::check`.
 ///
-/// 1. An `extract … from JSON|cookies|response body` straight after an include
-///    reads the response the helper left behind; it breaks the day the helper
+/// 1. A plugin step that `reads` some state and `sets_vars`, straight after an
+///    include, reads what the helper left behind; it breaks the day the helper
 ///    sends one more request. Quiet when the helper exports that name.
 /// 2. An `@exports` name no step of the helper (or the nested include it
 ///    exports) writes: `run` finds it out only at the include.
@@ -728,18 +739,18 @@ fn include_hints(
                         continue;
                     };
                     if let Some(next) = steps.get(i + 1)
-                        && let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
-                            registry.find(&next.text)
-                        && RESPONSE_EXTRACTS.contains(&id)
-                        && !exported(&exports, prefix, &caps[1])
+                        && let Ok(Some((target, caps))) = registry.find(&next.text)
                     {
-                        extracts.insert(format!(
-                            "{}:{}: extract {:?} reads the response the include left behind; \
-                             export the value from the helper instead",
-                            feature::display_path(&lf.path),
-                            next.line,
-                            caps[1]
-                        ));
+                        for (name, state) in left_behind(target, &caps, registry) {
+                            if !exported(&exports, prefix, &name) {
+                                extracts.insert(format!(
+                                    "{}:{}: extract {name:?} reads the {state} the include left behind; \
+                                     export the value from the helper instead",
+                                    feature::display_path(&lf.path),
+                                    next.line,
+                                ));
+                            }
+                        }
                     }
                     let Some(written) = written_names(&included, chosen, registry) else {
                         continue;
@@ -749,7 +760,7 @@ fn include_hints(
                             && !["last_insert_", "updated_", "deleted_"]
                                 .iter()
                                 .any(|p| export.starts_with(p))
-                            && !written.contains(export)
+                            && !exported(&written, "", export)
                         {
                             unset.insert(format!(
                                 "{}:{}: @exports names {export:?}, but no step of the scenario sets it",
@@ -765,10 +776,128 @@ fn include_hints(
     extracts.into_iter().chain(unset).collect()
 }
 
+/// Every use of a plugin's deprecated switch word, in the feature files, the
+/// scenarios they include (followed through nested includes) and the macro
+/// bodies, each with the step that replaces it. A hint under the `steps` row:
+/// the step still works and `run` says nothing.
+fn deprecated_hints(
+    loaded: &[std::sync::Arc<feature::LoadedFeature>],
+    registry: &crate::steps::Registry,
+) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for lf in loaded {
+        for sc in lf.scenarios() {
+            for expanded in feature::expand_outlines(sc.scenario) {
+                let steps = lf
+                    .background_steps(sc.rule)
+                    .into_iter()
+                    .chain(expanded.steps)
+                    .collect::<Vec<_>>();
+                scan_deprecated(lf, &steps, registry, &mut out, &mut seen);
+            }
+        }
+    }
+    for definition in registry.macros() {
+        for step in &definition.body {
+            if let Some(hint) = deprecated_hint(registry, &step.text) {
+                out.insert(format!(
+                    "{}:{}: macro {:?}: {hint}",
+                    feature::display_path(&definition.source),
+                    definition.line,
+                    definition.step
+                ));
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn deprecated_hint(registry: &crate::steps::Registry, text: &str) -> Option<String> {
+    let (word, name, group) = registry.deprecated_switch(text)?;
+    Some(format!(
+        "I use {name:?} {word} is deprecated, write I use {name:?} {group}"
+    ))
+}
+
+fn scan_deprecated(
+    lf: &feature::LoadedFeature,
+    steps: &[feature::ExpandedStep],
+    registry: &crate::steps::Registry,
+    out: &mut std::collections::BTreeSet<String>,
+    seen: &mut std::collections::BTreeSet<(std::path::PathBuf, String)>,
+) {
+    use crate::steps::{StepId, StepTarget};
+    let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
+    for step in steps {
+        if let Some(hint) = deprecated_hint(registry, &step.text) {
+            out.insert(format!(
+                "{}:{}: {hint}",
+                feature::display_path(&lf.path),
+                step.line
+            ));
+        }
+        let Ok(Some((StepTarget::Builtin { id, .. }, caps))) = registry.find(&step.text) else {
+            continue;
+        };
+        if !matches!(id, StepId::Include | StepId::IncludeScenario) {
+            continue;
+        }
+        let Some((name, _)) = include_call(id, &caps) else {
+            continue;
+        };
+        let Some(included) = load_included(&caps[0], base) else {
+            continue;
+        };
+        let Ok(chosen) = crate::include::select_scenario(&included, name) else {
+            continue;
+        };
+        // A cycle or a repeat is walked once; `validate::check` refuses cycles.
+        if !seen.insert((included.path.clone(), chosen.scenario.name.clone())) {
+            continue;
+        }
+        let inner: Vec<_> = included
+            .background_steps(chosen.rule)
+            .into_iter()
+            .chain(chosen.scenario.steps.iter().map(feature::to_step))
+            .collect();
+        scan_deprecated(&included, &inner, registry, out, seen);
+    }
+}
+
+/// The variables a step takes out of the state it reads, each with that state.
+/// A family has no one name to export, so it gets no hint.
+fn left_behind(
+    target: crate::steps::StepTarget,
+    caps: &[String],
+    registry: &crate::steps::Registry,
+) -> Vec<(String, String)> {
+    use crate::steps::StepTarget;
+    match target {
+        StepTarget::Plugin { lib, step, .. } => {
+            let Some(effects) = registry
+                .plugin_step(lib, step)
+                .and_then(|spec| spec.effects(caps))
+                .filter(|effects| !effects.reads.is_empty())
+            else {
+                return Vec::new();
+            };
+            let state = effects.reads.join(", ");
+            effects
+                .sets_vars
+                .into_iter()
+                .filter(|name| !name.ends_with('*'))
+                .map(|name| (name, state.clone()))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `name`, as the caller sees it after `with prefix`, is one of the
-/// helper's `exports` (a trailing `*` matches the rest).
-fn exported(exports: &[String], prefix: &str, name: &str) -> bool {
-    exports.iter().any(|e| match e.strip_suffix('*') {
+/// helper's `exports`, or of a writer list (a trailing `*` matches the rest).
+fn exported<'a>(exports: impl IntoIterator<Item = &'a String>, prefix: &str, name: &str) -> bool {
+    exports.into_iter().any(|e| match e.strip_suffix('*') {
         Some(stem) => name.starts_with(&prefixed(prefix, stem)),
         None => name == prefixed(prefix, e),
     })
@@ -781,18 +910,6 @@ fn prefixed(prefix: &str, name: &str) -> String {
         format!("{prefix}_{name}")
     }
 }
-
-/// The steps that read a variable out of the last response.
-const RESPONSE_EXTRACTS: [crate::steps::StepId; 5] = {
-    use crate::steps::StepId::*;
-    [
-        ExtractFromJson,
-        ExtractFromJsonGlobal,
-        ExtractFromCookies,
-        ExtractFromCookiesGlobal,
-        ExtractFromMarkup,
-    ]
-};
 
 /// An include step's scenario name and `with prefix` (empty when absent), or
 /// `None` for any other step.
@@ -817,7 +934,8 @@ fn load_included(path_literal: &str, base: &std::path::Path) -> Option<feature::
 /// The variable names a scenario's own steps write, or `None` when it has a
 /// step whose writes cannot be listed (SRP and AES derive a prefix, a name
 /// holding a `<<slot>>` or an Outline `<column>`, a macro or include exporting
-/// a glob, a plugin step, which can publish what the host cannot see).
+/// a glob, a plugin step that declares no effects, which can publish what the
+/// host cannot see). A plugin step's family stays in the list with its `*`.
 fn written_names(
     lf: &feature::LoadedFeature,
     chosen: feature::ScenarioRef<'_>,
@@ -846,20 +964,11 @@ fn written_names(
             StepTarget::Macro(index) => registry.macro_def(index).exports.clone(),
             StepTarget::Builtin { id, .. } => match id {
                 StepId::SetVariable | StepId::SetVariableGlobal => vec![caps[0].clone()],
-                id if RESPONSE_EXTRACTS.contains(&id) || id == StepId::GetSequence => {
-                    vec![caps[1].clone()]
-                }
                 StepId::ExtractJsonFromVariable
                 | StepId::ExtractJsonFromVariableGlobal
                 | StepId::ExtractRegexFromVariable
-                | StepId::ExtractRegexFromVariableGlobal
-                | StepId::CallFunction => vec![caps[2].clone()],
-                StepId::ExtractFromDb => vec![caps[3].clone()],
-                StepId::SrpVerifier
-                | StepId::SrpVerifierWithSalt
-                | StepId::SrpStartLogin
-                | StepId::SrpCompleteLogin
-                | StepId::EncryptWithAes => return None,
+                | StepId::ExtractRegexFromVariableGlobal => vec![caps[2].clone()],
+                StepId::EncryptWithAes => return None,
                 StepId::Include | StepId::IncludeScenario => {
                     let (name, prefix) = include_call(id, &caps)?;
                     let inner = load_included(&caps[0], base)?;
@@ -872,7 +981,10 @@ fn written_names(
                 }
                 _ => continue,
             },
-            StepTarget::Plugin { .. } => return None,
+            StepTarget::Plugin { lib, step, .. } => {
+                out.extend(registry.plugin_step(lib, step)?.effects(&caps)?.sets_vars);
+                continue;
+            }
         };
         if names.iter().any(|n| n.contains('<') || n.ends_with('*')) {
             return None;
@@ -1018,145 +1130,18 @@ fn push_privacy(
 /// when it has — or when the step reaches for no resource at all (`vars`,
 /// `debug`, `general`, and a macro, whose body is checked step by step only
 /// when it runs).
-fn unserved_group(
-    cfg: &config::Config,
-    plugins: Option<&crate::plugin::Plugins>,
-    target: &StepTarget,
-) -> Option<String> {
+fn unserved_group(plugins: Option<&crate::plugin::Plugins>, target: &StepTarget) -> Option<String> {
     let (group, served) = match target {
-        StepTarget::Builtin { id, .. } => {
-            let group = BUILTIN_STEPS.iter().find(|def| def.id == *id)?.group;
-            let served = match group {
-                "api" => !cfg.resources.api.is_empty(),
-                "db" => !cfg.resources.db.is_empty(),
-                "srp" => !cfg.resources.srp.is_empty(),
-                _ => true,
-            };
-            (group, served)
-        }
         StepTarget::Plugin { lib, step, .. } => {
             let plugins = plugins?;
             let group = plugins.group_of_step(*lib, *step);
             (group, plugins.has_instance(group))
         }
-        StepTarget::Macro(_) => return None,
+        StepTarget::Builtin { .. } | StepTarget::Macro(_) => return None,
     };
     (!served).then(|| {
         format!("this step needs a resource of the \"{group}\" group, and resources.{group} declares none")
     })
-}
-
-/// The static check of one API resource: the resource it builds, and the line
-/// describing it.
-///
-/// This and its three neighbours below are the per-resource checks `doctor` and
-/// `resource add` share. They live in this module because its whole subject is
-/// the checks a run makes before its first request, and `add` makes the same
-/// ones over the single resource it is about to write. A second copy is how the
-/// two commands come to disagree about whether a config is valid — which for
-/// `doctor` is by definition a bug in `doctor`.
-pub fn check_api(api: &config::ApiConfig) -> Result<(http::ApiResource, String), String> {
-    let headers = api
-        .default_headers
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let resource = http::ApiResource::new(
-        &api.base_url,
-        api.timeout_secs,
-        headers,
-        api.effective_options.clone(),
-    )
-    .map_err(|error| format!("{error:#}"))?;
-    Ok((
-        resource,
-        format!("{} ({}s timeout)", api.base_url, api.timeout_secs),
-    ))
-}
-
-/// The live half: whether the base URL answers at all. Any status is a pass —
-/// reachability is the question, the application's own routing is not.
-pub async fn probe_api(resource: &http::ApiResource, base_url: &str) -> Result<String, String> {
-    let status = resource.probe().await?;
-    Ok(format!("GET {base_url} → {status}"))
-}
-
-/// One connection at a time. `Db::connect` already names the failing connection
-/// in its error — what it does not do is carry on: the whole-map call returns
-/// at the first failure, so a second dead DSN would never be probed and a stage
-/// would not run to completion.
-///
-/// ponytail: a refused connection surfaces as sqlx's pool acquire timeout —
-/// thirty seconds, and the message says "pool timed out" rather than
-/// "connection refused". That is `Db::connect`'s own behaviour, which `run`
-/// shares, so fixing it belongs there rather than here: an `acquire_timeout` on
-/// `AnyPoolOptions` in `Db::connect` would make every caller fail fast at once.
-pub async fn probe_db(name: &str, connection: &config::Connection) -> Result<String, String> {
-    let one = std::collections::BTreeMap::from([(name.to_string(), connection.clone())]);
-    let pool = db::Db::connect(&one, 1).await?;
-    // The vendor the connection settled on, which on the shared `mysql://`
-    // scheme is only known after this round-trip.
-    let vendor = pool.platform(name).map(|p| p.name()).unwrap_or("?");
-    Ok(format!("connected, {vendor}"))
-}
-
-/// The SRP parameters a run would derive, and the variant that named them.
-pub fn check_srp_resource(srp: &config::SrpConfig) -> Result<String, String> {
-    srp.to_params()
-        .map(|_| srp.variant.clone())
-        .map_err(|error| format!("{error:#}"))
-}
-
-async fn check_apis(report: &mut Report, cfg: &config::Config, live: bool) {
-    for (name, api) in &cfg.resources.api {
-        let resource = match check_api(api) {
-            Ok((resource, detail)) => {
-                report.push("api", Some(name), Status::Ok, &detail);
-                resource
-            }
-            Err(error) => {
-                report.push("api", Some(name), Status::Failed, &error);
-                continue;
-            }
-        };
-        if !live {
-            report.push_live("api", name, Status::Skipped, "live probe skipped");
-            continue;
-        }
-        match probe_api(&resource, &api.base_url).await {
-            Ok(detail) => report.push_live("api", name, Status::Ok, &detail),
-            Err(error) => report.push_live("api", name, Status::Failed, &error),
-        }
-    }
-}
-
-async fn check_databases(report: &mut Report, cfg: &config::Config, live: bool) {
-    for (name, connection) in &cfg.resources.db {
-        match db::check_dsn(connection) {
-            Ok(platform) => report.push("db", Some(name), Status::Ok, platform),
-            Err(error) => {
-                report.push("db", Some(name), Status::Failed, &error);
-                continue;
-            }
-        }
-        if !live {
-            report.push_live("db", name, Status::Skipped, "live probe skipped");
-            continue;
-        }
-        match probe_db(name, connection).await {
-            Ok(detail) => report.push_live("db", name, Status::Ok, &detail),
-            Err(error) => report.push_live("db", name, Status::Failed, &error),
-        }
-    }
-}
-
-fn check_srp(report: &mut Report, cfg: &config::Config) {
-    for (name, srp) in &cfg.resources.srp {
-        match check_srp_resource(srp) {
-            Ok(variant) => report.push("srp", Some(name), Status::Ok, &variant),
-            Err(error) => report.push("srp", Some(name), Status::Failed, &error),
-        }
-    }
 }
 
 #[cfg(test)]

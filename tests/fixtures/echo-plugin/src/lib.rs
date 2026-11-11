@@ -65,7 +65,7 @@ pub extern "C" fn bddkit_abi_version() -> u32 {
     std::env::var("BDDKIT_ECHO_FIXTURE_ABI")
         .ok()
         .and_then(|abi| abi.parse().ok())
-        .unwrap_or(3)
+        .unwrap_or(4)
 }
 
 #[unsafe(no_mangle)]
@@ -88,7 +88,17 @@ pub extern "C" fn bddkit_manifest() -> *mut c_char {
                 {"name": "loud", "type": "boolean",
                  "description": "upper-cases what is echoed", "example": "true"},
                 {"name": "probe_error",
-                 "description": "message bddkit_probe_config answers with; omit to probe clean"}
+                 "description": "message bddkit_probe_config answers with; omit to probe clean"},
+                {"name": "note",
+                 "description": "a value validate_config declares secret; with note_refuse it also quotes it in a refusal"},
+                {"name": "note_refuse", "type": "boolean",
+                 "description": "refuse the config, quoting note"},
+                {"name": "detail",
+                 "description": "text validate_config answers with on an ok reply"},
+                {"name": "probe_note",
+                 "description": "a value bddkit_probe_config declares secret"},
+                {"name": "probe_detail",
+                 "description": "text bddkit_probe_config answers with on an ok reply"}
             ]}
         })
         .to_string()
@@ -147,10 +157,46 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^I echo validated doc string:$"#, "group": "echo", "kind": "action",
               "description": "passes; its validate_step refuses a doc string that still holds an uninterpolated <<" },
             { "pattern": r#"^I echo one piece of evidence(?: for "(?P<value>[^"]*)")?$"#, "group": "echo", "kind": "action",
-              "description": "passes, reporting exactly one text diagnostic; an optional \"for\" argument gives the step a slot" }
+              "description": "passes, reporting exactly one text diagnostic; an optional \"for\" argument gives the step a slot" },
+            { "expression": "I echo the number {n:uint}", "group": "echo", "kind": "action",
+              "description": "publishes its args, joined by |, as echo_args; its validate_step refuses 13" },
+            { "expression": "the echo should fail with key {key:secret}", "group": "echo", "kind": "assertion",
+              "description": "fails with an error that quotes its key" },
+            { "expression": "I send the echo", "group": "echo", "kind": "action", "writes": ["exchange"],
+              "description": "passes; sets no variable, and says so by declaring what it writes" },
+            { "expression": "I keep the echo as {name}", "group": "echo", "kind": "action",
+              "reads": ["exchange"], "sets_vars": ["{name}"],
+              "description": "publishes the variable it names, read out of the last exchange" },
+            { "expression": "the echo exchange should be kept", "group": "echo", "kind": "assertion", "reads": ["exchange"],
+              "description": "passes; reads the last exchange and sets nothing" },
+            { "expression": "I spread the echo over {prefix}", "group": "echo", "kind": "action",
+              "reads": ["exchange"], "sets_vars": ["echo_spread", "{prefix}_*"],
+              "description": "publishes echo_spread and <prefix>_one" },
+            { "pattern": r#"^I keep the echo slot "(?P<slot>[^"]*)" as "(?P<name>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "reads": ["slot:{slot}"], "sets_vars": ["{name}"],
+              "description": "publishes the variable it names, read out of a named slot" },
+            { "pattern": r#"^the echo answers:$"#, "group": "echo", "kind": "assertion",
+              "description": "replies with its doc string verbatim, whatever it holds: a structured diagnostic, a scan item, any status" },
+            { "pattern": r#"^the echo answers by attempt:$"#, "group": "echo", "kind": "assertion",
+              "description": "its doc string is a JSON list of replies, one per attempt, the last one repeating; every reply carries the request's attempt as its error, and a passing one as echo_attempt" },
+            { "pattern": r#"^I echo the source directory as "(?P<mode>[^"]*)"$"#, "group": "echo", "kind": "action",
+              "description": "publishes the request's source_dir as echo_source_dir; its validate_step refuses it, quoting source_dir, for the mode refuse" }
         ])
         .to_string()
     })
+}
+
+/// An `ok` config reply carrying the config's `detail_key` as its `detail`
+/// and its `secret_key` as a secret.
+fn reply_with(value: &serde_json::Value, detail_key: &str, secret_key: &str) -> String {
+    let mut reply = serde_json::json!({"ok": true});
+    if let Some(detail) = value["config"][detail_key].as_str() {
+        reply["detail"] = detail.into();
+    }
+    if let Some(note) = value["config"][secret_key].as_str() {
+        reply["secrets"] = serde_json::json!([note]);
+    }
+    reply.to_string()
 }
 
 #[unsafe(no_mangle)]
@@ -174,12 +220,34 @@ pub extern "C" fn bddkit_validate_config(request: *const c_char) -> *mut c_char 
             })
             .to_string();
         }
+        // ABI 4: `note` is a secret the plugin declares, under a name no
+        // privacy word matches, so only the reply's `secrets` can hide it.
+        if let Some(note) = value["config"]["note"].as_str()
+            && value["config"]["note_refuse"].as_bool() == Some(true)
+        {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("echo instance refuses the note {note:?}"),
+                "secrets": [note],
+            })
+            .to_string();
+        }
+        // A reply that does not fit the contract (`detail` is a number) but
+        // still declares a secret: the host must record it before it quotes
+        // the reply in its error.
+        if let Some(note) = value["config"]["note"].as_str()
+            && value["config"]["malformed"].as_bool() == Some(true)
+        {
+            return serde_json::json!({"ok": true, "detail": 5, "secrets": [note]}).to_string();
+        }
         // The half a manifest's `type` exists for: this key is a boolean, and a
         // plugin holding that line is what turns the host writing `'false'`
         // into a refusal the author of the config can do nothing about. The
         // manifest declares `"type": "boolean"` so the host writes `false`.
         match &value["config"]["loud"] {
-            serde_json::Value::Null | serde_json::Value::Bool(_) => r#"{"ok":true}"#.to_string(),
+            serde_json::Value::Null | serde_json::Value::Bool(_) => {
+                reply_with(&value, "detail", "note")
+            }
             _ => r#"{"ok":false,"error":"echo instance's \"loud\" must be true or false"}"#
                 .to_string(),
         }
@@ -201,7 +269,7 @@ pub extern "C" fn bddkit_probe_config(request: *const c_char) -> *mut c_char {
         };
         match value["config"]["probe_error"].as_str() {
             Some(error) => serde_json::json!({"ok": false, "error": error}).to_string(),
-            None => r#"{"ok":true}"#.to_string(),
+            None => reply_with(&value, "probe_detail", "probe_note"),
         }
     })
 }
@@ -405,6 +473,44 @@ pub extern "C" fn bddkit_dispatch(
                 "diagnostics": [{"title": "echo state", "kind": "text", "content": "one"}]
             })
             .to_string(),
+            19 => serde_json::json!({"status": "passed", "vars": {"echo_args": args.join("|")}})
+                .to_string(),
+            20 => serde_json::json!({
+                "status": "fatal",
+                "error": format!("the echo saw {}", args.first().cloned().unwrap_or_default()),
+            })
+            .to_string(),
+            21 | 23 => serde_json::json!({"status": "passed"}).to_string(),
+            22 => {
+                let name = args.first().cloned().unwrap_or_default();
+                serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
+            }
+            24 => {
+                let family = format!("{}_one", args.first().cloned().unwrap_or_default());
+                serde_json::json!({"status": "passed", "vars": {"echo_spread": "1", family: "1"}})
+                    .to_string()
+            }
+            25 => {
+                let name = args.get(1).cloned().unwrap_or_default();
+                serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()
+            }
+            26 => value["docstring"].as_str().unwrap_or_default().trim().to_string(),
+            27 => {
+                let attempt = value["attempt"].as_u64().unwrap_or(0);
+                let script: Vec<serde_json::Value> =
+                    serde_json::from_str(value["docstring"].as_str().unwrap_or_default().trim())
+                        .unwrap_or_default();
+                let index = (attempt as usize).saturating_sub(1).min(script.len().saturating_sub(1));
+                let mut reply = script.get(index).cloned().unwrap_or_default();
+                reply["error"] = format!("attempt {attempt}").into();
+                reply["vars"] = serde_json::json!({"echo_attempt": attempt.to_string()});
+                reply.to_string()
+            }
+            28 => serde_json::json!({
+                "status": "passed",
+                "vars": {"echo_source_dir": value["source_dir"]},
+            })
+            .to_string(),
             other => {
                 serde_json::json!({"status": "fatal", "error": format!("unknown step {other}")})
                     .to_string()
@@ -424,6 +530,11 @@ pub extern "C" fn bddkit_validate_step(step_index: u32, request: *const c_char) 
             (16, Some("panic")) => panic!("the echo validator exploded"),
             (16, Some("malformed")) => "not json".to_string(),
             (16, Some("noerror")) => r#"{"ok":false}"#.to_string(),
+            (19, Some("13")) => refuse("the echo refuses 13"),
+            (28, Some("refuse")) => refuse(&format!(
+                "source_dir={}",
+                value["source_dir"].as_str().unwrap_or_default()
+            )),
             (17, _) if doc.contains("<<") => {
                 refuse("the doc string reached validation uninterpolated")
             }
@@ -444,6 +555,38 @@ pub extern "C" fn bddkit_reset_scenario(handle: u64) -> *mut c_char {
         }
         instance.attempts = 0;
         r#"{"ok":true}"#.to_string()
+    })
+}
+
+/// What this instance adds to a failure dump. `BDDKIT_ECHO_FIXTURE_CONTEXT`
+/// (set on the CHILD by a test) picks a bad reply instead: `panic`, `null`,
+/// `malformed` (valid JSON of the wrong shape, still declaring a secret),
+/// `empty` (no diagnostics), `error` (an envelope that says it failed).
+#[unsafe(no_mangle)]
+pub extern "C" fn bddkit_failure_context(handle: u64) -> *mut c_char {
+    let mode = std::env::var("BDDKIT_ECHO_FIXTURE_CONTEXT").unwrap_or_default();
+    if mode == "null" {
+        return std::ptr::null_mut();
+    }
+    guard("envelope", move || {
+        let guard = INSTANCES.lock().expect("instances");
+        let prefix = guard
+            .as_ref()
+            .and_then(|instances| instances.get(&handle))
+            .map_or_else(String::new, |instance| instance.prefix.clone());
+        match mode.as_str() {
+            "panic" => panic!("the echo context exploded"),
+            "malformed" => r#"{"diagnostics":"nope","secrets":["context-malformed-secret"]}"#
+                .to_string(),
+            "empty" => r#"{"diagnostics":[]}"#.to_string(),
+            "error" => r#"{"ok":false,"error":"the echo context refused context-error-secret","secrets":["context-error-secret"]}"#.to_string(),
+            _ => serde_json::json!({"diagnostics": [
+                {"title": "echo context", "kind": "text", "content": format!("context of {prefix}")},
+                {"title": "echo context json", "kind": "json",
+                 "content": r#"{"password":"context-pass-123"}"#},
+            ]})
+            .to_string(),
+        }
     })
 }
 

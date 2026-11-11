@@ -998,7 +998,6 @@ fn resource_fields_describes_a_plugins_group_only_with_a_config() {
         .expect("run bddkit");
     let bare_out = String::from_utf8_lossy(&bare.stdout);
     assert_eq!(bare.status.code(), Some(0), "{bare_out}");
-    assert!(bare_out.contains("api:"), "{bare_out}");
     assert!(
         !bare_out.contains("echo:"),
         "without --config no plugin is loaded, so it describes nothing:\n{bare_out}"
@@ -2024,7 +2023,7 @@ fn a_secret_group_no_pattern_group_has_stops_the_run_at_load() {
 }
 
 #[test]
-fn a_plugin_built_for_abi_2_is_refused_by_a_generation_3_host() {
+fn a_plugin_built_for_abi_2_is_refused_by_a_generation_4_host() {
     let dir = project(
         "abi2-refused",
         "Feature: f\n  Scenario: s\n    When I echo \"x\" as \"y\"\n",
@@ -2034,7 +2033,30 @@ fn a_plugin_built_for_abi_2_is_refused_by_a_generation_3_host() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("ABI version 2") && stderr.contains("this bddkit speaks 3"),
+        stderr.contains("ABI version 2")
+            && stderr.contains("older than the 3")
+            && stderr.contains("not updated"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_plugin_built_for_abi_3_loads_and_one_built_for_abi_5_is_refused() {
+    let feature = "Feature: f\n  Scenario: s\n    When I echo \"x\" as \"y\"\n";
+    let dir = project("abi3-loads", feature, ECHO_GROUP);
+    let out = run_with(&dir, &[], &[("BDDKIT_ECHO_FIXTURE_ABI", "3")]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dir = project("abi5-refused", feature, ECHO_GROUP);
+    let out = run_with(&dir, &[], &[("BDDKIT_ECHO_FIXTURE_ABI", "5")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ABI version 5") && stderr.contains("upgrade bddkit"),
         "{stderr}"
     );
 }
@@ -2323,4 +2345,1481 @@ fn a_plugin_without_the_hook_accepts_every_step() {
         1,
     );
     assert_green(&run(&dir));
+}
+
+/// A file of `feature` run through the echo fixture, for the `expression` steps.
+fn expression_project(name: &str, feature: &str) -> PathBuf {
+    project(name, &format!("Feature: f\n{feature}"), ECHO_GROUP)
+}
+
+#[test]
+fn an_expression_step_gets_one_arg_per_parameter_with_or_without_its_optional_quotes() {
+    let dir = expression_project(
+        "expression-args",
+        "  Scenario: s\n    When I echo the number 5\n    Then variable \"echo_args\" should be equal to \"5\"\n    When I echo the number \"6\"\n    Then variable \"echo_args\" should be equal to \"6\"\n",
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn validate_step_gets_one_arg_per_parameter_with_or_without_its_optional_quotes() {
+    for (name, step) in [
+        ("expression-validate-bare", "I echo the number 13"),
+        ("expression-validate-quoted", "I echo the number \"13\""),
+    ] {
+        let dir = expression_project(name, &format!("  Scenario: s\n    When {step}\n"));
+        let out = run(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains("the echo refuses 13"), "{stderr}");
+    }
+}
+
+#[test]
+fn a_typed_parameter_holding_a_wrong_literal_is_exit_2_naming_the_parameter() {
+    let dir = expression_project(
+        "expression-wrong-literal",
+        "  Scenario: s\n    When I echo the number abc\n",
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(r#"parameter <n> expects uint, got "abc""#),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_slot_holding_a_wrong_value_fails_the_step_as_a_builtins_would() {
+    let dir = expression_project(
+        "expression-wrong-slot",
+        "  Scenario: s\n    Given set variable \"n\" to \"abc\"\n    When I echo the number <<n>>\n",
+    );
+    let out = run(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains(r#"parameter <n> expects uint, got "abc""#),
+        "{stdout}"
+    );
+    assert!(stdout.contains("failed: 1 (1 input)"), "{stdout}");
+}
+
+#[test]
+fn a_literal_secret_parameter_is_hidden_everywhere_and_joins_the_secret_set() {
+    let dir = expression_project(
+        "expression-secret",
+        "  Scenario: a\n    Then the echo should fail with key \"key-literal-1\"\n\n  Scenario: b\n    Then the echo should fail quoting \"key-literal-1\"\n",
+    );
+    let out = run_with(
+        &dir,
+        &["--events", "events.ndjson", "--junit", "junit.xml"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains(r#"with key "***""#), "{stdout}");
+    assert!(stdout.contains("the echo saw ***"), "{stdout}");
+    assert!(stdout.contains("the echo quoted ***"), "{stdout}");
+    assert!(!stdout.contains("key-literal-1"), "{stdout}");
+    for report in ["events.ndjson", "junit.xml"] {
+        let text = std::fs::read_to_string(dir.join(report)).expect("report");
+        assert!(!text.contains("key-literal-1"), "{report}: {text}");
+    }
+    let stream = std::fs::read_to_string(dir.join("events.ndjson")).expect("stream");
+    assert!(stream.contains(r#"with key \"***\""#), "{stream}");
+}
+
+#[test]
+fn steps_list_shows_an_expression_steps_template() {
+    let dir = expression_project("expression-list", "");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["steps", "list", "echo", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("I echo the number <n>"), "{stdout}");
+    assert!(
+        stdout.contains(r#"the echo should fail with key "<key>""#),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_macro_conflicting_with_an_expression_step_is_refused_at_startup() {
+    let dir = macro_project(
+        "expression-conflict",
+        "Feature: f\n  Scenario: s\n    When I echo the number 5\n",
+        "- step: I echo the number {x:uint}\n  do: [set variable \"a\" to \"b\"]\n",
+    );
+    let out = run(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("conflicts with plugin step \"I echo the number <n>\""),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_literal_secret_in_a_step_no_single_entry_matched_stays_hidden() {
+    for (name, yaml, step) in [
+        // A refused typed literal: the step matches nothing.
+        (
+            "secret-refused-literal",
+            "- step: I ship {n:uint} with key {key:secret}\n  do: [set variable \"a\" to \"b\"]\n",
+            "I ship abc with key \"real-secret-value\"",
+        ),
+        // A macro overlapping a plugin pattern: the step matches two.
+        (
+            "secret-ambiguous",
+            "- step: I echo {user:text} with password {key:secret}\n  do: [set variable \"a\" to \"b\"]\n",
+            "I echo \"ann\" with password \"real-secret-value\"",
+        ),
+    ] {
+        let dir = macro_project(
+            name,
+            &format!("Feature: f\n  Scenario: s\n    When {step}\n"),
+            yaml,
+        );
+        let out = run(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{name}: {stderr}");
+        assert!(stderr.contains("***"), "{name}: {stderr}");
+        assert!(!stderr.contains("real-secret-value"), "{name}: {stderr}");
+    }
+}
+
+/// `doctor` over a caller and the `helper.feature` it includes.
+fn doctor_on_include(name: &str, caller: &str, helper: &str) -> String {
+    let dir = project(
+        name,
+        &format!("Feature: only\n  Scenario: one\n{caller}"),
+        ECHO_GROUP,
+    );
+    std::fs::write(
+        dir.join("features/helper.feature"),
+        format!("Feature: helper\n{helper}"),
+    )
+    .expect("write helper");
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(["doctor", "--config", "cfg.yaml"])
+        .current_dir(&dir)
+        .output()
+        .expect("run bddkit");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "both are hints: {stdout}");
+    stdout
+}
+
+const INCLUDE: &str = "    Given I include \"helper.feature\"\n";
+const SENDS: &str = "  Scenario: make\n    Given I send the echo\n";
+
+#[test]
+fn an_extract_shaped_step_after_an_include_gets_the_hint_naming_the_state() {
+    let out = doctor_on_include(
+        "effects-hint",
+        &format!("{INCLUDE}    And I keep the echo as \"team_id\"\n"),
+        SENDS,
+    );
+    assert!(
+        out.contains(
+            "plugin.feature:4: extract \"team_id\" reads the exchange the include left behind; export the value from the helper instead"
+        ),
+        "{out}"
+    );
+    // A pattern step fills a placeholder from a named capture group.
+    let out = doctor_on_include(
+        "effects-hint-pattern",
+        &format!("{INCLUDE}    And I keep the echo slot \"a\" as \"team_id\"\n"),
+        SENDS,
+    );
+    assert!(
+        out.contains("extract \"team_id\" reads the slot:a the include left behind"),
+        "{out}"
+    );
+}
+
+#[test]
+fn the_hint_stays_quiet_about_an_export_a_reader_and_an_unknown_name() {
+    for (name, next) in [
+        (
+            "effects-quiet-read",
+            "Then the echo exchange should be kept",
+        ),
+        ("effects-quiet-slot", "And I keep the echo as \"<<team>>\""),
+        (
+            "effects-quiet-state",
+            "And I keep the echo slot \"<<s>>\" as \"team_id\"",
+        ),
+    ] {
+        let out = doctor_on_include(name, &format!("{INCLUDE}    {next}\n"), SENDS);
+        assert!(!out.contains("left behind"), "{name}: {out}");
+    }
+    let out = doctor_on_include(
+        "effects-quiet-export",
+        "    Given I include \"helper.feature\" with prefix \"a\"\n    And I keep the echo as \"a_team_id\"\n",
+        "  @exports(team_id)\n  Scenario: make\n    Given I keep the echo as \"team_id\"\n",
+    );
+    assert!(!out.contains("left behind"), "{out}");
+    assert!(!out.contains("sets it"), "{out}");
+}
+
+#[test]
+fn a_family_gets_no_hint_of_its_own_and_its_fixed_name_does() {
+    let out = doctor_on_include(
+        "effects-family-hint",
+        &format!("{INCLUDE}    And I spread the echo over \"fam\"\n"),
+        SENDS,
+    );
+    assert!(out.contains("extract \"echo_spread\" reads"), "{out}");
+    assert!(!out.contains("fam_"), "{out}");
+}
+
+#[test]
+fn the_writer_list_takes_sets_vars_and_reports_what_no_step_writes() {
+    let out = doctor_on_include(
+        "effects-writers",
+        INCLUDE,
+        "  @exports(team_id,nobody)\n  Scenario: make\n    Given I send the echo\n    And I keep the echo as \"team_id\"\n",
+    );
+    assert!(out.contains("@exports names \"nobody\""), "{out}");
+    assert!(!out.contains("\"team_id\", but"), "{out}");
+}
+
+#[test]
+fn a_family_matches_an_export_by_prefix() {
+    let out = doctor_on_include(
+        "effects-family",
+        INCLUDE,
+        "  @exports(fam_one,echo_spread,other)\n  Scenario: make\n    Given I spread the echo over \"fam\"\n",
+    );
+    assert!(out.contains("@exports names \"other\""), "{out}");
+    assert!(!out.contains("\"fam_one\", but"), "{out}");
+    assert!(!out.contains("\"echo_spread\", but"), "{out}");
+}
+
+#[test]
+fn a_step_with_no_effects_or_an_unknown_name_makes_the_writer_list_give_up() {
+    for (name, helper) in [
+        (
+            "effects-giveup-none",
+            "  @exports(nobody)\n  Scenario: make\n    Given I echo \"x\" as \"y\"\n",
+        ),
+        (
+            "effects-giveup-slot",
+            "  @exports(nobody)\n  Scenario: make\n    Given I keep the echo as \"<<n>>\"\n",
+        ),
+        (
+            "effects-giveup-column",
+            "  @exports(nobody)\n  Scenario Outline: make\n    Given I keep the echo as \"<k>\"\n    Examples:\n      | k |\n      | a |\n",
+        ),
+    ] {
+        let out = doctor_on_include(name, INCLUDE, helper);
+        assert!(!out.contains("sets it"), "{name}: {out}");
+    }
+}
+
+// ---- ABI 4: `secrets` and `detail` in a plugin's config replies ----
+
+/// stdout and stderr together, and the exit code, of `bddkit <args>` in `dir`.
+fn bddkit_in(dir: &Path, args: &[&str]) -> (String, Option<i32>) {
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run bddkit");
+    (
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        out.status.code(),
+    )
+}
+
+/// `note` matches no privacy word, so only the reply's `secrets` can hide it.
+const REFUSING_NOTE: &str =
+    "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n      note_refuse: true\n";
+
+#[test]
+fn a_secret_in_a_refusing_reply_is_masked_in_its_own_refusal_text() {
+    let dir = project(
+        "cfg-secret-refusal",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        REFUSING_NOTE,
+    );
+    for args in [
+        &["run", "--config", "cfg.yaml"][..],
+        &["doctor", "--config", "cfg.yaml"][..],
+        &["doctor", "--config", "cfg.yaml", "--json"][..],
+    ] {
+        let (text, code) = bddkit_in(&dir, args);
+        assert_ne!(code, Some(0), "{args:?}: {text}");
+        assert!(text.contains("refuses the note"), "{args:?}: {text}");
+        assert!(!text.contains("plugin-note-9876"), "{args:?}: {text}");
+    }
+    let (text, _) = bddkit_in(&dir, &["run", "--config", "cfg.yaml", "--reveal"]);
+    assert!(
+        text.contains("plugin-note-9876"),
+        "--reveal shows it: {text}"
+    );
+}
+
+#[test]
+fn a_secret_under_min_length_stays_visible() {
+    let dir = project(
+        "cfg-secret-short",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: abc\n      note_refuse: true\n",
+    );
+    let (text, _) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert!(text.contains(r#"refuses the note "abc""#), "{text}");
+}
+
+#[test]
+fn resource_add_masks_a_secret_in_the_refusal_block() {
+    let dir = project(
+        "cfg-secret-resource-add",
+        "Feature: f\n",
+        &format!("{ECHO_GROUP}default_echo: main\n"),
+    );
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--note",
+            "plugin-note-9876",
+            "--note_refuse",
+            "true",
+        ],
+    );
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("refuses the note"), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}
+
+/// The block is the whole value of the failure path, so it has to be pasteable
+/// under `resources:`, which means carrying the group key when the config does
+/// not have that group yet, and it is masked: a URL password in a value never
+/// reaches the screen.
+#[test]
+fn resource_add_prints_a_masked_block_with_the_group_key_the_config_lacks() {
+    let dir = project("resource-add-new-group", "Feature: f\n", "");
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "http://app:add-pass-5678@127.0.0.1:1/app",
+            "--probe_error",
+            "the bucket is not there",
+        ],
+    );
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("The block, for manual insertion"), "{text}");
+    assert!(
+        text.contains("echo:\n  second:\n    prefix: http://app:***@127.0.0.1:1/app\n"),
+        "the block names the group it belongs under, masked: {text}"
+    );
+    assert!(!text.contains("add-pass-5678"), "{text}");
+}
+
+#[test]
+fn a_config_secret_is_masked_in_a_file_with_no_plugin_step() {
+    let dir = project(
+        "cfg-secret-no-step",
+        "Feature: f\n  Scenario: s\n    Given set variable \"v\" to \"plugin-note-9876\"\n    Then variable \"v\" should be equal to \"other\"\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}
+
+#[test]
+fn doctor_shows_the_detail_of_an_ok_instance_static_and_live() {
+    let dir = project(
+        "cfg-detail",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      detail: static-detail-text\n      probe_detail: live-detail-text\n    plain:\n      prefix: q-\ndefault_echo: main\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["doctor", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("static-detail-text"), "{text}");
+    assert!(!text.contains("live-detail-text"), "{text}");
+
+    let (live, _) = bddkit_in(&dir, &["doctor", "--config", "cfg.yaml", "--live"]);
+    assert!(live.contains("live-detail-text"), "{live}");
+    assert!(
+        live.contains("probed clean"),
+        "an ok instance without a detail keeps today's row:\n{live}"
+    );
+
+    let (json, _) = bddkit_in(
+        &dir,
+        &["doctor", "--config", "cfg.yaml", "--live", "--json"],
+    );
+    assert!(
+        json.contains("static-detail-text") && json.contains("live-detail-text"),
+        "{json}"
+    );
+}
+
+#[test]
+fn resource_add_masks_a_secret_only_the_probe_declares() {
+    let dir = project(
+        "cfg-probe-secret",
+        "Feature: f\n",
+        &format!("{ECHO_GROUP}default_echo: main\n"),
+    );
+    let (text, code) = bddkit_in(
+        &dir,
+        &[
+            "resource",
+            "add",
+            "echo",
+            "second",
+            "--config",
+            "cfg.yaml",
+            "--prefix",
+            "q-",
+            "--probe_note",
+            "plugin-probe-5555",
+            "--probe_detail",
+            "reached with plugin-probe-5555",
+        ],
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("reached with"), "{text}");
+    assert!(!text.contains("plugin-probe-5555"), "{text}");
+}
+
+#[test]
+fn a_malformed_config_reply_still_has_its_secrets_masked() {
+    let dir = project(
+        "cfg-malformed-secret",
+        "Feature: f\n  Scenario: s\n    Given I am in debug mode\n",
+        "  echo:\n    main:\n      prefix: p-\n      note: plugin-note-9876\n      malformed: true\n",
+    );
+    let (text, code) = bddkit_in(&dir, &["run", "--config", "cfg.yaml"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("malformed validate_config reply"), "{text}");
+    assert!(!text.contains("plugin-note-9876"), "{text}");
+}
+
+// ---- Structured diagnostics and `scan` in a plugin's reply (ABI 4) ----
+
+/// A feature whose one step makes the echo plugin answer with `reply`.
+fn answers(reply: &serde_json::Value) -> String {
+    format!(
+        "Feature: f\n  Scenario: s\n    Then the echo answers:\n      \"\"\"\n      {reply}\n      \"\"\"\n"
+    )
+}
+
+fn stdout_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn read_stream(dir: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(dir.join("events.ndjson"))
+        .expect("the stream exists")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+        .collect()
+}
+
+fn http_content(request_body: &str, response_body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "method": "POST",
+        "url": "http://svc.test/login?token=query-secret-1&page=2",
+        "request": {
+            "headers": [["Authorization", "Bearer bearer-secret-1"], ["X-Plain", "ok"]],
+            "body": request_body,
+        },
+        "status": 401,
+        "response": {
+            "headers": [["Set-Cookie", "sid=cookie-secret-1; Path=/"], ["Content-Type", "application/json"]],
+            "body": response_body,
+        },
+        "duration_us": 7,
+        "sensitive_headers": ["authorization", "set-cookie"],
+        "request_form": "raw",
+    })
+}
+
+#[test]
+fn an_http_object_is_dumped_and_emitted_masked_by_position() {
+    let reply = serde_json::json!({
+        "status": "fatal",
+        "error": "login refused",
+        "diagnostics": [{
+            "kind": "http",
+            "content": http_content(
+                r#"{"password":"pw-secret-1","name":"ann"}"#,
+                r#"{"token":"tok-secret-1","id":42}"#,
+            ),
+        }],
+    });
+    let dir = project("structured-http", &answers(&reply), ECHO_GROUP);
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    let text = stdout_of(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("login refused"), "{text}");
+    assert!(
+        text.contains("POST http://svc.test/login?token=***&page=2"),
+        "{text}"
+    );
+    assert!(text.contains("Authorization: ***"), "{text}");
+    assert!(text.contains("X-Plain: ok"), "{text}");
+    assert!(text.contains("← 401"), "{text}");
+    for secret in [
+        "query-secret-1",
+        "bearer-secret-1",
+        "pw-secret-1",
+        "tok-secret-1",
+        "cookie-secret-1",
+    ] {
+        assert!(!text.contains(secret), "{secret} leaked: {text}");
+    }
+    let stream = read_stream(&dir);
+    let evidence = stream
+        .iter()
+        .find(|e| e["type"] == "evidence")
+        .expect("an evidence event");
+    assert_eq!(evidence["kind"], "http");
+    assert_eq!(
+        (evidence["group"].as_str(), evidence["resource"].as_str()),
+        (Some("echo"), Some("main"))
+    );
+    assert!(
+        evidence.get("title").is_none(),
+        "title is optional: {evidence}"
+    );
+    let content = &evidence["content"];
+    assert_eq!(content["status"], 401);
+    for stripped in ["sensitive_headers", "request_form", "in_dump", "resource"] {
+        assert!(
+            content.get(stripped).is_none(),
+            "{stripped} stays out: {content}"
+        );
+    }
+    assert_eq!(
+        content["request"]["headers"][0],
+        serde_json::json!(["Authorization", "***"])
+    );
+    let raw = std::fs::read_to_string(dir.join("events.ndjson")).unwrap();
+    for secret in [
+        "query-secret-1",
+        "bearer-secret-1",
+        "pw-secret-1",
+        "tok-secret-1",
+        "cookie-secret-1",
+    ] {
+        assert!(
+            !raw.contains(secret),
+            "{secret} leaked into the stream: {raw}"
+        );
+    }
+
+    let revealed = run_with(&dir, &["--reveal"], &[]);
+    let text = stdout_of(&revealed);
+    assert!(
+        text.contains("POST http://svc.test/login?token=query-secret-1&page=2"),
+        "{text}"
+    );
+    assert!(text.contains("Bearer bearer-secret-1"), "{text}");
+}
+
+#[test]
+fn a_form_body_and_a_long_response_follow_the_built_in_rules() {
+    let long = format!(r#"{{"token":"tok-long-1","pad":"{}"}}"#, "x".repeat(20_000));
+    let mut content = http_content("password=form-secret-1&name=ann", &long);
+    content["request_form"] = "form".into();
+    let reply = serde_json::json!({
+        "status": "fatal", "error": "refused",
+        "diagnostics": [{"kind": "http", "title": "login", "content": content}],
+    });
+    let dir = project("structured-http-form", &answers(&reply), ECHO_GROUP);
+    let out = run_with(
+        &dir,
+        &[
+            "--events",
+            "events.ndjson",
+            "--evidence",
+            "--artifacts-dir",
+            "art",
+        ],
+        &[],
+    );
+    let text = stdout_of(&out);
+    assert!(text.contains("password=***&name=ann"), "{text}");
+    assert!(
+        !text.contains("form-secret-1") && !text.contains("tok-long-1"),
+        "{text}"
+    );
+    // The dump cuts the body to 600 characters, after masking.
+    assert!(text.contains('…'), "{text}");
+    let stream = read_stream(&dir);
+    let evidence = stream.iter().find(|e| e["type"] == "evidence").unwrap();
+    assert_eq!(evidence["title"], "login");
+    let body = &evidence["content"]["response"]["body"];
+    let path = body["path"].as_str().expect("a long body goes to a file");
+    assert!(path.contains("response-body."), "{path}");
+    let written = std::fs::read_to_string(dir.join("art").join(path)).unwrap();
+    assert!(
+        !written.contains("tok-long-1") && written.contains("***"),
+        "{written}"
+    );
+}
+
+#[test]
+fn an_sql_object_is_masked_by_value_only_and_stays_out_of_the_dump() {
+    let reply = serde_json::json!({
+        "status": "fatal", "error": "statement refused", "secrets": ["sql-secret-1"],
+        "diagnostics": [{
+            "kind": "sql", "resource": "orders",
+            "content": {"sql": "select * from t where k = ?", "binds": ["sql-secret-1", null], "duration_us": 3},
+        }],
+    });
+    let dir = project("structured-sql", &answers(&reply), ECHO_GROUP);
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    let text = stdout_of(&out);
+    assert!(text.contains("statement refused"), "{text}");
+    assert!(
+        !text.contains("select * from t"),
+        "sql is never in the dump: {text}"
+    );
+    let stream = read_stream(&dir);
+    let evidence = stream.iter().find(|e| e["type"] == "evidence").unwrap();
+    assert_eq!(evidence["kind"], "sql");
+    assert_eq!(evidence["resource"], "orders");
+    assert_eq!(
+        evidence["content"]["binds"],
+        serde_json::json!(["***", null])
+    );
+}
+
+#[test]
+fn a_diagnostic_that_is_not_in_the_dump_is_still_evidence() {
+    let reply = serde_json::json!({
+        "status": "fatal", "error": "refused",
+        "diagnostics": [
+            {"kind": "http", "in_dump": false, "content": http_content("", "{}")},
+            {"title": "hidden note", "kind": "text", "content": "shown nowhere", "in_dump": false},
+            {"title": "shown note", "kind": "text", "content": "shown in the dump"},
+        ],
+    });
+    let dir = project("structured-in-dump", &answers(&reply), ECHO_GROUP);
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    let text = stdout_of(&out);
+    assert!(text.contains("shown in the dump"), "{text}");
+    assert!(
+        !text.contains("svc.test") && !text.contains("shown nowhere"),
+        "{text}"
+    );
+    let kinds: Vec<_> = read_stream(&dir)
+        .iter()
+        .filter(|e| e["type"] == "evidence")
+        .map(|e| e["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["http", "text", "text"]);
+}
+
+#[test]
+fn without_evidence_a_failing_reply_reaches_the_dump_only() {
+    let reply = serde_json::json!({
+        "status": "fatal", "error": "refused",
+        "diagnostics": [{"kind": "http", "content": http_content("", "{}")}],
+    });
+    let dir = project("structured-no-evidence", &answers(&reply), ECHO_GROUP);
+    let out = run_with(&dir, &["--events", "events.ndjson"], &[]);
+    assert!(stdout_of(&out).contains("POST http://svc.test/login"));
+    assert!(read_stream(&dir).iter().all(|e| e["type"] != "evidence"));
+}
+
+#[test]
+fn a_shape_that_does_not_fit_fails_with_class_plugin_and_quotes_nothing() {
+    let mut content = http_content("", "{}");
+    content["status"] = "shape-secret-1".into();
+    let reply = serde_json::json!({
+        "status": "passed", "secrets": ["shape-secret-1"],
+        "diagnostics": [{"kind": "http", "content": content}],
+    });
+    let dir = project("structured-bad-shape", &answers(&reply), ECHO_GROUP);
+    let out = run_with(&dir, &["--junit", "junit.xml"], &[]);
+    let text = stdout_of(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("does not fit its shape"), "{text}");
+    assert!(!text.contains("shape-secret-1"), "{text}");
+    let junit = std::fs::read_to_string(dir.join("junit.xml")).unwrap();
+    assert!(junit.contains("plugin"), "{junit}");
+}
+
+#[test]
+fn a_refused_reply_still_shows_the_plugin_error_masked() {
+    let mut content = http_content("", "{}");
+    content["status"] = "x".into();
+    let reply = serde_json::json!({
+        "status": "fatal", "error": "access denied for refused-secret-1",
+        "secrets": ["refused-secret-1"],
+        "diagnostics": [{"kind": "http", "content": content}],
+    });
+    let dir = project("structured-refused-error", &answers(&reply), ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("does not fit its shape"), "{text}");
+    assert!(text.contains("access denied for ***"), "{text}");
+    assert!(!text.contains("refused-secret-1"), "{text}");
+}
+
+#[test]
+fn a_malformed_reply_still_has_its_diagnostics_and_scan_masked() {
+    // `status` is not a status, so the typed parse fails; the salvage keeps
+    // what the reply declared and the diagnostics that fit.
+    let reply = serde_json::json!({
+        "status": 7,
+        "scan": [{"kind": "json", "content": {"token": "salvage-scan-1"}}],
+        "diagnostics": [
+            {"kind": "http", "content": http_content("", "{}")},
+            {"kind": 5, "content": http_content("", r#"{"token":"salvage-body-1"}"#)},
+        ],
+    });
+    let dir = project("structured-salvage", &answers(&reply), ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("malformed"), "{text}");
+    for leaked in ["bearer-secret-1", "cookie-secret-1", "salvage-body-1"] {
+        assert!(!text.contains(leaked), "{leaked} leaked: {text}");
+    }
+}
+
+#[test]
+fn a_scan_item_registers_what_it_finds_on_any_status() {
+    // The next step quotes the value; only a registered one is masked.
+    for (name, scan, value) in [
+        (
+            "json",
+            serde_json::json!({"kind": "json", "content": r#"{"token":"scan-json-1"}"#}),
+            "scan-json-1",
+        ),
+        (
+            "form",
+            serde_json::json!({"kind": "form", "pairs": [["password", "a&b=c%41+d"], ["name", "plain-name-1"]]}),
+            "a&b=c%41+d",
+        ),
+        (
+            "query",
+            serde_json::json!({"kind": "query", "pairs": [["token", "scan-query-1"]]}),
+            "scan-query-1",
+        ),
+    ] {
+        for status in ["passed", "fatal"] {
+            let reply = serde_json::json!({"status": status, "error": "scanned", "scan": [scan]});
+            let mut feature = answers(&reply);
+            if status == "passed" {
+                feature.push_str(&format!(
+                    "    Then the echo should fail quoting \"{value}\"\n"
+                ));
+            }
+            let dir = project(&format!("scan-{name}-{status}"), &feature, ECHO_GROUP);
+            let text = stdout_of(&run(&dir));
+            if status == "passed" {
+                assert!(text.contains("the echo quoted ***"), "{name}: {text}");
+            }
+            assert!(
+                !text.contains(value),
+                "{name}/{status}: {value} leaked: {text}"
+            );
+        }
+    }
+    // A non-sensitive field is left alone.
+    let reply = serde_json::json!({"status": "passed", "scan": [{"kind": "form", "pairs": [["name", "plain-name-1"]]}]});
+    let feature = format!(
+        "{}    Then the echo should fail quoting \"plain-name-1\"\n",
+        answers(&reply)
+    );
+    let dir = project("scan-plain", &feature, ECHO_GROUP);
+    assert!(stdout_of(&run(&dir)).contains("the echo quoted plain-name-1"));
+}
+
+#[test]
+fn a_not_yet_error_quoting_a_scanned_value_is_masked_and_holds_no_dump() {
+    let reply = serde_json::json!({
+        "status": "not_yet",
+        "error": "waiting for scan-attempt-1",
+        "scan": [{"kind": "form", "pairs": [["password", "scan-attempt-1"]]}],
+        "diagnostics": [{"title": "state", "kind": "text", "content": "dump-text-1"}],
+    });
+    let feature = format!(
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass within \"1\" seconds, checking every \"20\" milliseconds\n    Then the echo answers:\n      \"\"\"\n      {reply}\n      \"\"\"\n"
+    );
+    let dir = project("scan-not-yet", &feature, ECHO_GROUP);
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    let text = stdout_of(&out);
+    let stream = read_stream(&dir);
+    let attempts: Vec<_> = stream.iter().filter(|e| e["type"] == "attempt").collect();
+    assert!(attempts.len() > 1, "polling replayed the step");
+    for attempt in &attempts {
+        assert_eq!(attempt["message"], "waiting for ***", "{attempt}");
+    }
+    // The timeout carries the mismatch once, and the last reply's dump once.
+    assert_eq!(text.matches("dump-text-1").count(), 1, "{text}");
+    assert!(!text.contains("scan-attempt-1"), "{text}");
+    // Each attempt's diagnostics are emitted before its `attempt` event.
+    let types: Vec<_> = stream.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    let first_evidence = types.iter().position(|t| *t == "evidence").unwrap();
+    let first_attempt = types.iter().position(|t| *t == "attempt").unwrap();
+    assert!(first_evidence < first_attempt, "{types:?}");
+}
+
+#[test]
+fn a_failing_macro_shows_the_plugin_diagnostic_once() {
+    let dir = macro_project(
+        "structured-macro",
+        "Feature: f\n  Scenario: s\n    When I fail through a macro\n",
+        "- step: 'I fail through a macro'\n  do: [the echo should fail with json]\n",
+    );
+    let text = stdout_of(&run(&dir));
+    assert_eq!(text.matches("--- response (json) ---").count(), 1, "{text}");
+    assert!(text.contains("I fail through a macro"), "{text}");
+    assert!(!text.contains("diag-refresh-token-1"), "{text}");
+}
+
+#[test]
+fn a_text_diagnostic_names_its_own_resource_in_the_stream() {
+    let reply = serde_json::json!({
+        "status": "passed",
+        "diagnostics": [{"title": "note", "kind": "text", "content": "x", "resource": "other"}],
+    });
+    let dir = project("structured-resource-text", &answers(&reply), ECHO_GROUP);
+    assert_green(&run_with(
+        &dir,
+        &["--events", "events.ndjson", "--evidence"],
+        &[],
+    ));
+    let stream = read_stream(&dir);
+    let evidence = stream.iter().find(|e| e["type"] == "evidence").unwrap();
+    assert_eq!(evidence["resource"], "other");
+}
+
+// ---- Dispatch keys of ABI 4: class, attempt, options_instance, output, global_vars, source_dir ----
+
+fn polled(script: &serde_json::Value, within: &str) -> String {
+    format!(
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass within \"{within}\" seconds, checking every \"20\" milliseconds\n    Then the echo answers by attempt:\n      \"\"\"\n      {script}\n      \"\"\"\n"
+    )
+}
+
+#[test]
+fn a_reply_names_its_failure_class_and_an_unknown_one_counts_as_absent_with_one_warning() {
+    for class in [
+        "assertion",
+        "transport",
+        "db_connection",
+        "db_statement",
+        "input",
+        "unclassified",
+    ] {
+        let reply = serde_json::json!({"status": "fatal", "error": "boom", "class": class});
+        let dir = project(&format!("class-{class}"), &answers(&reply), ECHO_GROUP);
+        let text = stdout_of(&run(&dir));
+        assert!(
+            text.contains(&format!("failed: 1 (1 {class})")),
+            "{class}: {text}"
+        );
+    }
+    // Absent, and not one the host lets a plugin name: today's class.
+    for class in [
+        serde_json::json!("bogus"),
+        serde_json::json!("reset"),
+        serde_json::json!(7),
+    ] {
+        let reply = serde_json::json!({"status": "fatal", "error": "boom", "class": class});
+        let dir = project("class-unknown", &answers(&reply), ECHO_GROUP);
+        let text = stdout_of(&run(&dir));
+        assert!(text.contains("failed: 1 (1 plugin)"), "{class}: {text}");
+    }
+}
+
+#[test]
+fn an_unknown_class_in_two_steps_warns_once() {
+    let failing = serde_json::json!({"status": "fatal", "error": "boom", "class": "bogus"});
+    let step = |r: &serde_json::Value| {
+        format!("    Then the echo answers:\n      \"\"\"\n      {r}\n      \"\"\"\n")
+    };
+    // Only a failing reply is classified, so two failing scenarios send it.
+    let feature = format!(
+        "Feature: f\n  Scenario: a\n{}  Scenario: b\n{}",
+        step(&failing),
+        step(&failing)
+    );
+    let dir = project("class-warn-once", &feature, ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert_eq!(
+        text.matches("which is not one it may name").count(),
+        1,
+        "{text}"
+    );
+    assert!(text.contains("\"bogus\""), "{text}");
+}
+
+#[test]
+fn a_poll_ends_with_the_class_of_its_last_attempt() {
+    let script = serde_json::json!([
+        {"status": "not_yet", "class": "transport"},
+        {"status": "not_yet", "class": "assertion"},
+        {"status": "not_yet", "class": "transport"},
+    ]);
+    let dir = project("class-poll", &polled(&script, "1"), ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("failed: 1 (1 transport)"), "{text}");
+}
+
+#[test]
+fn a_step_sees_its_attempt_number() {
+    let script = serde_json::json!([
+        {"status": "not_yet"},
+        {"status": "not_yet"},
+        {"status": "passed"},
+    ]);
+    let feature = format!(
+        "{}    Then variable \"echo_attempt\" should be equal to \"3\"\n",
+        polled(&script, "2")
+    );
+    let dir = project("attempt-poll", &feature, ECHO_GROUP);
+    assert_green(&run(&dir));
+    // Not polled: 1.
+    let script = serde_json::json!([{"status": "passed"}]);
+    let feature = format!(
+        "Feature: f\n  Scenario: s\n    Then the echo answers by attempt:\n      \"\"\"\n      {script}\n      \"\"\"\n    And variable \"echo_attempt\" should be equal to \"1\"\n"
+    );
+    let dir = project("attempt-once", &feature, ECHO_GROUP);
+    assert_green(&run(&dir));
+}
+
+const POLL_INSTANCES: &str = "  echo:\n    main:\n      prefix: \"p-\"\n      options:\n        polling:\n          timeout_secs: 1\n          interval_ms: 20\n    slow:\n      prefix: \"s-\"\n      options:\n        polling:\n          timeout_secs: 3\n          interval_ms: 25\ndefault_echo: main\n";
+
+#[test]
+fn options_instance_makes_a_poll_use_that_instances_options() {
+    // `main` allows 1 s every 20 ms; `slow` allows 3 s every 25 ms. A bare
+    // "eventually" modifier layers nothing on top, so the numbers are slow's.
+    let script = serde_json::json!([{"status": "not_yet", "options_instance": "slow"}]);
+    let feature = format!(
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass eventually\n    Then the echo answers by attempt:\n      \"\"\"\n      {script}\n      \"\"\"\n"
+    );
+    let dir = project("options-instance", &feature, POLL_INSTANCES);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("did not pass within 3s"), "{text}");
+    assert!(text.contains("interval 25ms"), "{text}");
+}
+
+#[test]
+fn the_modifiers_layer_stays_on_top_of_options_instance() {
+    let script = serde_json::json!([{"status": "not_yet", "options_instance": "slow"}]);
+    let dir = project(
+        "options-instance-layer",
+        &polled(&script, "2"),
+        POLL_INSTANCES,
+    );
+    let text = stdout_of(&run(&dir));
+    assert!(
+        text.contains("did not pass within 2s"),
+        "the layer's timeout wins: {text}"
+    );
+    assert!(
+        text.contains("interval 20ms"),
+        "the layer's interval wins: {text}"
+    );
+}
+
+#[test]
+fn options_instance_takes_the_other_instances_polling_when_the_modifier_is_silent() {
+    let script = serde_json::json!([{"status": "not_yet", "options_instance": "slow"}]);
+    // A modifier that sets only the timeout: the interval comes from `slow`.
+    let feature = format!(
+        "Feature: f\n  Scenario: s\n    When I expect the next assertion to pass within \"2\" seconds\n    Then the echo answers by attempt:\n      \"\"\"\n      {script}\n      \"\"\"\n"
+    );
+    let dir = project("options-instance-interval", &feature, POLL_INSTANCES);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("interval 25ms"), "{text}");
+}
+
+#[test]
+fn an_undeclared_options_instance_fails_with_class_plugin() {
+    let script = serde_json::json!([{"status": "not_yet", "options_instance": "nowhere"}]);
+    let dir = project(
+        "options-instance-undeclared",
+        &polled(&script, "2"),
+        POLL_INSTANCES,
+    );
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("failed: 1 (1 plugin)"), "{text}");
+    assert!(text.contains("nowhere"), "{text}");
+}
+
+#[test]
+fn output_is_printed_to_stderr_masked_and_never_to_stdout() {
+    let reply = serde_json::json!({
+        "status": "passed",
+        "secrets": ["output-secret-value-1"],
+        "output": [
+            {"text": "{\"user\":\"ann\",\"password\":\"hunter2hunter2\"}", "syntax": "json"},
+            {"text": "<a><b>output-secret-value-1</b></a>", "syntax": "xml"},
+            {"text": "plain output-secret-value-1", "syntax": null},
+            {"title": "== sent ==", "headers": [["Authorization", "ab"], ["X-Plain", "visible"]],
+             "sensitive_headers": ["authorization"]},
+        ],
+    });
+    let dir = project("output-forms", &answers(&reply), ECHO_GROUP);
+    let out = run(&dir);
+    let (stdout, stderr) = (
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    );
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("\"user\": \"ann\""),
+        "json is pretty-printed: {stderr}"
+    );
+    assert!(!stderr.contains("hunter2hunter2"), "{stderr}");
+    assert!(!stderr.contains("output-secret-value-1"), "{stderr}");
+    assert!(stderr.contains("<a>\n  <b>"), "xml is beautified: {stderr}");
+    assert!(stderr.contains("Authorization : ***"), "{stderr}");
+    assert!(stderr.contains("X-Plain       : visible"), "{stderr}");
+    assert!(
+        !stdout.contains("== sent =="),
+        "output never reaches stdout: {stdout}"
+    );
+
+    let out = run_with(&dir, &["--reveal"], &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("hunter2hunter2"),
+        "--reveal shows it: {stderr}"
+    );
+    assert!(stderr.contains("Authorization : ab"), "{stderr}");
+}
+
+#[test]
+fn a_polled_step_prints_its_output_once_per_attempt_and_a_bad_item_is_refused() {
+    let script = serde_json::json!([
+        {"status": "not_yet", "output": [{"text": "tick-marker"}]},
+        {"status": "passed", "output": [{"text": "tick-marker"}]},
+    ]);
+    let dir = project("output-attempts", &polled(&script, "2"), ECHO_GROUP);
+    let out = run(&dir);
+    assert_green(&out);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr)
+            .matches("tick-marker")
+            .count(),
+        2
+    );
+
+    let reply = serde_json::json!({"status": "passed", "output": [{"nonsense": "secret-quote-9"}]});
+    let dir = project("output-bad", &answers(&reply), ECHO_GROUP);
+    let out = run(&dir);
+    let all = format!(
+        "{}{}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("failed: 1 (1 plugin)"), "{all}");
+    assert!(!all.contains("secret-quote-9"), "{all}");
+}
+
+#[test]
+fn global_vars_write_the_global_frame_and_win_over_vars_for_one_name() {
+    let reply = serde_json::json!({
+        "status": "passed",
+        "vars": {"both": "from-vars", "local": "kept"},
+        "global_vars": {"both": "from-global", "only_global": "g"},
+    });
+    let feature = format!(
+        "{}    Then variable \"both\" should be equal to \"from-global\"\n    And variable \"local\" should be equal to \"kept\"\n    And variable \"only_global\" should be equal to \"g\"\n",
+        answers(&reply)
+    );
+    let dir = project("global-vars", &feature, ECHO_GROUP);
+    let out = run(&dir);
+    assert_green(&out);
+    assert!(
+        !stdout_of(&out).contains("shadows"),
+        "a shadow this reply made is not warned about: {}",
+        stdout_of(&out)
+    );
+}
+
+#[test]
+fn global_vars_warn_when_a_file_level_variable_shadows_them_and_a_failure_writes_nothing() {
+    let reply = serde_json::json!({"status": "passed", "global_vars": {"seen": "g"}});
+    let feature = format!(
+        "Feature: f\n  Scenario: s\n    Given set variable \"seen\" to \"file\"\n{}    Then variable \"seen\" should be equal to \"file\"\n",
+        answers(&reply).replace("Feature: f\n  Scenario: s\n", "")
+    );
+    let dir = project("global-vars-shadow", &feature, ECHO_GROUP);
+    let out = run(&dir);
+    assert_green(&out);
+    assert!(
+        stdout_of(&out).contains("shadows it"),
+        "{}",
+        stdout_of(&out)
+    );
+
+    let failing =
+        serde_json::json!({"status": "fatal", "error": "no", "global_vars": {"ghost": "g"}});
+    let feature = format!(
+        "{}  Scenario: t\n    Then variable \"ghost\" should be equal to \"g\"\n",
+        answers(&failing)
+    );
+    let dir = project("global-vars-failed", &feature, ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(
+        text.contains("failed: 2"),
+        "the second scenario sees no ghost: {text}"
+    );
+}
+
+#[test]
+fn source_dir_is_the_absolute_directory_of_the_file_a_step_is_written_in() {
+    let dir = project(
+        "source-dir",
+        "Feature: f\n  Scenario: s\n    When I echo the source directory as \"ok\"\n    Then variable \"echo_source_dir\" should be equal to \"@HERE@/features\"\n",
+        ECHO_GROUP,
+    );
+    let here = std::path::absolute(&dir).unwrap().display().to_string();
+    let feature = std::fs::read_to_string(dir.join("features/plugin.feature")).unwrap();
+    std::fs::write(
+        dir.join("features/plugin.feature"),
+        feature.replace("@HERE@", &here),
+    )
+    .unwrap();
+    // `paths: [features]` is relative: the run was started with a relative path.
+    assert_green(&run(&dir));
+
+    // The same value reaches `bddkit_validate_step`, before any request.
+    let dir = project(
+        "source-dir-validate",
+        "Feature: f\n  Scenario: s\n    When I echo the source directory as \"refuse\"\n",
+        ECHO_GROUP,
+    );
+    let out = run(&dir);
+    let all = format!(
+        "{}{}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let here = std::path::absolute(&dir).unwrap().display().to_string();
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(
+        all.contains(&format!("source_dir={here}/features")),
+        "{all}"
+    );
+}
+
+#[test]
+fn source_dir_follows_an_included_file_and_a_macro_body() {
+    // Outside `paths`, so the include is the only way in; the macro's file
+    // lives in `macros/`. Each step must see the directory it is written in.
+    let dir = macro_project(
+        "source-dir-places",
+        "Feature: f\n  Scenario: s\n    When I include \"../inc/inc.feature\"\n    When I report from a macro\n    Then variable \"echo_source_dir\" should be equal to \"@HERE@/macros\"\n",
+        "- step: 'I report from a macro'\n  do: [I echo the source directory as \"ok\"]\n  exports: [echo_source_dir]\n",
+    );
+    std::fs::create_dir_all(dir.join("inc")).unwrap();
+    std::fs::write(
+        dir.join("inc/inc.feature"),
+        "Feature: inc\n  Scenario: i\n    When I echo the source directory as \"ok\"\n    Then variable \"echo_source_dir\" should be equal to \"@HERE@/inc\"\n",
+    )
+    .unwrap();
+    let here = std::path::absolute(&dir).unwrap().display().to_string();
+    let inc = dir.join("inc/inc.feature");
+    std::fs::write(
+        &inc,
+        std::fs::read_to_string(&inc)
+            .unwrap()
+            .replace("@HERE@", &here),
+    )
+    .unwrap();
+    let path = dir.join("features/plugin.feature");
+    let feature = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, feature.replace("@HERE@", &here)).unwrap();
+    assert_green(&run(&dir));
+
+    // And at validation, for the macro body.
+    let dir = macro_project(
+        "source-dir-macro-validate",
+        "Feature: f\n  Scenario: s\n    When I refuse from a macro\n",
+        "- step: 'I refuse from a macro'\n  do: [I echo the source directory as \"refuse\"]\n",
+    );
+    let out = run(&dir);
+    let all = format!(
+        "{}{}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let here = std::path::absolute(&dir).unwrap().display().to_string();
+    assert_eq!(out.status.code(), Some(2), "{all}");
+    assert!(all.contains(&format!("source_dir={here}/macros")), "{all}");
+}
+
+#[test]
+fn output_masks_a_headers_title_and_names_and_a_value_the_reply_just_stored() {
+    let reply = serde_json::json!({
+        "status": "passed",
+        "secrets": ["declared-title-secret-1", "declared-name-secret-2"],
+        "vars": {"my_secret": "stored-value-3"},
+        "output": [
+            {"title": "== declared-title-secret-1 ==",
+             "headers": [["declared-name-secret-2", "v"]]},
+            {"text": "stored stored-value-3"},
+        ],
+    });
+    let dir = project("output-masks-all", &answers(&reply), ECHO_GROUP);
+    let stderr = String::from_utf8_lossy(&run(&dir).stderr).into_owned();
+    for leaked in [
+        "declared-title-secret-1",
+        "declared-name-secret-2",
+        "stored-value-3",
+    ] {
+        assert!(!stderr.contains(leaked), "{leaked}: {stderr}");
+    }
+    assert!(stderr.contains("== *** =="), "{stderr}");
+    let stderr = String::from_utf8_lossy(&run_with(&dir, &["--reveal"], &[]).stderr).into_owned();
+    assert!(stderr.contains("declared-title-secret-1"), "{stderr}");
+    assert!(stderr.contains("stored-value-3"), "{stderr}");
+}
+
+#[test]
+fn a_class_reaches_the_junit_type() {
+    let reply = serde_json::json!({"status": "fatal", "error": "down", "class": "transport"});
+    let dir = project("class-junit", &answers(&reply), ECHO_GROUP);
+    run_with(&dir, &["--junit", "junit.xml"], &[]);
+    let junit = std::fs::read_to_string(dir.join("junit.xml")).unwrap();
+    assert_eq!(junit.matches("type=\"transport\"").count(), 1, "{junit}");
+}
+
+#[test]
+fn a_global_written_in_a_macro_body_outlives_the_macro() {
+    // The macro exports nothing, so a frame value would be gone with it; a
+    // `global_vars` one is in the global frame and is not.
+    let reply = serde_json::json!({"status": "passed", "global_vars": {"kept": "y"}});
+    let dir = macro_project(
+        "global-in-macro",
+        "Feature: f\n  Scenario: s\n    When I answer from a macro\n    Then variable \"kept\" should be equal to \"y\"\n",
+        &format!(
+            "- step: 'I answer from a macro'\n  do:\n    - the echo answers: |\n        {reply}\n"
+        ),
+    );
+    assert_green(&run(&dir));
+}
+
+#[test]
+fn a_refused_output_writes_no_variable_and_a_skipped_var_is_still_masked() {
+    let reply = serde_json::json!({
+        "status": "passed", "vars": {"written": "w"}, "output": [{"nonsense": 1}],
+        "diagnostics": [{"title": "kept-title", "kind": "text", "content": "x"}],
+    });
+    let feature = format!(
+        "{}    Then variable \"written\" should be equal to \"w\"\n",
+        answers(&reply)
+    );
+    let dir = project("output-refused-vars", &feature, ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("fits neither shape"), "{text}");
+    assert!(
+        text.contains("kept-title"),
+        "the diagnostics still show: {text}"
+    );
+    assert!(
+        !text.contains("is not equal") && !text.contains("expected: w"),
+        "{text}"
+    );
+
+    let reply = serde_json::json!({
+        "status": "passed",
+        "vars": {"my_secret": "skipped-val-4"}, "global_vars": {"my_secret": "g"},
+        "output": [{"text": "quoted skipped-val-4"}],
+    });
+    let dir = project("output-skipped-var", &answers(&reply), ECHO_GROUP);
+    let stderr = String::from_utf8_lossy(&run(&dir).stderr).into_owned();
+    assert!(!stderr.contains("skipped-val-4"), "{stderr}");
+}
+
+// ---- bddkit_failure_context ------------------------------------------------
+
+const TWO_ECHOES: &str = "  echo:\n    main:\n      prefix: \"p-\"\n    other:\n      prefix: \"o-\"\ndefault_echo: main\n";
+
+/// A failing core step: no plugin replied, so the whole dump is contexts.
+const CORE_FAILS: &str = "    Then variable \"seen\" should be equal to \"never\"\n";
+
+fn position(text: &str, needle: &str) -> usize {
+    text.find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} is not in {text}"))
+}
+
+#[test]
+fn a_failing_core_step_shows_each_used_plugin_in_first_use_order() {
+    let dir = project(
+        "context-order",
+        &format!(
+            "Feature: f\n  Scenario: s\n    Given I use \"other\" echo\n    When I echo \"x\" as \"seen\"\n    And I use \"main\" echo\n    And I echo \"y\" as \"seen\"\n{CORE_FAILS}"
+        ),
+        TWO_ECHOES,
+    );
+    let text = stdout_of(&run(&dir));
+    // First used `other`, then `main`: not alphabetical, not the config's order.
+    assert!(
+        position(&text, "context of o-") < position(&text, "context of p-"),
+        "{text}"
+    );
+    assert_eq!(text.matches("context of p-").count(), 1, "{text}");
+}
+
+#[test]
+fn a_context_comes_only_from_a_plugin_this_scenario_used() {
+    let dir = project(
+        "context-scenario",
+        &format!(
+            "Feature: f\n  Scenario: main\n    When I echo \"x\" as \"seen\"\n  Scenario: other\n    Given I use \"other\" echo\n    When I echo \"x\" as \"seen\"\n  Scenario: main again\n    When I echo \"x\" as \"seen\"\n{CORE_FAILS}"
+        ),
+        TWO_ECHOES,
+    );
+    let text = stdout_of(&run(&dir));
+    // The third scenario reuses a handle the first one created, which the
+    // file-wide cache already holds: it must still be listed.
+    assert!(text.contains("context of p-"), "{text}");
+    assert!(!text.contains("context of o-"), "{text}");
+}
+
+#[test]
+fn a_plugin_step_whose_reply_showed_a_diagnostic_gets_no_context_of_its_own() {
+    let dir = project(
+        "context-own-covered",
+        "Feature: f\n  Scenario: s\n    Given I use \"other\" echo\n    When I echo \"x\" as \"seen\"\n    And I use \"main\" echo\n    Then the echo should fail\n",
+        TWO_ECHOES,
+    );
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("echo state"), "{text}");
+    assert!(text.contains("context of o-"), "{text}");
+    assert!(!text.contains("context of p-"), "{text}");
+}
+
+#[test]
+fn a_plugin_step_whose_reply_showed_nothing_gets_its_own_context() {
+    let reply = serde_json::json!({"status": "fatal", "error": "refused"});
+    let dir = project("context-own-bare", &answers(&reply), ECHO_GROUP);
+    let text = stdout_of(&run(&dir));
+    assert!(text.contains("refused"), "{text}");
+    assert!(text.contains("context of p-"), "{text}");
+}
+
+#[test]
+fn a_failing_macro_shows_each_context_once() {
+    let dir = macro_project(
+        "context-macro-bare",
+        "Feature: f\n  Scenario: s\n    When I check the echo twice\n",
+        "- step: 'I check the echo twice'\n  do:\n    - I echo \"x\" as \"seen\"\n    - variable \"seen\" should be equal to \"never\"\n",
+    );
+    let text = stdout_of(&run(&dir));
+    assert_eq!(text.matches("context of implicit-").count(), 1, "{text}");
+}
+
+#[test]
+fn a_context_is_masked_unless_revealed() {
+    let dir = project(
+        "context-mask",
+        &format!("Feature: f\n  Scenario: s\n    When I echo \"x\" as \"seen\"\n{CORE_FAILS}"),
+        ECHO_GROUP,
+    );
+    let masked = stdout_of(&run(&dir));
+    assert!(masked.contains("context of p-"), "{masked}");
+    assert!(!masked.contains("context-pass-123"), "{masked}");
+    let revealed = stdout_of(&run_with(&dir, &["--reveal"], &[]));
+    assert!(revealed.contains("context-pass-123"), "{revealed}");
+}
+
+#[test]
+fn a_context_is_in_no_evidence_event() {
+    let dir = project(
+        "context-evidence",
+        &format!("Feature: f\n  Scenario: s\n    When I echo \"x\" as \"seen\"\n{CORE_FAILS}"),
+        ECHO_GROUP,
+    );
+    let out = run_with(&dir, &["--events", "events.ndjson", "--evidence"], &[]);
+    assert!(stdout_of(&out).contains("context of p-"));
+    // The failure text, dump included, travels in `scenario_finished`; what
+    // must not exist is an `evidence` event made from the context.
+    for event in read_stream(&dir) {
+        if event["type"] == "evidence" {
+            assert!(!event.to_string().contains("context of"), "{event}");
+        }
+    }
+}
+
+#[test]
+fn a_bad_context_reply_adds_one_line_and_leaves_the_failure_alone() {
+    for mode in ["panic", "null", "malformed", "error"] {
+        let dir = project(
+            &format!("context-bad-{mode}"),
+            &format!("Feature: f\n  Scenario: s\n    When I echo \"x\" as \"seen\"\n{CORE_FAILS}"),
+            ECHO_GROUP,
+        );
+        let out = run_with(
+            &dir,
+            &["--events", "events.ndjson"],
+            &[("BDDKIT_ECHO_FIXTURE_CONTEXT", mode)],
+        );
+        let text = stdout_of(&out);
+        assert_eq!(out.status.code(), Some(1), "{mode}: {text}");
+        assert_eq!(
+            text.matches("failure context of plugin \"echo\" unavailable:")
+                .count(),
+            1,
+            "{mode}: {text}"
+        );
+        assert!(!text.contains("context of p-"), "{mode}: {text}");
+        assert!(!text.contains("context-malformed-secret"), "{mode}: {text}");
+        // The plugin's own error is shown, masked by what the same reply declared.
+        assert!(!text.contains("context-error-secret"), "{mode}: {text}");
+        if mode == "error" {
+            assert!(text.contains("the echo context refused ***"), "{text}");
+        }
+        let stream = read_stream(&dir);
+        let finished = stream
+            .iter()
+            .find(|e| e["type"] == "scenario_finished")
+            .unwrap();
+        assert_eq!(finished["failure_kind"], "assertion", "{mode}");
+    }
+}
+
+#[test]
+fn an_empty_context_adds_nothing() {
+    let dir = project(
+        "context-empty",
+        &format!("Feature: f\n  Scenario: s\n    When I echo \"x\" as \"seen\"\n{CORE_FAILS}"),
+        ECHO_GROUP,
+    );
+    let text = stdout_of(&run_with(
+        &dir,
+        &[],
+        &[("BDDKIT_ECHO_FIXTURE_CONTEXT", "empty")],
+    ));
+    assert!(!text.contains("failure context"), "{text}");
+    assert!(!text.contains("context of"), "{text}");
 }

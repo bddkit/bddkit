@@ -77,20 +77,10 @@ pub fn builtin_rows(overlay: &BTreeMap<String, String>) -> Vec<StepRow> {
 /// builds its pattern: it exists only once a plugin claims a group, so it is
 /// not in the step table and would otherwise be undiscoverable.
 pub fn plugin_rows(
-    steps: Vec<(String, String, bool, Option<String>)>,
+    mut rows: Vec<StepRow>,
     groups: &[String],
     overlay: &BTreeMap<String, String>,
 ) -> Vec<StepRow> {
-    let mut rows: Vec<StepRow> = steps
-        .into_iter()
-        .map(|(group, pattern, assertion, description)| StepRow {
-            group,
-            template: template(&pattern),
-            pattern,
-            kind: if assertion { "assertion" } else { "action" },
-            description,
-        })
-        .collect();
     for group in groups {
         // `regex::escape`, exactly as `Registry::add_use_group_step` does it: a
         // group named `widget.beta` must list the pattern that actually runs,
@@ -160,7 +150,7 @@ pub fn render(rows: &[StepRow], verbose: bool) -> String {
 
 /// A regex pattern rendered as a step template: anchors dropped, every capture
 /// group replaced by `<name>`, every other character left exactly as it is.
-/// Serves plugin rows only; builtins get their template from
+/// Serves `pattern` steps only; everything else gets its template from
 /// `expression::compile`.
 ///
 /// An unnamed group falls back to `<value1>`, `<value2>`, … by position, so a
@@ -299,6 +289,9 @@ mod tests {
         // ours — and a key naming a step that no longer exists is dead weight
         // that will never be printed. Completeness is deliberately NOT checked:
         // falling back to English per step is what lets a translation lag.
+        // The one step with a `StepId` that is not in the table: it is built at
+        // startup from the loaded plugin groups, because it cannot exist until
+        // a plugin claims one. Its text is still the host's, so it translates.
         let mut ids: Vec<String> = crate::steps::BUILTIN_STEPS
             .iter()
             .map(|def| format!("{:?}", def.id))

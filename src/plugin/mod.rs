@@ -3,22 +3,26 @@ pub mod install;
 pub mod library;
 pub mod lock;
 pub mod manage;
+pub mod reply;
 
 use crate::config::InstanceSpec;
 use crate::options::Options;
-use abi::{DispatchResult, InitRequest, OptionsJson};
+use abi::{DispatchResult, GroupInitRequest, GroupInstance, HandleScope, InitRequest, OptionsJson};
 use anyhow::{Context, Result, bail};
 use library::Library;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Group names the host serves itself. A plugin claiming one of these would
-/// shadow `resources.api` or `resources.db`, so it is refused at startup.
-/// `connection` is the built-in step word for the `db` group (`I use "<conn>"
-/// connection`) — a plugin claiming it would build a group-switch step that
-/// exactly overlaps the built-in one, so it is refused for the same reason.
-const HOST_GROUPS: &[&str] = &["api", "db", "srp", "connection"];
+/// How a plugin step reaches the registry.
+#[derive(Debug, Clone)]
+pub enum Declared {
+    Pattern {
+        text: String,
+        secret_groups: Vec<usize>,
+    },
+    Expression(crate::steps::expression::Compiled),
+}
 
 /// The variables a `wants_vars` step receives: what `<<name>>` would resolve,
 /// with the sentinel as `None` and the secret flag the plugin cannot compute.
@@ -56,6 +60,8 @@ pub struct Plugins {
     /// `load` turns a non-empty map into the startup error, `doctor` reads it
     /// row by row.
     refused: BTreeMap<(String, String), String>,
+    /// (group, instance) -> the `detail` its `validate_config` reply gave.
+    details: BTreeMap<(String, String), String>,
     /// (group, instance) -> handle, for `shared` instances only. This is the
     /// lookup that makes a shared instance shared; a `per_worker` instance is
     /// never in here, because it belongs to one file.
@@ -65,6 +71,14 @@ pub struct Plugins {
     /// across plugins, so the key must carry the library index. This is what
     /// `shutdown` sweeps, including handles a panicking file never dropped.
     registry: Mutex<BTreeMap<(usize, u64), (String, String)>>,
+    /// The run's worker count, which an `init_instance` request carries.
+    concurrency: usize,
+    /// deprecated switch word -> the group that replaces it, over every
+    /// loaded plugin (`check_deprecated_words`).
+    words: BTreeMap<String, String>,
+    /// Failure classes a reply named that the host does not know, so each is
+    /// warned about once per run.
+    unknown_classes: Mutex<BTreeSet<String>>,
 }
 
 /// Shared across worker tasks behind an `Arc`, so losing either half has to
@@ -119,6 +133,12 @@ impl Plugins {
         self.refused.get(&key).map(String::as_str)
     }
 
+    /// The `detail` `validate_config` gave `group.instance`, if it did.
+    pub fn detail(&self, group: &str, instance: &str) -> Option<&str> {
+        let key = (group.to_string(), instance.to_string());
+        self.details.get(&key).map(String::as_str)
+    }
+
     /// `load` without turning a refused instance into an error, so `doctor` can
     /// report each one in its own row. A library that fails to load, or a group
     /// nothing serves, is still an error here: nothing below it can run.
@@ -148,14 +168,25 @@ impl Plugins {
                     lib.manifest.name
                 );
             }
+            library::check_select_instance(
+                &lib.name,
+                lib.manifest.concurrency,
+                lib.has_select_instance(),
+                concurrency,
+            )?;
             library::check_reset_scenario(
                 &lib.name,
                 lib.manifest.concurrency,
                 lib.has_reset_scenario(),
                 concurrency,
             )?;
+            library::check_failure_context(
+                &lib.name,
+                lib.manifest.concurrency,
+                lib.has_failure_context(),
+                concurrency,
+            )?;
             let index = libs.len();
-            check_host_groups(&lib.name, &lib.manifest.groups)?;
             for group in &lib.manifest.groups {
                 if let Some(other) = groups.insert(group.clone(), index) {
                     bail!(
@@ -167,6 +198,12 @@ impl Plugins {
             }
             libs.push(lib);
         }
+
+        let manifests: Vec<_> = libs
+            .iter()
+            .map(|lib| (lib.name.as_str(), &lib.manifest.deprecated))
+            .collect();
+        let words = check_deprecated_words(&manifests, &groups)?;
 
         let mut declared = BTreeMap::new();
         for spec in instances {
@@ -207,8 +244,12 @@ impl Plugins {
             declared,
             defaults,
             refused: BTreeMap::new(),
+            details: BTreeMap::new(),
             shared: Mutex::new(BTreeMap::new()),
             registry: Mutex::new(BTreeMap::new()),
+            concurrency,
+            words,
+            unknown_classes: Mutex::new(BTreeSet::new()),
         };
 
         // Eager, cheap, no connections opened: a typo in the config must exit 2
@@ -220,6 +261,7 @@ impl Plugins {
         // caller's list of config keys, and an instance whose group is missing
         // from it must produce this error rather than an index panic.
         let mut refused = BTreeMap::new();
+        let mut details = BTreeMap::new();
         for spec in plugins.declared.values() {
             // Where the body came from — the config has no `resources.<group>`
             // line to send the reader to for a synthesized one.
@@ -243,7 +285,12 @@ impl Plugins {
                 .init_request(spec)
                 .and_then(|request| lib.validate_config(&request))
             {
-                Ok(Ok(())) => continue,
+                Ok(Ok(detail)) => {
+                    if let Some(detail) = detail {
+                        details.insert((spec.group.clone(), spec.name.clone()), detail);
+                    }
+                    continue;
+                }
                 Ok(Err(error)) => error,
                 Err(error) => format!("{error:#}"),
             };
@@ -253,6 +300,7 @@ impl Plugins {
             );
         }
         plugins.refused = refused;
+        plugins.details = details;
         Ok(plugins)
     }
 
@@ -301,7 +349,11 @@ impl Plugins {
     /// instance could not be probed".
     ///
     /// Blocking, like `call_step`: FFI happens here.
-    pub fn probe_config(&self, group: &str, instance: &str) -> Option<Result<(), String>> {
+    pub fn probe_config(
+        &self,
+        group: &str,
+        instance: &str,
+    ) -> Option<Result<Option<String>, String>> {
         let lib = &self.libs[*self.groups.get(group)?];
         if !lib.has_probe_config() {
             return None;
@@ -341,38 +393,50 @@ impl Plugins {
         self.libs.get(lib)?.steps.get(step)
     }
 
-    /// `(lib index, step index, pattern, is assertion, secret groups)` for
-    /// registry loading.
-    pub fn steps(&self) -> Vec<(usize, usize, String, bool, Vec<usize>)> {
+    /// `(lib index, step index, declaration, is assertion)` for registry
+    /// loading.
+    pub fn steps(&self) -> Vec<(usize, usize, Declared, bool)> {
         let mut out = Vec::new();
         for (lib_index, lib) in self.libs.iter().enumerate() {
             for (step_index, step) in lib.steps.iter().enumerate() {
-                out.push((
-                    lib_index,
-                    step_index,
-                    step.pattern.clone(),
-                    step.is_assertion(),
-                    step.secret_groups.clone(),
-                ));
+                let declared = match &step.compiled {
+                    Some(compiled) => Declared::Expression(compiled.clone()),
+                    None => Declared::Pattern {
+                        text: step.declaration().to_string(),
+                        secret_groups: step.secret_groups.clone(),
+                    },
+                };
+                out.push((lib_index, step_index, declared, step.is_assertion()));
             }
         }
         out
     }
 
-    /// `(group, pattern, is assertion, description)` for `bddkit steps list`.
-    /// Separate from `steps()`, which feeds the registry and needs indices
-    /// instead of the help text.
-    pub fn described_steps(&self) -> Vec<(String, String, bool, Option<String>)> {
+    /// Every step as `bddkit steps list` shows it. Separate from `steps()`,
+    /// which feeds the registry and needs indices instead of the help text.
+    pub fn described_steps(&self) -> Vec<crate::steps::help::StepRow> {
         self.libs
             .iter()
             .flat_map(|lib| {
                 lib.steps.iter().map(|step| {
-                    (
-                        step.group.clone(),
-                        step.pattern.clone(),
-                        step.is_assertion(),
-                        step.description.clone(),
-                    )
+                    let (template, pattern) = match &step.compiled {
+                        Some(compiled) => (compiled.template.clone(), compiled.regex.to_string()),
+                        None => (
+                            crate::steps::help::template(step.declaration()),
+                            step.declaration().to_string(),
+                        ),
+                    };
+                    crate::steps::help::StepRow {
+                        group: step.group.clone(),
+                        template,
+                        pattern,
+                        kind: if step.is_assertion() {
+                            "assertion"
+                        } else {
+                            "action"
+                        },
+                        description: step.description.clone(),
+                    }
                 })
             })
             .collect()
@@ -434,6 +498,14 @@ impl Plugins {
             .contains_key(&(group.to_string(), instance.to_string()))
     }
 
+    /// True the first time this run sees `name` as a class no plugin may use.
+    pub fn first_unknown_class(&self, name: &str) -> bool {
+        self.unknown_classes
+            .lock()
+            .expect("unknown classes")
+            .insert(name.to_string())
+    }
+
     pub fn options_for(&self, group: &str, instance: &str) -> Result<&Options, String> {
         self.declared
             .get(&(group.to_string(), instance.to_string()))
@@ -482,6 +554,95 @@ impl Plugins {
         }
     }
 
+    /// Whether one handle serves every instance of this plugin's groups.
+    pub fn is_group_scoped(&self, lib: usize) -> bool {
+        self.libs[lib].manifest.handle_scope == HandleScope::Group
+    }
+
+    /// What a handle is filed under, in `shared`, in a file's `used` and in
+    /// `registry`: the instance for `handle_scope: "instance"`, nothing for
+    /// `"group"`. Every lookup goes through here, so a switch between two
+    /// instances of a group-scoped group never finds a second handle and a
+    /// handle is reset and dropped once.
+    pub fn handle_key(&self, group: &str, instance: &str) -> (String, String) {
+        let scoped = self
+            .groups
+            .get(group)
+            .is_some_and(|lib| self.is_group_scoped(*lib));
+        (
+            group.to_string(),
+            if scoped {
+                String::new()
+            } else {
+                instance.to_string()
+            },
+        )
+    }
+
+    /// The group a switch word names: the group itself, or the group a
+    /// deprecated word maps to.
+    pub fn resolve_group<'a>(&'a self, word: &'a str) -> &'a str {
+        self.words.get(word).map_or(word, String::as_str)
+    }
+
+    pub fn deprecated_words(&self) -> impl Iterator<Item = &str> {
+        self.words.keys().map(String::as_str)
+    }
+
+    /// Tells a group-scoped handle which instance the file selected. Blocking
+    /// FFI, like `call_step`. A plugin without the export needs no notice.
+    pub fn select_instance(
+        &self,
+        lib: usize,
+        handle: u64,
+        group: &str,
+        instance: &str,
+    ) -> Result<(), String> {
+        let request = serde_json::json!({ "group": group, "instance": instance }).to_string();
+        match self.libs[lib].select_instance(handle, &request) {
+            Ok(result) => result,
+            Err(error) => Err(format!("{error:#}")),
+        }
+    }
+
+    /// Whether `I use "<name>" <group>` has to reach the plugin: only a
+    /// group-scoped plugin that exports the hook is told.
+    pub fn wants_selection(&self, group: &str) -> Option<usize> {
+        let lib = *self.groups.get(group)?;
+        (self.is_group_scoped(lib) && self.libs[lib].has_select_instance()).then_some(lib)
+    }
+
+    /// Groups the host initialises at startup: each `eager_init` group of a
+    /// plugin, if the config declares an instance of it.
+    pub fn eager_groups(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for lib in &self.libs {
+            for group in &lib.manifest.eager_init {
+                if self.has_instance(group) {
+                    out.push(group.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Creates the `shared` handle of each eager group now, so an unreachable
+    /// resource is a startup error. Any handle that already came up stays
+    /// registered for `shutdown`.
+    pub fn eager_init(&self) -> Result<(), String> {
+        for group in self.eager_groups() {
+            let lib = self.groups[&group];
+            // Every declared instance: a group-scoped handle is built by the
+            // first and found by the rest, an instance-scoped one needs each.
+            for (g, instance) in self.declared.keys() {
+                if *g == group {
+                    self.shared_handle(&group, instance, lib)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Whether this plugin's instances belong to one file rather than to the
     /// whole run. The manifest declares what the plugin cannot tolerate — "do
     /// not call one handle from two workers at once" — and a per-file instance
@@ -499,14 +660,23 @@ impl Plugins {
             .declared
             .get(&key)
             .ok_or_else(|| undeclared(group, instance))?;
-        let request = self
-            .init_request(spec)
-            .map_err(|error| format!("{error:#}"))?;
+        let scoped = self.is_group_scoped(lib);
+        let request = if scoped {
+            self.group_init_request(group)
+        } else {
+            self.init_request(spec)
+        }
+        .map_err(|error| format!("{error:#}"))?;
         let created = self.libs[lib]
             .init_instance(&request)
             .map_err(|error| format!("{error:#}"))?
-            .map_err(|error| format!("resources.{group}.{instance}: {error}"))?;
-        self.register(lib, created, group, instance);
+            .map_err(|failure| match (scoped, failure.instance) {
+                (_, Some(named)) => format!("resources.{group}.{named}: {}", failure.error),
+                (true, None) => format!("resources.{group}: {}", failure.error),
+                (false, None) => format!("resources.{group}.{instance}: {}", failure.error),
+            })?;
+        let (group, instance) = self.handle_key(group, instance);
+        self.register(lib, created, &group, &instance);
         Ok(created)
     }
 
@@ -515,7 +685,7 @@ impl Plugins {
     /// build one, and the loser drops its own rather than serialising every
     /// worker behind a lock held across a network round trip.
     fn shared_handle(&self, group: &str, instance: &str, lib: usize) -> Result<u64, String> {
-        let key = (group.to_string(), instance.to_string());
+        let key = self.handle_key(group, instance);
         {
             let shared = self.shared.lock().expect("plugin instances");
             if let Some(handle) = shared.get(&key) {
@@ -567,7 +737,8 @@ impl Plugins {
                     eprintln!(
                         "{}",
                         crate::privacy::mask_text(&format!(
-                            "warning: dropping {group}.{instance} failed: {error}"
+                            "warning: dropping {} failed: {error}",
+                            label(&group, &instance)
                         ))
                     )
                 }
@@ -575,7 +746,8 @@ impl Plugins {
                     eprintln!(
                         "{}",
                         crate::privacy::mask_text(&format!(
-                            "warning: dropping {group}.{instance} failed: {error:#}"
+                            "warning: dropping {} failed: {error:#}",
+                            label(&group, &instance)
                         ))
                     )
                 }
@@ -586,6 +758,30 @@ impl Plugins {
     #[cfg(test)]
     pub(crate) fn registered_count(&self) -> usize {
         self.registry.lock().expect("plugin registry").len()
+    }
+
+    /// What each named handle's plugin adds to a failure dump, in the order
+    /// given: the plugin's name and its raw reply, or why there is none. A
+    /// plugin that exports no `bddkit_failure_context` is skipped without a
+    /// word. The reply is parsed by the caller (`reply::context_dumps`), which
+    /// holds the redactor.
+    pub fn failure_contexts(
+        &self,
+        handles: &[(usize, u64)],
+    ) -> Vec<(String, Result<String, String>)> {
+        handles
+            .iter()
+            .filter_map(|(lib, handle)| {
+                let library = &self.libs[*lib];
+                let reply = library.failure_context(*handle)?;
+                // The anyhow text names the call and the plugin and holds no
+                // reply, but the line is stable and quotes nothing.
+                Some((
+                    library.name.clone(),
+                    reply.map_err(|_| "it returned nothing".to_string()),
+                ))
+            })
+            .collect()
     }
 
     /// Resets exactly the instances the caller names, and nothing else.
@@ -618,7 +814,10 @@ impl Plugins {
                 // The call itself failed: a malformed reply, a NUL byte.
                 Err(error) => format!("{error:#}"),
             };
-            failure.get_or_insert(format!("resetting {group}.{instance} failed: {error}"));
+            failure.get_or_insert(format!(
+                "resetting {} failed: {error}",
+                label(&group, &instance)
+            ));
         }
         match failure {
             Some(error) => Err(error),
@@ -657,22 +856,74 @@ impl Plugins {
             instance: &spec.name,
             config: &spec.config,
             options: OptionsJson::from(&spec.options),
+            concurrency: self.concurrency,
         })
         .with_context(|| format!("failed to encode resources.{}.{}", spec.group, spec.name))
     }
+
+    /// The one `init_instance` request of a group-scoped handle: every
+    /// declared instance of the group, the implicit one included.
+    fn group_init_request(&self, group: &str) -> Result<String> {
+        let instances = self
+            .declared
+            .values()
+            .filter(|spec| spec.group == group)
+            .map(|spec| {
+                (
+                    spec.name.as_str(),
+                    GroupInstance {
+                        config: &spec.config,
+                        options: OptionsJson::from(&spec.options),
+                    },
+                )
+            })
+            .collect();
+        serde_json::to_string(&GroupInitRequest {
+            group,
+            instances,
+            concurrency: self.concurrency,
+        })
+        .with_context(|| format!("failed to encode resources.{group}"))
+    }
 }
 
-/// A plugin claiming a group the host serves itself would shadow
-/// `resources.api` or `resources.db`. A free function over the parsed manifest's
-/// group list, for the same reason as `library`'s own checks: reachable from a
-/// unit test without building a second cdylib.
-fn check_host_groups(name: &str, groups: &[String]) -> Result<()> {
-    for group in groups {
-        if HOST_GROUPS.contains(&group.as_str()) {
-            bail!("plugin {name:?} claims the group {group:?}, which bddkit serves itself");
+/// A handle's name in a message: `group` for a group-scoped one, whose key
+/// carries no instance.
+fn label(group: &str, instance: &str) -> String {
+    if instance.is_empty() {
+        group.to_string()
+    } else {
+        format!("{group}.{instance}")
+    }
+}
+
+/// A deprecated switch word may not be a group, a word the host serves, or
+/// another plugin's word: any of them would build a switch step that overlaps
+/// another. Needs every plugin loaded, so it lives here and not in
+/// `Library::load`.
+fn check_deprecated_words(
+    manifests: &[(&str, &BTreeMap<String, String>)],
+    groups: &BTreeMap<String, usize>,
+) -> Result<BTreeMap<String, String>> {
+    let mut words: BTreeMap<String, (&str, String)> = BTreeMap::new();
+    for (plugin, deprecated) in manifests {
+        for (word, target) in *deprecated {
+            if word.is_empty() || word.contains(|c: char| c.is_whitespace() || c == '"') {
+                bail!(
+                    "plugin {plugin:?} declares the deprecated word {word:?}, which is not a single word"
+                );
+            }
+            if groups.contains_key(word) {
+                bail!(
+                    "plugin {plugin:?} declares the deprecated word {word:?}, which is a resource group"
+                );
+            }
+            if let Some((other, _)) = words.insert(word.clone(), (plugin, target.clone())) {
+                bail!("plugins {other:?} and {plugin:?} both declare the deprecated word {word:?}");
+            }
         }
     }
-    Ok(())
+    Ok(words.into_iter().map(|(w, (_, g))| (w, g)).collect())
 }
 
 fn undeclared(group: &str, instance: &str) -> String {
@@ -693,6 +944,9 @@ pub struct PluginState {
     /// `shared` handle appears in `used` but never here — it outlives the file
     /// and is swept by `Plugins::shutdown`.
     owned: Vec<(usize, u64)>,
+    /// The handles the CURRENT scenario has dispatched to, in first-use order
+    /// (`used` is file-wide and unordered), for `bddkit_failure_context`.
+    scenario: Vec<(usize, u64)>,
 }
 
 impl PluginState {
@@ -714,6 +968,7 @@ impl PluginState {
             defaults,
             used: BTreeMap::new(),
             owned: Vec::new(),
+            scenario: Vec::new(),
         }
     }
 
@@ -755,18 +1010,29 @@ impl PluginState {
         self.current.insert(group.to_string(), name.to_string());
     }
 
+    /// The key a handle is filed under (`Plugins::handle_key`).
+    fn key(&self, group: &str, instance: &str) -> (String, String) {
+        match &self.plugins {
+            Some(plugins) => plugins.handle_key(group, instance),
+            None => (group.to_string(), instance.to_string()),
+        }
+    }
+
     /// The handle this file already holds for an instance, if any.
     pub fn handle_for(&self, group: &str, instance: &str) -> Option<(usize, u64)> {
-        self.used
-            .get(&(group.to_string(), instance.to_string()))
-            .copied()
+        self.used.get(&self.key(group, instance)).copied()
     }
 
     /// Records an instance this file has used. `owned` is true when the file
     /// created it and must therefore drop it — that is, when the plugin
     /// declares `per_worker`.
     pub fn record(&mut self, group: &str, instance: &str, lib: usize, handle: u64, owned: bool) {
-        let key = (group.to_string(), instance.to_string());
+        // Before the early return below: `used` outlives the scenario, so a
+        // handle an earlier scenario created must still be listed here.
+        if !self.scenario.contains(&(lib, handle)) {
+            self.scenario.push((lib, handle));
+        }
+        let key = self.key(group, instance);
         // A second record for one instance is always the same handle: the cache
         // is consulted before every dispatch, and a dispatch that fails after
         // creating a handle drops it rather than leaving a second one behind.
@@ -783,6 +1049,12 @@ impl PluginState {
         self.used.values().copied().collect()
     }
 
+    /// The handles this scenario has dispatched to, in the order it first
+    /// used them.
+    pub fn scenario_handles(&self) -> &[(usize, u64)] {
+        &self.scenario
+    }
+
     /// Only what this file created, for the end of the file.
     pub fn to_drop(&self) -> Vec<(usize, u64)> {
         self.owned.clone()
@@ -792,6 +1064,7 @@ impl PluginState {
     /// are file state, not scenario state, so `used`/`owned` survive.
     pub fn reset(&mut self) {
         self.current = self.defaults.clone();
+        self.scenario.clear();
     }
 }
 
@@ -875,7 +1148,7 @@ pub(crate) mod tests {
             plugins.declared_instances(),
             vec![("echo".to_string(), "a".to_string())]
         );
-        assert_eq!(plugins.probe_config("echo", "a"), Some(Ok(())));
+        assert_eq!(plugins.probe_config("echo", "a"), Some(Ok(None)));
 
         // The fixture's probe answers with whatever `probe_error` names, which
         // is how a real plugin reports an endpoint that refused it.
@@ -918,7 +1191,7 @@ pub(crate) mod tests {
             Some("default")
         );
         assert!(plugins.is_declared("echo", "default"));
-        assert_eq!(plugins.probe_config("echo", "default"), Some(Ok(())));
+        assert_eq!(plugins.probe_config("echo", "default"), Some(Ok(None)));
 
         // A declared section — this one non-empty — is the only source then.
         let plugins = Plugins::load(
@@ -949,7 +1222,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 19);
+        assert_eq!(plugins.step_count(), 29);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 
@@ -1498,20 +1771,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_plugin_claiming_a_host_group_is_refused() {
-        // docs/plugin-authoring.md promises these four names are reserved;
-        // nothing pinned that promise before this test.
-        for group in ["api", "db", "srp", "connection"] {
-            let error = check_host_groups("intruder", &[group.to_string()])
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains(group), "{error}");
-            assert!(error.contains("intruder"), "{error}");
-        }
-        check_host_groups("echo", &["echo".to_string()]).expect("its own group is fine");
-    }
-
-    #[test]
     fn the_fixture_plugin_is_refused_under_parallelism() {
         // It exports bddkit_reset_scenario, and a `shared` instance cannot hold
         // per-scenario state while every worker shares it.
@@ -1572,6 +1831,42 @@ pub(crate) mod tests {
             state.current("echo").expect("selected"),
             "a",
             "a failed switch must not change the selection"
+        );
+    }
+
+    fn words(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(word, group)| (word.to_string(), group.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_deprecated_word_may_not_be_a_group_a_host_word_or_another_plugins_word() {
+        let groups: BTreeMap<String, usize> =
+            [("gone".to_string(), 0), ("other".to_string(), 1)].into();
+        let own = words(&[("oldswitch", "gone")]);
+        let ok = check_deprecated_words(&[("a", &own)], &groups).expect("a free word");
+        assert_eq!(ok.get("oldswitch").map(String::as_str), Some("gone"));
+        // The built-in database switch word is the `db` plugin's now.
+        let connection = words(&[("connection", "gone")]);
+        check_deprecated_words(&[("a", &connection)], &groups).expect("connection is free");
+
+        let odd = words(&[("", "gone")]);
+        check_deprecated_words(&[("a", &odd)], &groups).expect_err("an empty word");
+        let refused = ["other"];
+        for word in refused {
+            let bad = words(&[(word, "gone")]);
+            let error = check_deprecated_words(&[("a", &bad)], &groups).expect_err("refused");
+            assert!(format!("{error}").contains(&format!("{word:?}")), "{error}");
+        }
+
+        let error = check_deprecated_words(&[("a", &own), ("b", &own)], &groups)
+            .expect_err("two plugins, one word");
+        let error = format!("{error}");
+        assert!(
+            error.contains("\"a\"") && error.contains("\"b\"") && error.contains("oldswitch"),
+            "{error}"
         );
     }
 }

@@ -1,12 +1,9 @@
 //! `bddkit resource fields`: what a `resources.<kind>.<name>` body takes.
 //!
-//! The host's three kinds come from the hand-written tables in `config`; a
-//! plugin group's come from the plugin's own manifest, which the host prints
-//! and interprets in no other way. Both halves are one listing on purpose —
-//! the reader's question is "what does this entry take", and which side of the
-//! FFI boundary answers it is not part of the question.
+//! A plugin group's fields come from the plugin's own manifest, which the host
+//! prints and interprets in no other way.
 
-use crate::config::{self, Scalar, host_fields};
+use crate::config::{self, Scalar};
 use crate::plugin::Plugins;
 use serde::Serialize;
 
@@ -47,20 +44,6 @@ pub enum Fields {
 }
 
 impl Fields {
-    /// `None` for anything the host does not serve itself — a plugin group or
-    /// a typo, which only the loaded plugins can tell apart.
-    pub fn host(kind: &str) -> Option<Self> {
-        Some(Fields::Known(
-            host_fields(kind)?
-                .iter()
-                .map(|(name, _, _, scalar)| FieldDef {
-                    name: name.to_string(),
-                    scalar: *scalar,
-                })
-                .collect(),
-        ))
-    }
-
     /// A field's declared `type`, or a string when the manifest declares none.
     /// An unknown name cannot reach here: `plugin::library` refuses it at load,
     /// so falling back to a string is the documented default and never the
@@ -237,34 +220,6 @@ pub struct Field {
     pub value_type: String,
     pub description: Option<String>,
     pub example: Option<String>,
-}
-
-/// The three kinds the host serves itself, always available: they need no
-/// config, and describing them cannot fail.
-pub fn host_kinds() -> Vec<Kind> {
-    [
-        ("api", crate::config::API_FIELDS),
-        ("db", crate::config::DB_FIELDS),
-        ("srp", crate::config::SRP_FIELDS),
-    ]
-    .into_iter()
-    .map(|(kind, table)| Kind {
-        kind: kind.to_string(),
-        source: "host",
-        fields: Some(
-            table
-                .iter()
-                .map(|(name, required, description, scalar)| Field {
-                    name: name.to_string(),
-                    required: *required,
-                    value_type: scalar.declared_name().to_string(),
-                    description: Some(description.to_string()),
-                    example: None,
-                })
-                .collect(),
-        ),
-    })
-    .collect()
 }
 
 /// Every group the loaded plugins serve, described or not.
@@ -642,40 +597,31 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
         }
     };
 
-    // A host kind needs nothing loaded. A plugin group's field list lives
-    // inside the plugin, so reaching it means loading the current config —
-    // which must itself be sound before anything can be added to it.
-    let fields = match Fields::host(input.group) {
-        Some(fields) => fields,
-        None => {
-            let plugins = match config::load_str(&raw, config_dir, input.env) {
-                Ok(cfg) => {
-                    match crate::load_plugins(
-                        input.config,
-                        &cfg,
-                        &crate::dirs::Env::from_process(None),
-                    ) {
-                        Ok(plugins) => plugins,
-                        Err(error) => return refuse(&format!("{error:#}"), None),
-                    }
-                }
+    // A group's field list lives inside the plugin, so reaching it means
+    // loading the current config, which must itself be sound before anything
+    // can be added to it.
+    let plugins = match config::load_str(&raw, config_dir, input.env) {
+        Ok(cfg) => {
+            match crate::load_plugins(input.config, &cfg, &crate::dirs::Env::from_process(None)) {
+                Ok(plugins) => plugins,
                 Err(error) => return refuse(&format!("{error:#}"), None),
-            };
-            let serves = plugins
-                .as_ref()
-                .is_some_and(|plugins| plugins.group_names().iter().any(|g| g == input.group));
-            if !serves {
-                return refuse(
-                    &format!(
-                        "no such resource kind {:?}: bddkit serves api, db and srp, and no installed plugin serves that group",
-                        input.group
-                    ),
-                    None,
-                );
             }
-            Fields::plugin(plugins.as_ref().and_then(|p| p.fields_for(input.group)))
         }
+        Err(error) => return refuse(&format!("{error:#}"), None),
     };
+    let serves = plugins
+        .as_ref()
+        .is_some_and(|plugins| plugins.group_names().iter().any(|g| g == input.group));
+    if !serves {
+        return refuse(
+            &format!(
+                "no such resource kind {:?}: no installed plugin serves that group",
+                input.group
+            ),
+            None,
+        );
+    }
+    let fields = Fields::plugin(plugins.as_ref().and_then(|p| p.fields_for(input.group)));
 
     let flags = match parse_flags(input.flags) {
         Ok(flags) => flags,
@@ -757,56 +703,31 @@ async fn check_new_resource(
     input: &AddInput<'_>,
     config_path: &std::path::Path,
 ) -> Result<(), String> {
-    match input.group {
-        "api" => {
-            let api = under_the_name(&cfg.resources.api, input)?;
-            let (resource, _) = crate::doctor::check_api(api)?;
-            if input.no_check {
-                return Ok(());
-            }
-            println!(
-                "{}",
-                crate::privacy::mask_text(
-                    &crate::doctor::probe_api(&resource, &api.base_url).await?
-                )
-            );
-        }
-        "db" => {
-            let connection = under_the_name(&cfg.resources.db, input)?;
-            crate::db::check_dsn(connection)?;
-            if input.no_check {
-                return Ok(());
-            }
-            crate::doctor::probe_db(input.name, connection).await?;
-        }
-        "srp" => {
-            crate::doctor::check_srp_resource(under_the_name(&cfg.resources.srp, input)?)?;
-        }
-        group => {
-            // After the splice a literal group is always in the loaded config;
-            // the empty fallback only keeps this arm from panicking, so the
-            // command stays at exit 0 or 1.
-            let empty = std::collections::BTreeMap::new();
-            under_the_name(cfg.resources.groups.get(group).unwrap_or(&empty), input)?;
-            // `Plugins::load` refuses a group nothing serves and runs
-            // `validate_config` for every declared instance, so loading the
-            // prospective config is the static check.
-            let plugins =
-                crate::load_plugins(config_path, cfg, &crate::dirs::Env::from_process(None))
-                    .map_err(|error| format!("{error:#}"))?;
-            let Some(plugins) = plugins else {
-                return Err(format!("no installed plugin serves the group {group:?}"));
-            };
-            if input.no_check {
-                return Ok(());
-            }
-            match plugins.probe_config(group, input.name) {
-                Some(Ok(())) => println!("probed clean"),
-                Some(Err(error)) => return Err(error),
-                None => {
-                    println!("the plugin exports no bddkit_probe_config, so nothing was probed")
-                }
-            }
+    let group = input.group;
+    // After the splice a literal group is always in the loaded config;
+    // the empty fallback only keeps this arm from panicking, so the
+    // command stays at exit 0 or 1.
+    let empty = std::collections::BTreeMap::new();
+    under_the_name(cfg.resources.groups.get(group).unwrap_or(&empty), input)?;
+    // `Plugins::load` refuses a group nothing serves and runs
+    // `validate_config` for every declared instance, so loading the
+    // prospective config is the static check.
+    let plugins = crate::load_plugins(config_path, cfg, &crate::dirs::Env::from_process(None))
+        .map_err(|error| format!("{error:#}"))?;
+    let Some(plugins) = plugins else {
+        return Err(format!("no installed plugin serves the group {group:?}"));
+    };
+    if input.no_check {
+        return Ok(());
+    }
+    match plugins.probe_config(group, input.name) {
+        Some(Ok(detail)) => println!(
+            "{}",
+            crate::privacy::mask_text(detail.as_deref().unwrap_or("probed clean"))
+        ),
+        Some(Err(error)) => return Err(error),
+        None => {
+            println!("the plugin exports no bddkit_probe_config, so nothing was probed")
         }
     }
     Ok(())
@@ -816,69 +737,11 @@ async fn check_new_resource(
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_host_kind_is_described_and_marks_its_required_keys() {
-        let kinds = host_kinds();
-        let out = render(&kinds);
-        for kind in ["api:", "db:", "srp:"] {
-            assert!(out.contains(kind), "{out}");
-        }
-        assert!(out.contains("base_url"), "{out}");
-        assert!(out.contains("required"), "{out}");
-        // Every host kind's config is fully described, or the table is stale.
-        assert!(kinds.iter().all(|kind| kind.fields.is_some()));
-    }
-
     /// `resource fields` is where someone learns what a key takes, and the
     /// type is what decides between `--timeout_secs 5` and `--json`. A field
     /// whose manifest declares none is shown as a string, because that is what
     /// the host will actually do with it — not left blank, which would read as
     /// "unknown" for a question that always has an answer.
-    #[test]
-    fn each_field_shows_the_type_its_flag_value_becomes() {
-        let out = render(&host_kinds());
-        let line = |key: &str| -> String {
-            out.lines()
-                .find(|line| line.trim_start().starts_with(key))
-                .unwrap_or_else(|| panic!("{key} is listed:\n{out}"))
-                .to_string()
-        };
-        assert!(
-            line("timeout_secs").contains("number"),
-            "{}",
-            line("timeout_secs")
-        );
-        assert!(line("base_url").contains("string"), "{}", line("base_url"));
-        assert!(
-            line("default_headers").contains("nonscalar"),
-            "{}",
-            line("default_headers")
-        );
-
-        let out = render(&[Kind {
-            kind: "s3".into(),
-            source: "plugin",
-            fields: Some(vec![
-                Field {
-                    name: "path_style".into(),
-                    required: false,
-                    value_type: "boolean".into(),
-                    description: None,
-                    example: None,
-                },
-                Field {
-                    name: "bucket".into(),
-                    required: true,
-                    value_type: "string".into(),
-                    description: None,
-                    example: None,
-                },
-            ]),
-        }]);
-        assert!(out.contains("boolean"), "{out}");
-        assert!(out.contains("string"), "{out}");
-    }
-
     #[test]
     fn an_undescribed_group_says_so_instead_of_showing_an_empty_block() {
         let out = render(&[Kind {
@@ -907,7 +770,15 @@ mod tests {
     }
 
     fn api_fields() -> Fields {
-        Fields::host("api").expect("api is a host kind")
+        let field = |name: &str, scalar| FieldDef {
+            name: name.to_string(),
+            scalar,
+        };
+        Fields::Known(vec![
+            field("base_url", Scalar::Str),
+            field("timeout_secs", Scalar::Num),
+            field("default_headers", Scalar::NonScalar),
+        ])
     }
 
     #[test]

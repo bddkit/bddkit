@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 
+PRERELEASE_ONLY = set()  # repos whose `releases/latest` is a 404: only candidates exist
 RELEASES = {"o/new": ("0.3.0", '{"abi": 2}'), "o/bad": ("0.1.0", '{"abi": 3}')}
 
 
@@ -16,7 +17,10 @@ class Github(http.server.BaseHTTPRequestHandler):
         parts = self.path.strip("/").split("/")
         repo = "/".join(parts[:2])
         version, asset = RELEASES[repo]
-        if parts[2:] == ["releases", "latest"]:
+        if parts[2:] == ["releases", "latest"] and repo in PRERELEASE_ONLY:
+            self.send_response(404)
+            self.end_headers()
+        elif parts[2:] == ["releases", "latest"]:
             self.send_response(302)
             self.send_header("Location", f"/{repo}/releases/tag/v{version}")
             self.end_headers()
@@ -128,6 +132,29 @@ class Job(unittest.TestCase):
         code, out = self.with_releases({"o/p": ("1.0.0", '{"abi": 3}')}, registry, check=True)
         self.assertEqual(code, 0)
         self.assertEqual(out, registry)
+
+    def candidate(self, groups, manifest_abi=4, abi_line='      "4": 1.0.0-rc.1\n', check=True):
+        global PRERELEASE_ONLY
+        registry = f"plugin:\n  - name: p\n    repo: o/p\n    groups: {groups}\n    description: d\n    abi:\n{abi_line}"
+        PRERELEASE_ONLY = {"o/p"}
+        try:
+            asset = f'{{"abi": {manifest_abi}, "groups": ["a"]}}'
+            return self.with_releases({"o/p": ("1.0.0-rc.1", asset)}, registry, check)
+        finally:
+            PRERELEASE_ONLY = set()
+
+    def test_a_pre_release_only_entry_passes_when_groups_match(self):
+        code, _ = self.candidate("[a]")
+        self.assertEqual(code, 0)
+
+    def test_a_pre_release_only_entry_with_other_groups_fails(self):
+        code, _ = self.candidate("[b]")
+        self.assertEqual(code, 1)
+
+    def test_a_pre_release_only_entry_declaring_another_abi_fails_and_writes_nothing(self):
+        code, out = self.candidate("[a]", manifest_abi=5, check=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count("1.0.0-rc.1"), 1)
 
 
 if __name__ == "__main__":

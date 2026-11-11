@@ -24,6 +24,7 @@ fn bddkit(dir: &Path, args: &[&str]) -> Output {
         .env("HOME", dir)
         .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("BDDKIT_PLUGIN_REGISTRY", dir.join("no-such-index.yaml"))
         .env_remove("BDDKIT_CONFIG")
         .env_remove("BDDKIT_DIR")
         .env_remove("CI")
@@ -43,53 +44,6 @@ fn config(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("bddkit.yaml")).expect("bddkit.yaml written")
 }
 
-// moves-to: api
-#[test]
-fn init_with_flags_writes_a_config_that_doctor_accepts() {
-    let dir = temp("doctor");
-    let out = bddkit(
-        &dir,
-        &[
-            "init",
-            "--api-url",
-            "http://127.0.0.1:8080",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://user:pass@localhost/app",
-        ],
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let config = config(&dir);
-    assert!(
-        config.contains("base_url: http://127.0.0.1:8080"),
-        "{config}"
-    );
-    assert!(
-        config.contains("dsn: postgres://user:pass@localhost/app"),
-        "{config}"
-    );
-    assert!(
-        config.contains("# "),
-        "every key carries a comment:\n{config}"
-    );
-    let doctor = bddkit(&dir, &["doctor"]);
-    assert_eq!(doctor.status.code(), Some(0), "{}", text(&doctor));
-}
-
-// moves-to: api
-#[test]
-fn the_example_feature_passes_without_a_network() {
-    let dir = temp("example");
-    // Nothing listens on this port: the request in the feature is a comment.
-    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:9"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let feature = std::fs::read_to_string(dir.join("features/example.feature")).expect("feature");
-    assert!(feature.contains("# When I request \"/\""), "{feature}");
-    let run = bddkit(&dir, &["run"]);
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run));
-}
-
 #[test]
 fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
     let dir = temp("refuse");
@@ -103,21 +57,6 @@ fn init_refuses_when_a_config_exists_and_names_the_alternatives() {
         std::fs::read_to_string(dir.join("bddkit.yml")).unwrap(),
         "paths: [x]\nresources: {api: {}}\n"
     );
-}
-
-// moves-to: api
-#[test]
-fn an_empty_api_answer_writes_no_api_resource() {
-    let dir = temp("no-api");
-    let out = bddkit(&dir, &["init", "--no-api"]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert!(!config(&dir).contains("base_url"), "{}", config(&dir));
-    let feature = std::fs::read_to_string(dir.join("features/example.feature")).unwrap();
-    assert!(!feature.contains("request"), "{feature}");
-    // No flags at all means the same.
-    let bare = temp("bare");
-    assert_eq!(bddkit(&bare, &["init"]).status.code(), Some(0));
-    assert!(!config(&bare).contains("base_url"));
 }
 
 #[test]
@@ -150,7 +89,6 @@ fn a_non_interactive_init_without_telemetry_writes_no_key() {
     );
 }
 
-// moves-to: db
 #[test]
 fn mismatched_flags_are_refused() {
     for args in [
@@ -203,41 +141,6 @@ fn gitignore_gains_only_missing_lines_and_only_in_a_git_work_tree() {
     assert!(!outside.join(".gitignore").exists());
 }
 
-// moves-to: db
-#[test]
-fn a_dollar_typed_in_a_value_reaches_the_run_unchanged() {
-    // The config is `$`-expanded when it is read: `$$` must survive the
-    // round trip, and a `${NAME}` reference must stay a reference.
-    let dir = temp("dollar");
-    let out = bddkit(
-        &dir,
-        &[
-            "init",
-            "--api-url",
-            "http://127.0.0.1:9/?q=$id&p=$$",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://u:pa$$w@h/db?x=${BDDKIT_INIT_TEST_UNSET:-d}",
-        ],
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let doctor = bddkit(&dir, &["doctor", "--json"]);
-    assert_eq!(doctor.status.code(), Some(0), "{}", text(&doctor));
-    assert!(
-        text(&doctor).contains("http://127.0.0.1:9/?q=$id&p=$$"),
-        "{}",
-        text(&doctor)
-    );
-    assert!(config(&dir).contains("pa$$$$w"), "{}", config(&dir));
-    assert!(
-        config(&dir).contains("${BDDKIT_INIT_TEST_UNSET:-d}"),
-        "{}",
-        config(&dir)
-    );
-}
-
-// moves-to: db
 #[test]
 fn a_dsn_of_another_engine_is_refused() {
     let dir = temp("scheme");
@@ -251,7 +154,19 @@ fn a_dsn_of_another_engine_is_refused() {
         &dir,
         &["init", "--db", "mariadb", "--dsn", "mysql://u:p@h/db"],
     );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    // Accepted: the config is written. Installing the `db` plugin then fails
+    // against this test's empty index, which is a finding, not a refusal.
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        !text(&out).contains("the DSN starts with"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        config(&dir).contains("dsn: mysql://u:p@h/db"),
+        "{}",
+        config(&dir)
+    );
 }
 
 #[test]
@@ -325,49 +240,11 @@ fn payloads(dir: &Path) -> Vec<serde_json::Value> {
     common::read_payloads(&dir.join("t.log"))
 }
 
-// moves-to: db
-#[test]
-fn an_init_that_ends_with_yes_sends_one_init_payload() {
-    let dir = temp("telemetry-yes");
-    let out = telemetry_init(
-        &dir,
-        &[
-            "--api-url",
-            "http://marker.invalid:8080",
-            "--db",
-            "postgres",
-            "--dsn",
-            "postgres://marker:marker@marker.invalid/marker",
-            "--parallel",
-            "false",
-            "--telemetry",
-            "true",
-        ],
-        &[],
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    let all = payloads(&dir);
-    assert_eq!(all.len(), 1, "{all:?}");
-    assert_eq!(all[0]["command"], "init");
-    assert_eq!(all[0]["exit"], 0);
-    let init = &all[0]["init"];
-    assert_eq!(init["interactive"], false);
-    assert_eq!(init["resources"]["api"], 1);
-    assert_eq!(init["resources"]["db"]["postgres"], 1);
-    assert_eq!(init["settings"]["parallel"], true);
-    assert_eq!(init["settings"]["project_layer"], false);
-    let raw = std::fs::read_to_string(dir.join("t.log")).unwrap();
-    assert!(!raw.contains("marker"), "{raw}");
-    for run_only in ["files", "scenarios", "usage", "scenario_ms"] {
-        assert!(all[0].get(run_only).is_none(), "{run_only}");
-    }
-}
-
 #[test]
 fn an_init_answered_no_or_not_asked_sends_nothing() {
     for (name, flags) in [("no", vec!["--telemetry", "false"]), ("unanswered", vec![])] {
         let dir = temp(&format!("telemetry-answer-{name}"));
-        let mut args = vec!["--api-url", "http://127.0.0.1:8080"];
+        let mut args = vec!["--no-api"];
         args.extend(flags);
         let out = telemetry_init(&dir, &args, &[]);
         assert_eq!(out.status.code(), Some(0), "{name}: {}", text(&out));
@@ -376,14 +253,111 @@ fn an_init_answered_no_or_not_asked_sends_nothing() {
 }
 
 #[test]
+fn an_init_with_no_resource_that_ends_with_yes_sends_one_init_payload() {
+    let dir = temp("telemetry-yes-bare");
+    let out = telemetry_init(
+        &dir,
+        &["--no-api", "--parallel", "false", "--telemetry", "true"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let all = payloads(&dir);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["command"], "init");
+    assert_eq!(all[0]["exit"], 0);
+    assert_eq!(all[0]["init"]["settings"]["parallel"], true);
+}
+
+#[test]
 fn a_yes_in_the_config_still_loses_to_do_not_track() {
     let dir = temp("telemetry-dnt");
     let out = telemetry_init(
         &dir,
-        &["--api-url", "http://127.0.0.1:8080", "--telemetry", "true"],
+        &["--no-api", "--telemetry", "true"],
         &[("DO_NOT_TRACK", "1")],
     );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     assert!(config(&dir).contains("telemetry: true"));
     assert!(payloads(&dir).is_empty());
+}
+
+/// `init` writes what it was told and goes
+/// down the plugin path, and the plugin that would serve `resources.api` is what
+/// `doctor` then reports missing.
+#[test]
+fn an_api_url_needs_the_api_plugin() {
+    let dir = temp("api-url-no-plugin");
+    let out = bddkit(&dir, &["init", "--api-url", "http://127.0.0.1:8080"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(config(&dir).contains("base_url: http://127.0.0.1:8080"));
+    assert!(
+        text(&out).contains("no installed plugin serves the group \"api\""),
+        "{}",
+        text(&out)
+    );
+}
+
+/// `init --dsn` makes `db` a plugin group. With a plugin that serves it
+/// already installed, nothing is left to install, so the plugin index is not
+/// asked: an unreachable one (the harness points it at a missing file) must not
+/// turn the run into a failure. Without the plugin the index is the only way to
+/// find one, and its failure is reported.
+fn init_with_dsn(dir: &Path, installed: bool) -> Output {
+    if installed {
+        std::fs::create_dir_all(dir.join(".bddkit")).unwrap();
+        std::fs::write(
+            dir.join(".bddkit/plugins.yaml"),
+            format!(
+                "plugin:\n  - name: group\n    path: {}\n",
+                common::build_group_plugin(false).display()
+            ),
+        )
+        .unwrap();
+    }
+    Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .args([
+            "init",
+            "--no-api",
+            "--db",
+            "postgres",
+            "--dsn",
+            "postgres://x/y",
+        ])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        .env("BDDKIT_PLUGIN_REGISTRY", dir.join("no-such-index.yaml"))
+        .env("BDDKIT_GROUP_FIXTURE_HOST_GROUPS", "db")
+        .env_remove("BDDKIT_CONFIG")
+        .env_remove("BDDKIT_DIR")
+        .env_remove("CI")
+        .output()
+        .expect("run bddkit")
+}
+
+#[test]
+fn init_does_not_ask_the_index_when_an_installed_plugin_serves_the_group() {
+    let dir = temp("installed-db");
+    let out = init_with_dsn(&dir, true);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(dir.join("bddkit.yaml").exists());
+    assert!(
+        !text(&out).contains("could not work out which plugins"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[test]
+fn init_asks_the_index_when_no_installed_plugin_serves_the_group() {
+    let dir = temp("missing-db");
+    let out = init_with_dsn(&dir, false);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(
+        text(&out).contains("could not work out which plugins"),
+        "{}",
+        text(&out)
+    );
 }

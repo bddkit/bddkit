@@ -2,13 +2,17 @@
 //! Fetching and unpacking is `install.rs`; the lock file format is `lock.rs`.
 
 use crate::dirs::{self, Env, Layer, Os};
-use crate::plugin::abi::ABI_VERSION;
+use crate::plugin::abi::{ABI_MIN, ABI_VERSION};
 use crate::plugin::install::{self, Sources};
 use crate::plugin::library::Library;
 use crate::plugin::lock;
 use crate::telemetry::payload::{Acted, PluginFrom, PluginInfo, PluginResult};
 use anyhow::{Context as _, Result, bail};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+
+/// Every plugin ABI this host loads.
+const HOST_ABIS: RangeInclusive<u32> = ABI_MIN..=ABI_VERSION;
 
 /// One lock file an install can write, and where its libraries go.
 #[derive(Clone)]
@@ -327,7 +331,35 @@ impl Context {
         config: &Path,
     ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
         let cfg = crate::config::load(config, None)?;
-        let groups = cfg.groups_in_use();
+        self.needs_groups(&cfg.groups_in_use()).await
+    }
+
+    /// The groups the plugins installed in the chain serve, read from their
+    /// manifests, so a plugin installed from a repository under another name
+    /// counts too. Loads the libraries, so only `init` asks: it runs this
+    /// binary, where `needs` must also answer for another ABI. A chain that
+    /// does not load serves nothing.
+    pub(crate) fn served_groups(&self) -> Vec<String> {
+        let loaded = lock::load(&dirs::candidates(&self.layers, "plugins")).and_then(|entries| {
+            super::Plugins::load_collecting(entries, &[], &[], 1, &Default::default())
+        });
+        loaded
+            .map(|plugins| {
+                let groups = plugins.group_names();
+                // Never unloaded, as `load_plugins` leaves them: a plugin's
+                // `atexit` handler would run against an unmapped page.
+                std::mem::forget(plugins);
+                groups
+            })
+            .unwrap_or_default()
+    }
+
+    /// `needs` for groups the caller already knows, so a config whose
+    /// `${VAR}` is not exported yet does not hide what it asks for.
+    pub(crate) async fn needs_groups(
+        &self,
+        groups: &[String],
+    ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
         if groups.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -336,7 +368,7 @@ impl Context {
             .map(|entry| entry.name)
             .collect();
         let index = install::fetch_index(&self.client, &self.sources).await?;
-        let wanted = install::needs(&groups, &installed, &index)?;
+        let wanted = install::needs(groups, &installed, &index)?;
         let unclaimed = wanted.unclaimed;
         let missing = wanted.missing.into_iter().cloned().collect();
         Ok((missing, unclaimed))
@@ -444,10 +476,11 @@ impl Context {
             Some(version) => {
                 let github = &self.sources.github;
                 match install::release_abi(&self.client, github, &repo, &version).await? {
-                    Some(abi) if abi != ABI_VERSION => {
+                    Some(abi) if !HOST_ABIS.contains(&abi) => {
                         return Err(install::classed(
                             anyhow::anyhow!(
-                                "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {ABI_VERSION}"
+                                "{repo} {version} targets plugin ABI {abi}, this bddkit speaks {}",
+                                install::abi_label(&HOST_ABIS)
                             ),
                             PluginResult::NoBuild,
                         ));
@@ -460,7 +493,7 @@ impl Context {
                 &self.sources.github,
                 &repo,
                 indexed.as_ref(),
-                ABI_VERSION..=ABI_VERSION,
+                HOST_ABIS,
             )
             .await?
             .map_err(|why| install::classed(anyhow::Error::msg(why), PluginResult::NoBuild))?,
@@ -563,14 +596,15 @@ impl Context {
                         &self.sources.github,
                         source,
                         indexed,
-                        ABI_VERSION..=ABI_VERSION,
+                        HOST_ABIS,
                     )
                     .await?
                     {
                         Ok(latest) => latest,
                         Err(why) => {
                             return Ok(format!(
-                                "up to date for ABI {ABI_VERSION} ({current}): {why}"
+                                "up to date for ABI {} ({current}): {why}",
+                                install::abi_label(&HOST_ABIS)
                             ));
                         }
                     };

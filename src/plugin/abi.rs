@@ -9,11 +9,23 @@
 //! in hand-written YAML — that asymmetry is intentional, not an oversight to
 //! "clean up".
 
+use crate::steps::expression::Compiled;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
-/// Bumped only for a breaking change to the payloads or the symbol set.
-/// The host refuses a plugin reporting anything else.
+/// The newest ABI generation this host speaks; it loads every plugin reporting
+/// a number from `ABI_MIN` to this one, and refuses the rest.
+///
+/// The rule for a change: a compatible one raises only `ABI_VERSION`, an
+/// incompatible one raises `ABI_MIN` too. Compatible means an optional key or
+/// symbol with a default, or a request field an older plugin can ignore
+/// without harm. Incompatible means removing or renaming a field or symbol,
+/// changing its meaning, or adding a request field a plugin must honour. The
+/// host never gates an addition on the number a plugin reports: a plugin
+/// built for an older generation does not send the new keys or export the new
+/// symbols, and gets each addition's default.
 ///
 /// 2: the dispatch request gained `evidence`, the reply `secrets`, a
 /// diagnostic `media_type` and a step spec `secret_groups` (#90). Each is
@@ -22,7 +34,19 @@ use std::collections::BTreeMap;
 ///
 /// 3: the request's `vars`, the spec's `wants_vars` and `raw_docstring`, and
 /// an optional `bddkit_validate_step` (#55), moved once for the lot.
-pub const ABI_VERSION: u32 = 3;
+///
+/// 4: the first generation of the range (#205). It adds nothing by itself;
+/// every later optional key of the phase builds on it: a step spec's
+/// `expression`, `reads`, `writes` and `sets_vars` (#206), structured
+/// diagnostics and `scan` (#207), the dispatch keys `instance`, `attempt`,
+/// `source_dir`, `class`, `options_instance`, `output` and `global_vars`
+/// (#208), `handle_scope`, `eager_init`, `deprecated` and
+/// `bddkit_select_instance` (#209), `bddkit_failure_context` (#210), and
+/// `secrets` and `detail` in the config replies (#211).
+pub const ABI_VERSION: u32 = 4;
+
+/// The oldest ABI generation this host still loads.
+pub const ABI_MIN: u32 = 3;
 
 /// A message used whenever a plugin reports failure without giving a reason.
 const NO_MESSAGE: &str = "the plugin reported a failure with no message";
@@ -44,8 +68,22 @@ pub enum Concurrency {
     ///
     /// The value set is closed on purpose: a scheduling mode the host does not
     /// implement cannot be degraded into one it does, so a new mode comes with
-    /// an `ABI_VERSION` bump rather than with a tolerant parse.
+    /// an `ABI_MIN` bump rather than with a tolerant parse.
     PerWorker,
+}
+
+/// How many instances of a group one handle serves. The closed value set is
+/// deliberate, as for `Concurrency`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleScope {
+    /// One handle per declared instance: the model of ABI 3.
+    #[default]
+    Instance,
+    /// One handle serves every instance of one group, so state that must
+    /// survive `I use "<other>" <group>` (the last response) or a handle that
+    /// holds every connection can exist.
+    Group,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +114,17 @@ pub struct Manifest {
     /// group. Same claim rule as `fields` (`library::check_implicit_groups`).
     #[serde(default)]
     pub implicit_instance: BTreeMap<String, serde_json::Value>,
+    /// See `HandleScope`. Applies to every group the manifest claims.
+    #[serde(default)]
+    pub handle_scope: HandleScope,
+    /// Groups whose `shared` handle the host initialises at startup, before
+    /// the first scenario (`library::check_eager_init`).
+    #[serde(default)]
+    pub eager_init: Vec<String>,
+    /// Former switch-step words, each mapped to the group that replaces it
+    /// (`plugin::check_deprecated`).
+    #[serde(default)]
+    pub deprecated: BTreeMap<String, String>,
 }
 
 /// One key of a group's instance config, as the plugin describes it.
@@ -119,9 +168,20 @@ pub enum StepKind {
     Assertion,
 }
 
+/// A `{param}` in a step effect.
+static EFFECT_PLACEHOLDER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").expect("a constant"));
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StepSpec {
-    pub pattern: String,
+    /// A Rust regex. A step declares this or `expression`, exactly one of the
+    /// two (`library::prepare_steps`).
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// A Cucumber expression with bddkit's `{name:type}`, compiled by the
+    /// host's one parser, so the step gets what a built-in gets.
+    #[serde(default)]
+    pub expression: Option<String>,
     pub group: String,
     pub kind: StepKind,
     /// The author's own one-line help, shown by `bddkit steps list`. Optional
@@ -135,7 +195,8 @@ pub struct StepSpec {
     /// literal one in every step text it shows, registers the value as it
     /// does for `{name:secret}`, and writes `***` for its slot in the stream.
     /// Optional and defaulted; an index no group has is a load error
-    /// (`library::check_secret_groups`).
+    /// (`library::check_secret_groups`), and so is the key on an `expression`
+    /// step, which writes `{name:secret}` instead.
     #[serde(default)]
     pub secret_groups: Vec<usize>,
     /// The dispatch request carries `vars` for this step, and for no other.
@@ -144,11 +205,100 @@ pub struct StepSpec {
     /// The host does not interpolate this step's doc string.
     #[serde(default)]
     pub raw_docstring: bool,
+    /// State this step uses, in the plugin's own vocabulary, for `doctor`'s
+    /// hints. All three effects are optional, and absent differs from empty: a
+    /// step declaring none of them is unknown (`effects`).
+    #[serde(default)]
+    pub reads: Option<Vec<String>>,
+    /// State this step leaves behind, in the same vocabulary as `reads`.
+    #[serde(default)]
+    pub writes: Option<Vec<String>>,
+    /// Variables this step writes: `{name}`, a fixed name, or a trailing `*`
+    /// for a family.
+    #[serde(default)]
+    pub sets_vars: Option<Vec<String>>,
+    /// The compiled `expression`, set at load. Never sent by a plugin.
+    #[serde(skip)]
+    pub compiled: Option<Compiled>,
+    /// By argument position, the name an effect may call it: a parameter's or
+    /// a named capture group's, `None` for an unnamed or a secret one, and for
+    /// every group of a pattern with `secret_groups`. Set at load. Never sent
+    /// by a plugin.
+    #[serde(skip)]
+    pub arg_names: Vec<Option<String>>,
+}
+
+/// What a step uses and leaves behind, with its placeholders filled.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Effects {
+    pub reads: Vec<String>,
+    pub sets_vars: Vec<String>,
 }
 
 impl StepSpec {
     pub fn is_assertion(&self) -> bool {
         matches!(self.kind, StepKind::Assertion)
+    }
+
+    /// The text the plugin declared the step with, for a message.
+    pub fn declaration(&self) -> &str {
+        self.expression
+            .as_deref()
+            .or(self.pattern.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Every template of `reads`, `writes` and `sets_vars`.
+    pub fn effect_templates(&self) -> impl Iterator<Item = &String> {
+        [&self.reads, &self.writes, &self.sets_vars]
+            .into_iter()
+            .flatten()
+            .flatten()
+    }
+
+    /// The effects of one use of this step, from its RAW arguments: `doctor`
+    /// knows no variable's value (invariant 1). `None` when the step is
+    /// unknown: it declares no effect at all, or a placeholder's value holds a
+    /// `<<slot>>` or an Outline `<column>`, or is absent. A step that declares
+    /// only `reads` or `writes` is known, and sets nothing.
+    pub fn effects(&self, args: &[String]) -> Option<Effects> {
+        if self.reads.is_none() && self.writes.is_none() && self.sets_vars.is_none() {
+            return None;
+        }
+        let fill = |list: &Option<Vec<String>>| -> Option<Vec<String>> {
+            list.iter()
+                .flatten()
+                .map(|template| self.fill(template, args))
+                .collect()
+        };
+        fill(&self.writes)?;
+        Some(Effects {
+            reads: fill(&self.reads)?,
+            sets_vars: fill(&self.sets_vars)?,
+        })
+    }
+
+    fn fill(&self, template: &str, args: &[String]) -> Option<String> {
+        let mut known = true;
+        let filled = EFFECT_PLACEHOLDER.replace_all(template, |captures: &regex::Captures<'_>| {
+            let value = self
+                .arg_names
+                .iter()
+                .position(|name| name.as_deref() == Some(&captures[1]))
+                .and_then(|index| args.get(index))
+                .filter(|value| !value.is_empty() && !value.contains('<'));
+            known &= value.is_some();
+            value.cloned().unwrap_or_default()
+        });
+        known.then(|| filled.into_owned())
+    }
+
+    /// The `{param}` names one effect template holds.
+    pub fn placeholders(template: &str) -> impl Iterator<Item = &str> {
+        EFFECT_PLACEHOLDER
+            .captures_iter(template)
+            .filter_map(|captures| captures.get(1))
+            .map(|name| name.as_str())
     }
 }
 
@@ -182,10 +332,31 @@ pub struct InitRequest<'a> {
     pub instance: &'a str,
     pub config: &'a serde_json::Value,
     pub options: OptionsJson,
+    /// The run's worker count.
+    pub concurrency: usize,
+}
+
+/// What `init_instance` receives under `handle_scope: "group"`: every declared
+/// instance of the group, not one.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInitRequest<'a> {
+    pub group: &'a str,
+    pub instances: BTreeMap<&'a str, GroupInstance<'a>>,
+    pub concurrency: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupInstance<'a> {
+    pub config: &'a serde_json::Value,
+    pub options: OptionsJson,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DispatchRequest<'a> {
+    /// The instance the group's selection names. Authoritative: under
+    /// `handle_scope: "group"` the handle does not say which instance a step
+    /// is for.
+    pub instance: &'a str,
     pub args: &'a [String],
     pub docstring: Option<&'a String>,
     pub table: Option<&'a Vec<Vec<String>>>,
@@ -203,6 +374,12 @@ pub struct DispatchRequest<'a> {
     /// The file's variables, for a step whose spec says `wants_vars`; `{}`
     /// for every other step.
     pub vars: BTreeMap<String, VarJson>,
+    /// 1-based within the current eventual assertion; `1` for a step that is
+    /// not polled.
+    pub attempt: u64,
+    /// The absolute directory of the file the step is written in: the feature
+    /// file, the included file, or the macro file for a macro body.
+    pub source_dir: String,
 }
 
 /// One variable as a plugin that asked for them sees it.
@@ -223,20 +400,33 @@ pub enum Status {
     Fatal,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A diagnostic as the plugin sent it. `content` is kept as JSON so a shape
+/// that does not fit is refused by `plugin::reply` with a message that quotes
+/// nothing: a typed field would let serde's error text carry the value.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Diagnostic {
-    pub title: String,
-    /// `text | json | http | image`. Not an enum: an unknown kind from a newer
-    /// plugin must degrade to "print it as text", never fail the parse.
-    pub kind: String,
+    /// Required, except for kinds `http` and `sql`.
     #[serde(default)]
-    pub content: Option<String>,
+    pub title: Option<String>,
+    /// `text | json | http | sql | image`. Not an enum: an unknown kind from a
+    /// newer plugin must degrade to "print it as text", never fail the parse.
+    pub kind: String,
+    /// Text, or for `http` and `sql` an object of the shape in
+    /// `docs/events-design.md` 9.3.
+    #[serde(default)]
+    pub content: Option<serde_json::Value>,
     #[serde(default)]
     pub path: Option<String>,
     /// The media type of the file at `path`. When absent the host guesses it
     /// from the file's extension.
     #[serde(default)]
     pub media_type: Option<String>,
+    /// The instance the diagnostic concerns; absent: the selected one.
+    #[serde(default)]
+    pub resource: Option<String>,
+    /// False: evidence only, never in the console dump.
+    #[serde(default)]
+    pub in_dump: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,60 +441,110 @@ pub struct DispatchResult {
     /// `privacy.min_length` as any other value.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// What the host checks for sensitive field names, registering what it
+    /// finds and printing nothing, on every status.
+    #[serde(default)]
+    pub scan: Vec<crate::diagnostic::ScanItem>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The failure class, on `fatal` and `not_yet`. Kept as JSON: a value the
+    /// host does not know counts as absent and must not fail the parse.
+    #[serde(default)]
+    pub class: Option<serde_json::Value>,
+    /// On a `not_yet`: the instance whose polling options govern the poll.
+    #[serde(default)]
+    pub options_instance: Option<String>,
+    /// What the host prints to stderr, kept as JSON for the same reason as
+    /// `Diagnostic.content`: an item that does not fit is refused by
+    /// `plugin::reply` without quoting it.
+    #[serde(default)]
+    pub output: Vec<serde_json::Value>,
+    /// Written like `set variable … global`, after `vars`; only on `passed`.
+    #[serde(default)]
+    pub global_vars: BTreeMap<String, String>,
 }
 
 impl DispatchResult {
     /// A reply that does not parse as a whole may still have declared
-    /// `secrets`, and the message that reports it quotes the raw reply. Read
-    /// just that key so the failure can be masked like any other; `None` when
-    /// it declared none, and the caller reports the parse error as it always
-    /// did.
+    /// `secrets` and `scan` items, and the message that reports it quotes the
+    /// raw reply. Read just those keys so the failure can be masked like any
+    /// other; `None` when it declared none, and the caller reports the parse
+    /// error as it always did.
     pub fn salvage(reply: &str, message: String) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(reply).ok()?;
-        let secrets: Vec<String> = value
-            .get("secrets")?
-            .as_array()?
+        let list = |key: &str| value.get(key).and_then(|v| v.as_array()).cloned();
+        let secrets: Vec<String> = list("secrets")
+            .unwrap_or_default()
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
-        (!secrets.is_empty()).then(|| Self {
+        let scan: Vec<crate::diagnostic::ScanItem> = list("scan")
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(lenient_scan_item)
+            .collect();
+        // Each diagnostic on its own: one that does not fit must not take the
+        // others with it. A bare `http` content still gets registered.
+        let diagnostics: Vec<Diagnostic> = list("diagnostics")
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                serde_json::from_value(item.clone()).ok().or_else(|| {
+                    let content = item.get("content").filter(|c| c.is_object())?.clone();
+                    Some(Diagnostic {
+                        kind: "http".into(),
+                        content: Some(content),
+                        ..Diagnostic::default()
+                    })
+                })
+            })
+            .collect();
+        (!secrets.is_empty() || !scan.is_empty() || !diagnostics.is_empty()).then(|| Self {
             status: Status::Fatal,
             vars: BTreeMap::new(),
-            diagnostics: Vec::new(),
+            diagnostics,
             secrets,
+            scan,
             error: Some(message),
+            class: None,
+            options_instance: None,
+            output: Vec::new(),
+            global_vars: BTreeMap::new(),
         })
     }
 
-    /// Diagnostics are evidence on the failure path, so they have to end up
-    /// inside the one string `report::render_file` writes. Printing them
-    /// directly would land in the middle of another worker's dump.
-    ///
-    /// A `json` diagnostic is masked by name BEFORE it is joined in, while its
-    /// positions still exist, and what it holds under a sensitive name joins the
-    /// file's set. The rest of the text (the error, a text diagnostic) is masked
-    /// by value by whoever prints the failure.
-    pub fn render_failure(&self, redactor: &crate::privacy::Redactor) -> String {
-        let mut out = self.error.clone().unwrap_or_else(|| NO_MESSAGE.to_string());
-        for d in &self.diagnostics {
-            out.push_str(&format!("\n\n--- {} ({}) ---", d.title, d.kind));
-            if let Some(content) = &d.content {
-                out.push('\n');
-                if d.kind == "json" {
-                    redactor.register(&redactor.json_hits(content));
-                    out.push_str(&redactor.mask_json(content));
-                } else {
-                    out.push_str(content);
-                }
-            }
-            if let Some(path) = &d.path {
-                out.push_str(&format!("\n{path}"));
-            }
-        }
-        out
+    /// The text of a failing reply: its `error` alone. The diagnostics travel
+    /// apart (`plugin::reply`), so a polled assertion's `attempt` event and
+    /// the timeout message do not quote a dump.
+    pub fn message(&self) -> String {
+        self.error.clone().unwrap_or_else(|| NO_MESSAGE.to_string())
     }
+}
+
+/// A `scan` item of a malformed reply, read as far as it can be: a `content`
+/// that is not a string is registered as its JSON text, a pair that is not two
+/// strings is skipped.
+fn lenient_scan_item(item: serde_json::Value) -> Option<crate::diagnostic::ScanItem> {
+    serde_json::from_value(item.clone()).ok().or_else(|| {
+        Some(crate::diagnostic::ScanItem {
+            kind: item.get("kind")?.as_str()?.to_string(),
+            content: item
+                .get("content")
+                .map(|c| c.as_str().map_or_else(|| c.to_string(), str::to_string)),
+            pairs: item
+                .get("pairs")
+                .and_then(|p| p.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|p| {
+                    Some((
+                        p.get(0)?.as_str()?.to_string(),
+                        p.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect(),
+        })
+    })
 }
 
 /// The reply shape for everything that is not a step: configuration validation
@@ -326,6 +566,29 @@ impl Envelope {
     }
 }
 
+/// The reply of `bddkit_validate_config` and `bddkit_probe_config`: the
+/// envelope plus the optional ABI 4 `detail`. `secrets` is read by
+/// `Library::config_call` straight from the JSON, whatever `ok` says; `detail` is the one-line text of an `ok` instance's `doctor` row.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigReply {
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl ConfigReply {
+    /// `Ok` carries the plugin's `detail`, if it gave one (an empty one is none).
+    pub fn into_result(self) -> Result<Option<String>, String> {
+        if self.ok {
+            Ok(self.detail.filter(|detail| !detail.is_empty()))
+        } else {
+            Err(self.error.unwrap_or_else(|| NO_MESSAGE.to_string()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct InitResponse {
     pub ok: bool,
@@ -333,17 +596,33 @@ pub struct InitResponse {
     pub handle: Option<u64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The instance that failed, under `handle_scope: "group"`.
+    #[serde(default)]
+    pub instance: Option<String>,
+}
+
+/// Why `init_instance` refused, and for which instance when the handle serves
+/// a whole group.
+#[derive(Debug, Clone)]
+pub struct InitFailure {
+    pub instance: Option<String>,
+    pub error: String,
 }
 
 impl InitResponse {
-    pub fn into_result(self) -> Result<u64, String> {
+    pub fn into_result(self) -> Result<u64, InitFailure> {
         if self.ok {
-            self.handle
-                .ok_or_else(|| "the plugin reported ok with no handle".to_string())
+            self.handle.ok_or_else(|| InitFailure {
+                instance: None,
+                error: "the plugin reported ok with no handle".to_string(),
+            })
         } else {
-            Err(self
-                .error
-                .unwrap_or_else(|| "the plugin refused to create the instance".to_string()))
+            Err(InitFailure {
+                instance: self.instance,
+                error: self
+                    .error
+                    .unwrap_or_else(|| "the plugin refused to create the instance".to_string()),
+            })
         }
     }
 }
@@ -358,6 +637,55 @@ mod tests {
             serde_json::from_str(r#"{"pattern":"^x$","group":"g","kind":"action"}"#).unwrap();
         assert!(!spec.wants_vars);
         assert!(!spec.raw_docstring);
+    }
+
+    fn spec_with_args(json: &str, names: &[Option<&str>]) -> StepSpec {
+        let mut spec: StepSpec = serde_json::from_str(json).expect("step parses");
+        spec.arg_names = names.iter().map(|name| name.map(str::to_string)).collect();
+        spec
+    }
+
+    #[test]
+    fn a_step_with_no_effect_is_unknown_and_one_with_any_effect_is_known() {
+        let bare = spec_with_args(r#"{"pattern":"^x$","group":"g","kind":"action"}"#, &[]);
+        assert_eq!(bare.effects(&[]), None);
+        for key in ["reads", "writes", "sets_vars"] {
+            let spec = spec_with_args(
+                &format!(r#"{{"pattern":"^x$","group":"g","kind":"action","{key}":[]}}"#),
+                &[],
+            );
+            let effects = spec.effects(&[]).expect("declared, so known");
+            assert!(effects.sets_vars.is_empty(), "{key}");
+        }
+    }
+
+    #[test]
+    fn effects_are_filled_from_the_raw_arguments() {
+        let spec = spec_with_args(
+            r#"{"pattern":"^x$","group":"g","kind":"action","reads":["process:{p}"],
+                "writes":["w"],"sets_vars":["fixed","{name}","{name}_*"]}"#,
+            &[Some("p"), None, Some("name")],
+        );
+        let args = |p: &str, name: &str| vec![p.to_string(), "other".to_string(), name.to_string()];
+        assert_eq!(
+            spec.effects(&args("a", "n")),
+            Some(Effects {
+                reads: vec!["process:a".to_string()],
+                sets_vars: vec!["fixed".to_string(), "n".to_string(), "n_*".to_string()],
+            })
+        );
+        // A value not known statically, wherever it sits, makes the step unknown.
+        assert_eq!(spec.effects(&args("<<slot>>", "n")), None);
+        assert_eq!(spec.effects(&args("a", "<column>")), None);
+        assert_eq!(spec.effects(&args("a", "")), None);
+        assert_eq!(spec.effects(&["a".to_string()]), None);
+
+        let writes = spec_with_args(
+            r#"{"pattern":"^x$","group":"g","kind":"action","writes":["w:{p}"]}"#,
+            &[Some("p")],
+        );
+        assert!(writes.effects(&["a".to_string()]).is_some());
+        assert_eq!(writes.effects(&["<<slot>>".to_string()]), None);
     }
 
     #[test]
@@ -420,47 +748,25 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_render_into_the_failure_text() {
-        // The report layer composes a file's whole output into ONE string, so
-        // plugin evidence has to arrive as text on the error path, not as a
-        // separate print (invariant 6 + the atomic per-file dump).
-        let r = DispatchResult {
-            status: Status::Fatal,
-            vars: Default::default(),
-            diagnostics: vec![
-                Diagnostic {
-                    title: "PUT /b/o".into(),
-                    kind: "http".into(),
-                    content: Some("403 Forbidden".into()),
-                    path: None,
-                    media_type: None,
-                },
-                Diagnostic {
-                    title: "Screenshot".into(),
-                    kind: "image".into(),
-                    content: None,
-                    path: Some("/run/artifacts/7/fail.png".into()),
-                    media_type: None,
-                },
-            ],
-            secrets: Vec::new(),
-            error: Some("access denied".into()),
-        };
-        let text = r.render_failure(&crate::privacy::Redactor::disabled());
-        assert!(text.contains("access denied"), "{text}");
-        assert!(text.contains("PUT /b/o"), "{text}");
-        assert!(text.contains("403 Forbidden"), "{text}");
-        assert!(text.contains("/run/artifacts/7/fail.png"), "{text}");
-    }
-
-    #[test]
     fn a_malformed_reply_still_yields_the_secrets_it_declared() {
-        let reply = r#"{"status":"fatal","secrets":["tok-123456"],"diagnostics":[{"kind":"x"}]}"#;
+        let reply = r#"{"status":"fatal","secrets":["tok-123456"],"scan":[{"kind":"form","pairs":[["password","p&w%41"]]}],"diagnostics":[{}]}"#;
         assert!(serde_json::from_str::<DispatchResult>(reply).is_err());
         let salvaged = DispatchResult::salvage(reply, "malformed".into()).expect("secrets kept");
         assert_eq!(salvaged.secrets, vec!["tok-123456".to_string()]);
+        assert_eq!(salvaged.scan[0].pairs[0].1, "p&w%41");
         assert_eq!(salvaged.status, Status::Fatal);
         assert!(DispatchResult::salvage(r#"{"status":1}"#, "m".into()).is_none());
+        // A diagnostic that fits survives its broken neighbour, a `scan`
+        // item whose content is not a string is kept as its JSON text, and a
+        // diagnostic with a bad `kind` still yields its `http` content.
+        let reply = r#"{"status":"fatal","scan":[{"kind":"json","content":{"token":"t-12345678"}}],"diagnostics":[{"kind":"text","title":"ok"},{"kind":5,"content":{"url":"u"}},{}]}"#;
+        let salvaged = DispatchResult::salvage(reply, "m".into()).expect("kept");
+        assert_eq!(salvaged.diagnostics.len(), 2);
+        assert_eq!(salvaged.diagnostics[1].kind, "http");
+        assert_eq!(
+            salvaged.scan[0].content.as_deref(),
+            Some(r#"{"token":"t-12345678"}"#)
+        );
         assert!(DispatchResult::salvage("not json", "m".into()).is_none());
     }
 
@@ -492,7 +798,7 @@ mod tests {
         // back handle 0 and let a later step fail confusingly instead.
         let r: InitResponse = serde_json::from_str(r#"{"ok":true}"#).expect("init response parses");
         let err = r.into_result().unwrap_err();
-        assert!(err.contains("handle"), "{err}");
+        assert!(err.error.contains("handle"), "{err:?}");
     }
 
     #[test]
@@ -501,6 +807,7 @@ mod tests {
         // renaming one is a breaking change no deserialise-side test would catch.
         let args = vec!["report.pdf".to_string()];
         let request = DispatchRequest {
+            instance: "primary",
             args: &args,
             docstring: None,
             table: None,
@@ -510,6 +817,8 @@ mod tests {
             options: OptionsJson::from(&crate::options::Options::default()),
             evidence: true,
             vars: BTreeMap::new(),
+            attempt: 1,
+            source_dir: "/suite".into(),
         };
         let value = serde_json::to_value(&request).expect("serialises");
         // `serde_json::Value::Object` is a `BTreeMap` (no `preserve_order`
@@ -518,6 +827,7 @@ mod tests {
         let mut keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
         keys.sort();
         let mut expected = [
+            "instance",
             "args",
             "docstring",
             "table",
@@ -525,6 +835,8 @@ mod tests {
             "workspace_dir",
             "debug",
             "options",
+            "attempt",
+            "source_dir",
             "evidence",
             "vars",
         ];
@@ -571,14 +883,56 @@ mod tests {
             instance: "primary",
             config: &config,
             options: OptionsJson::from(&crate::options::Options::default()),
+            concurrency: 4,
         };
         let value = serde_json::to_value(&request).expect("serialises");
         let mut keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
         keys.sort();
-        let mut expected = ["group", "instance", "config", "options"];
+        let mut expected = ["group", "instance", "config", "options", "concurrency"];
         expected.sort();
         assert_eq!(keys, expected);
         assert_eq!(value["config"], config);
+    }
+
+    #[test]
+    fn the_new_manifest_keys_default_to_the_abi_3_model() {
+        let plain: Manifest =
+            serde_json::from_str(r#"{"name":"w","version":"1","groups":["w"]}"#).expect("parses");
+        assert_eq!(plain.handle_scope, HandleScope::Instance);
+        assert!(plain.eager_init.is_empty() && plain.deprecated.is_empty());
+        let grouped: Manifest = serde_json::from_str(
+            r#"{"name":"w","version":"1","groups":["w"],"handle_scope":"group",
+                "eager_init":["w"],"deprecated":{"old":"w"}}"#,
+        )
+        .expect("parses");
+        assert_eq!(grouped.handle_scope, HandleScope::Group);
+        assert_eq!(grouped.deprecated.get("old").map(String::as_str), Some("w"));
+        serde_json::from_str::<Manifest>(
+            r#"{"name":"w","version":"1","groups":["w"],"handle_scope":"pool"}"#,
+        )
+        .expect_err("a scope the host does not know is refused, not degraded");
+    }
+
+    #[test]
+    fn a_group_init_request_carries_every_instance() {
+        let config = serde_json::json!({"dsn": "x"});
+        let request = GroupInitRequest {
+            group: "db",
+            instances: [(
+                "main",
+                GroupInstance {
+                    config: &config,
+                    options: OptionsJson::from(&crate::options::Options::default()),
+                },
+            )]
+            .into(),
+            concurrency: 2,
+        };
+        let value = serde_json::to_value(&request).expect("serialises");
+        assert_eq!(value["group"], "db");
+        assert_eq!(value["concurrency"], 2);
+        assert_eq!(value["instances"]["main"]["config"], config);
+        assert!(value["instances"]["main"]["options"].is_object());
     }
 
     #[test]

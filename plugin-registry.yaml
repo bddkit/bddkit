@@ -6,6 +6,12 @@
 # `resources.<group>` keys the plugin serves, so `bddkit plugin install` with no
 # name can find the plugins a config needs; no group may be listed twice.
 plugin:
+  - name: api
+    repo: bddkit/bddkit-api
+    groups: [api, srp]
+    description: Test HTTP APIs with Hawk signing and SRP login as a resource group
+    abi:
+      "4": 0.1.0
   - name: appium
     repo: bddkit/bddkit-appium
     groups: [app]
@@ -22,6 +28,12 @@ plugin:
       "2": 0.2.1
       "3": 0.3.0
       "4": 0.4.0
+  - name: db
+    repo: bddkit/bddkit-db
+    groups: [db]
+    description: Query PostgreSQL, MySQL and MariaDB databases as a resource group
+    abi:
+      "4": 0.1.0
   - name: exec
     repo: bddkit/bddkit-exec
     groups: [exec]

@@ -55,7 +55,7 @@ jobs:
           else
             echo "installers=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$files" | grep -qE '^plugin-registry\.yaml$'; then
+          if echo "$files" | grep -qE '^(plugin-registry\.yaml|\.github/scripts/(test_)?update_registry_abi\.py)$'; then
             echo "registry=true" >> "$GITHUB_OUTPUT"
           else
             echo "registry=false" >> "$GITHUB_OUTPUT"
@@ -73,6 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: pip install pyyaml
+      - run: python3 .github/scripts/test_update_registry_abi.py
       - run: python3 .github/scripts/update_registry_abi.py --check
 
   lint-install-scripts:
@@ -103,40 +104,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    # `checks: write` is for the example report below, which is published as a
-    # Check Run; the rest is the default read-only token.
     permissions:
       contents: read
-      checks: write
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          # 5432 for the Rust DB tests, 5433 for examples/db.yaml, which is the
-          # file the README tells a reader to run against docker-compose.
-          - 5432:5432
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      # One DSN per engine. tests/common/db.rs picks which one it uses from
-      # BDDKIT_TEST_ENGINE; tests/db_engines.rs and tests/db_mysql_insert.rs read
-      # all three directly and skip an engine whose variable is unset — so
-      # without these two lines they pass by testing nothing.
-      # Postgres: tests/common/db.rs falls back to port 5433 (docker-compose);
-      # the service container above is published on the default port instead.
-      # MySQL and MariaDB keep their docker-compose ports, since they are the
-      # same containers here (see "Start the example containers" below).
-      BDDKIT_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/postgres
-      BDDKIT_TEST_MYSQL_DSN: mysql://root:root@127.0.0.1:3307/apibdd_it
-      BDDKIT_TEST_MARIADB_DSN: mysql://root:root@127.0.0.1:3308/apibdd_it
 
     steps:
       - uses: actions/checkout@v6
@@ -155,83 +124,18 @@ jobs:
           cargo fmt --check
           cargo fmt --check --manifest-path tests/fixtures/echo-plugin/Cargo.toml
           cargo fmt --check --manifest-path tests/fixtures/worker-plugin/Cargo.toml
+          cargo fmt --check --manifest-path tests/fixtures/group-plugin/Cargo.toml
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # First, and with no database in reach: a dialect unit test that broke must
-      # report before a single container has started.
+      # First: a unit test that broke must report before the slower targets run.
       - name: Unit tests
         run: cargo test --locked --bin bddkit
 
-      # The examples are the tool's demonstration surface; without this they rot
-      # silently and the README's reader is the first to find out. Every suite runs
-      # exactly as examples/README.md documents it, and a failed scenario exits 1.
-      # None of these can be a service container: those start before checkout, so
-      # the files they mount — Smocker's mocks, the MySQL init script — do not
-      # exist yet. MySQL and MariaDB are taken from docker-compose for exactly that
-      # reason: the entrypoint applies examples/db/init-mysql.sql, which the
-      # example suite needs and which no client on the runner is guaranteed to be
-      # able to apply by hand. The wait is on what those scripts create, not on the
-      # server port, so a container that is up but still initialising cannot be
-      # mistaken for a ready one — and MariaDB waits on `tickets`, which comes from
-      # the second script (init-mariadb.sql), so a half-applied init directory is
-      # not mistaken for a finished one either.
-      - name: Start the example containers
-        run: |
-          docker compose up -d smocker mysql mariadb
-          timeout 180 bash -c '
-            until curl -sf http://localhost:8081/mocks >/dev/null; do sleep 2; done
-            until docker compose exec -T mysql mysql -uroot -proot -e "SELECT 1" apibdd_demo >/dev/null 2>&1; do sleep 2; done
-            until docker compose exec -T mariadb mariadb -uroot -proot -e "SELECT 1 FROM tickets" apibdd_demo >/dev/null 2>&1; do sleep 2; done
-          '
-
-      - name: Acceptance tests
-        run: cargo test --locked --test acceptance
-
-      - name: Plugin acceptance tests
-        run: cargo test --locked --test plugin
-
-      # The apibdd_it fixture schema is shared, so DB tests run single-threaded.
-      # The same suite runs once per engine: BDDKIT_TEST_ENGINE picks the dialect
-      # and, with it, the DSN above. Every feature source is identical on all
-      # three — what differs is the fixture DDL, in tests/common/db.rs.
-      - name: Database tests (Postgres)
-        run: cargo test --locked --test db -- --test-threads=1
-
-      - name: Database tests (MySQL)
-        env:
-          BDDKIT_TEST_ENGINE: mysql
-        run: cargo test --locked --test db -- --test-threads=1
-
-      - name: Database tests (MariaDB)
-        env:
-          BDDKIT_TEST_ENGINE: mariadb
-        run: cargo test --locked --test db -- --test-threads=1
-
-      # Platform selection per DSN, and the no-RETURNING insert path. Separate
-      # test targets, so they need naming here or cargo never builds them.
-      - name: Engine selection tests
-        run: cargo test --locked --test db_engines --test db_mysql_insert -- --test-threads=1
-
-      # docker-compose seeds this through the entrypoint; the service container
-      # above comes up empty, so examples/db.yaml's schemas are applied by hand.
-      - name: Load the example database schema
-        run: psql -v ON_ERROR_STOP=1 "$BDDKIT_TEST_DSN" -f examples/db/init.sql
-
-      # Every suite runs whatever the previous one did, so a red run still
-      # produces all four reports — `set -e` would stop at the first exit 1 and
-      # the report below would be missing the suites that never ran. The exit
-      # code is the worst one seen; a report the run could not write is 2 and
-      # fails the job like anything else. The reports live outside the
-      # checkout: `cargo publish --dry-run` below refuses a dirty working tree.
-      - name: Example suites
-        run: |
-          code=0
-          for suite in api db db-mysql db-mariadb; do
-            cargo run --locked --quiet -- run --config examples/$suite.yaml --junit "$RUNNER_TEMP/reports/$suite.xml" || code=$(( $? > code ? $? : code ))
-          done
-          exit $code
+      # Every integration target.
+      - name: Integration tests
+        run: cargo test --locked --test '*'
 
       # bddkit testing bddkit: selftest/ runs the binary on a scratch project
       # through the published `exec` plugin and reads back what it printed and
@@ -244,8 +148,7 @@ jobs:
           ./target/debug/bddkit run --config selftest/bddkit.yaml --events "$RUNNER_TEMP/selftest/run.ndjson" --evidence --artifacts-dir "$RUNNER_TEMP/selftest/artifacts"
 
       # The stream above, as the page a person opens after a red build. Kept
-      # outside the checkout like the JUnit files, and uploaded with its
-      # artifacts; `--embed-artifacts` makes the page open on its own anyway.
+      # outside the checkout, and uploaded with its artifacts; `--embed-artifacts` makes the page open on its own anyway.
       - name: Self-test report
         if: always()
         run: ./target/debug/bddkit report "$RUNNER_TEMP/selftest/run.ndjson" --embed-artifacts
@@ -257,18 +160,6 @@ jobs:
           name: selftest-report
           path: ${{ runner.temp }}/selftest
           if-no-files-found: ignore
-
-      # The JUnit files above, rendered on the job's summary page and, for a
-      # PR, as annotations at the failing scenario — which is also the live
-      # check that the XML `run --junit` writes is what GitHub reads.
-      # `always()`: a red run is exactly when the report is wanted.
-      - name: Example report
-        if: always()
-        uses: dorny/test-reporter@v2
-        with:
-          name: Example suites
-          path: ${{ runner.temp }}/reports/*.xml
-          reporter: java-junit
 
       - name: Package check
         run: cargo publish --dry-run --locked

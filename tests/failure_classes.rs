@@ -57,31 +57,6 @@ fn summary(dir: &std::path::Path) -> String {
         .to_string()
 }
 
-/// `project` with an API at `base`, for the one test that needs a real request.
-// moves-to: api
-fn http_project(name: &str, base: &str, feature: &str) -> PathBuf {
-    let dir = project(name, feature, None);
-    let config = std::fs::read_to_string(dir.join("cfg.yaml")).expect("config");
-    let config = config.replace(
-        "resources: {}\n",
-        &format!("resources:\n  api:\n    stub:\n      base_url: {base}\n      timeout_secs: 2\n"),
-    );
-    std::fs::write(dir.join("cfg.yaml"), config).expect("write config");
-    dir
-}
-
-// moves-to: api
-#[test]
-fn a_refused_connection_is_a_transport_failure() {
-    // Port 1 on loopback: nothing listens, the connection is refused.
-    let dir = http_project(
-        "refused",
-        "http://127.0.0.1:1",
-        "Feature: f\n  Scenario: s\n    When I request \"/ping\"\n",
-    );
-    assert!(summary(&dir).ends_with("failed: 1 (1 transport)"));
-}
-
 const MISMATCH: &str = "Feature: f\n  Scenario: s\n    Given set variable \"a\" to \"1\"\n    Then variable \"a\" should be equal to \"2\"\n";
 
 #[test]

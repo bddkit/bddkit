@@ -423,7 +423,7 @@ A deferred step's `evidence` and `attempt` events are held per scenario and carr
 
 ### 9.3 The `evidence` event
 
-**Decided.** There is one event type for all evidence, whatever produced it. The core has no `http_exchange` and no `db_query` type: the built-in API and database speak the form a plugin's diagnostic already has, so moving them into plugins later changes nothing in the stream.
+**Decided.** There is one event type for all evidence, whatever produced it. The core has no `http_exchange` and no `db_query` type: the HTTP API and the databases speak the form a plugin's diagnostic has, as plugins now.
 
 Fields beyond the envelope: `file`, `scenario`, `step` (the innermost step in flight), `group` (`api`, `db`, or a plugin group), `resource` (the instance name), `kind`, an optional `title`, and either `content` or a file reference (`path`, `size`, `media_type`).
 
@@ -524,7 +524,7 @@ Every **Detail** above, in one place. None was discussed; each is the spec autho
 Each is a fact this specification depends on. If one is wrong, the section named after it needs rework.
 
 1. Reports are written after `run_all` from collected results; `report::prepare` creates, truncates and closes each path before `config::load`, and `doctor` calls the same function. → `main::run`, `ReportArgs`, `report::prepare`, `doctor.rs` `reports` stage. (5.1)
-2. `run` prints `run <id>` after validation and after `Db::connect`. → `main::run`. (5.4)
+2. `run` prints `run <id>` after validation and after the plugins' `eager_init`. → `main::run`. (5.4)
 3. `run_file` records `Skipped` for every top-level step after a failure and never runs them. → `runner::run_file`. (5.3, 5.4)
 4. Every row of an outline has the same `line`. → `feature::expand_outlines`. (5.3)
 5. A macro body step is built with an empty `keyword` and the caller's `line`; `MacroStep` has no line; `MacroDef` has `source` and `line`. → `runner::execute_step`, `macros.rs`. (5.3)
@@ -545,7 +545,7 @@ Each is a fact this specification depends on. If one is wrong, the section named
 20. `ApiConfig` has `base_url`, `timeout_secs`, `default_headers`, `options`, and `API_FIELDS` mirrors it by hand. → `config.rs`. (7.4)
 21. The failure dump prints every request header in full and both bodies cut to 600 characters, and nothing in `src/` masks anything. → `impl Display for Exchange` in `http.rs`; the absence was checked by grep only. (4, 7)
 22. The failure text is built inside `run_file`, where the file's `World` is still alive. → `runner::run_file`. (7.8)
-23. The host's debug output is `eprintln!` at a handful of sites. → `db/ops.rs`, `steps/debug.rs`, `runner.rs`. (7.8)
+23. The host's debug output is `eprintln!` at a handful of sites. → `steps/debug.rs`, `runner.rs`. (7.8)
 24. `doctor` has the statuses `ok`, `failed`, `skipped` and exits 0 or 1. → `doctor.rs`. (7.10)
 25. The artifact allocator lives on `Plugins` and does not exist when no plugin is loaded; the workspace is created by the host and never deleted. → `plugin/mod.rs`, `main::load_plugins`, `world.rs`. (8)
 26. Outside tests `HttpState::last` is assigned only in `send` and `replay_last`, and a polling replay of an HTTP assertion goes through `replay_last`. → `http.rs`, `steps/assert.rs::replay_response`. (9.3)

@@ -95,21 +95,3 @@ impl RunProbe {
         .await;
     }
 }
-
-/// The counts of what a config declares: APIs, SRP configurations and database
-/// engines. Plugin instances are added once the plugins are loaded. An engine
-/// is named by its DSN scheme, so MariaDB reads as `mysql` until a connection
-/// has told them apart (`Db::engines`).
-pub fn resources_of(cfg: &crate::config::Config) -> Resources {
-    let mut resources = Resources {
-        api: cfg.resources.api.len() as u64,
-        srp: cfg.resources.srp.len() as u64,
-        ..Default::default()
-    };
-    for connection in cfg.resources.db.values() {
-        if let Some(engine) = crate::db::family_name(&connection.dsn) {
-            resources.db.add(engine);
-        }
-    }
-    resources
-}
