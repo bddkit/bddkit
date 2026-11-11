@@ -11,7 +11,7 @@ plugin:
     groups: [api, srp]
     description: Test HTTP APIs with Hawk signing and SRP login as a resource group
     abi:
-      "4": 0.1.0-rc.1
+      "4": 0.1.0
   - name: appium
     repo: bddkit/bddkit-appium
     groups: [app]
@@ -33,7 +33,7 @@ plugin:
     groups: [db]
     description: Query PostgreSQL, MySQL and MariaDB databases as a resource group
     abi:
-      "4": 0.1.0-rc.1
+      "4": 0.1.0
   - name: exec
     repo: bddkit/bddkit-exec
     groups: [exec]
