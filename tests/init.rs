@@ -74,6 +74,17 @@ fn parallel_false_writes_concurrency_1() {
     );
 }
 
+/// A suite without an API gets no `api` key: an empty one would only make the
+/// closing `doctor` report say that the key can be removed.
+#[test]
+fn an_init_without_an_api_writes_no_api_key() {
+    let dir = temp("no-api");
+    let out = bddkit(&dir, &["init", "--no-api"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!config(&dir).contains("api:"), "{}", config(&dir));
+    assert!(!text(&out).contains("can be removed"), "{}", text(&out));
+}
+
 #[test]
 fn a_non_interactive_init_without_telemetry_writes_no_key() {
     let dir = temp("telemetry-none");

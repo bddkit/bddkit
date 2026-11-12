@@ -409,11 +409,11 @@ fn config_text(answers: &Answers) -> Result<String> {
             json!(1),
         )?;
     }
-    // `api` is optional since #190. The empty key stays for now: dropping it
-    // changes what `init` writes, which #188 reworks anyway.
-    let mut resources = json!({"api": {}});
+    // Only the groups the answers name: an empty `api: {}` would make the
+    // closing `doctor` report say that the key can be removed.
+    let mut resources = json!({});
     if let Some(url) = &answers.api_url {
-        resources["api"]["main"] = json!({"base_url": literal(url)});
+        resources["api"] = json!({"main": {"base_url": literal(url)}});
     }
     if let Some(dsn) = &answers.dsn {
         resources["db"] = json!({"main": {"dsn": literal(dsn)}});
