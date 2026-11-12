@@ -43,7 +43,7 @@ The spec is `docs/events-design.md` section 7; the tester's view is the README's
 
 Every resource group is a global set of named instances served by a plugin: `resources.<group>` plus an optional `default_<group>` (inferred when a group has exactly one instance). Any scenario reaches any of them by name — `I use "<name>" <group>`. The HTTP API and SRP are the `api` and `srp` groups of the `bddkit-api` plugin, the databases the `db` group of `bddkit-db` (with `I use "<conn>" connection` as its deprecated word); the run path knows nothing of HTTP, engines or DSNs. `default_api`, `default_db`, `default_srp`, `--default-api`, `--default-db`, `--default-srp` and `BDDKIT_DEFAULT_API` / `_DB` / `_SRP` stay as aliases of `--default <group>=<name>`.
 
-Test selection lives on the CLI: a positional path argument overrides `cfg.paths`, and a repeatable `--tag` filters scenarios (feature-level tags are merged onto every scenario at load; an empty selection exits 2).
+Test selection lives on the CLI: a positional path argument overrides `cfg.paths` (it may end in `:LINE` or a report id `:LINE#ROW`: `LoadedFeature::select_lines` keeps the chosen rows, and `LoadedFeature::selects_row` is the one check, tag AND line, that every selection site goes through: `has_selected_scenario`, `validate` and the runner; only typed arguments carry a line, never `cfg.paths`), and a repeatable `--tag` filters scenarios (feature-level tags are merged onto every scenario at load; an empty selection exits 2).
 
 A `resources.<group>` key no loaded plugin serves exits 2 naming the group and `bddkit plugin install`. Plugins are `cdylib`s: see `src/plugin/CLAUDE.md` and `docs/plugin-authoring.md`.
 

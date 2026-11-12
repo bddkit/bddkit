@@ -1,4 +1,4 @@
-use crate::feature::{LoadedFeature, TagFilter, display_path, expand_outlines};
+use crate::feature::{LoadedFeature, TagFilter, display_path};
 use crate::steps::{Registry, StepTarget};
 use std::path::{Path, PathBuf};
 
@@ -157,7 +157,7 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
     // A rule's Background, like a filtered-out scenario, only counts when
     // something under that rule will run.
     for rule in &lf.feature.rules {
-        if !rule.scenarios.iter().any(|sc| filter.selects_any(sc)) {
+        if !rule.scenarios.iter().any(|sc| lf.keeps_a_row(filter, sc)) {
             continue;
         }
         for (text, line, doc, table) in rule.background.iter().flat_map(from_background) {
@@ -165,8 +165,8 @@ fn selected_steps(lf: &LoadedFeature, filter: &TagFilter) -> Vec<SelectedStep> {
         }
     }
     for sc in lf.scenarios().map(|r| r.scenario) {
-        for ex in expand_outlines(sc) {
-            if !filter.selects_row(sc, ex.examples_line) {
+        for ex in lf.expand(sc) {
+            if !lf.selects_row(filter, sc, &ex) {
                 continue;
             }
             for st in ex.steps {

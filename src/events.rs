@@ -572,6 +572,9 @@ impl Trace {
                 lf.annotations.comment(line),
             );
         }
+        if let Some(row) = ex.row_line {
+            fields["row_line"] = json!(row);
+        }
         events.emit("scenario_started", fields);
     }
 

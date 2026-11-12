@@ -1,6 +1,6 @@
 use crate::events::{Events, Origin, Trace};
 use crate::failure::{FailureKind, StepError};
-use crate::feature::{ExpandedStep, LoadedFeature, ScenarioRef, expand_outlines};
+use crate::feature::{ExpandedStep, LoadedFeature, ScenarioRef};
 use crate::options::Options;
 use crate::plugin::abi::{DispatchRequest, OptionsJson, Status};
 use crate::polling::{AttemptError, Polling};
@@ -964,8 +964,8 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     for scenario_ref in lf.scenarios() {
         let ScenarioRef { scenario: sc, rule } = scenario_ref;
         let background = lf.background_steps(rule);
-        for ex in expand_outlines(sc) {
-            if !ctx.filter.selects_row(sc, ex.examples_line) {
+        for ex in lf.expand(sc) {
+            if !lf.selects_row(&ctx.filter, sc, &ex) {
                 continue;
             }
             if ex.example.is_some() {
