@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/bddkit/bddkit/compare/v0.4.1...v0.5.0) - 2026-11-11
+
+### Added
+
+- list api and db in the plugin index
+- [**breaking**] remove the built-in HTTP API and SRP (bddkit/bddkit#240)
+- [**breaking**] remove the built-in database kind (bddkit/bddkit#234)
+- dev-unreserve, a build without the built-in API and databases
+- bddkit_failure_context adds a plugin's context to the failure dump
+- class, attempt, options_instance, output, global_vars and source_dir in a plugin's dispatch
+- group-scoped plugin handles, eager_init and deprecated switch words
+- a plugin's reply carries structured diagnostics and `scan`
+- secrets and detail in a plugin's config replies
+- plugin step specs take an expression and declare their effects
+- plugin ABI 4, and the host loads ABI 3 to 4
+
+### Fixed
+
+- *(init)* ask the plugin index only for a group no installed plugin serves (bddkit/bddkit#227)
+- *(resource)* refuse a plugin-group name that expands to something else
+- report the resources stage for a plugin instance the plugin refuses ([#225](https://github.com/bddkit/bddkit/pull/225))
+
+### Other
+
+- README for the release without built-in HTTP and databases ([#247](https://github.com/bddkit/bddkit/pull/247))
+- list api and db 0.1.0 in the plugin index
+- set the version back to 0.4.1, the last release from main
+- check a plugin index entry that has only pre-releases
+- bddkit 0.5.0-rc.3
+- point the HTTP and SRP docs at bddkit-api (bddkit/bddkit#240)
+- Merge main into split (bddkit/bddkit#240)
+- point the database docs and examples at bddkit-db (bddkit/bddkit#234)
+- update the plugin index's ABI map
+- check each plugin's groups against its latest release in the index job (bddkit/bddkit#229)
+- bddkit 0.5.0-rc.2
+- point plugin authors at bddkit-db and bddkit-api for ABI 4 in use
+- bddkit 0.5.0-rc.1
+- state every ABI 4 default, correct the fixture claims, align the ABI_MIN comment
+- document plugin ABI 4 as one whole, the compatibility rule and the move to ABI 4
+
 ## [0.4.1](https://github.com/bddkit/bddkit/compare/v0.4.0...v0.4.1) - 2026-11-04
 
 ### Added
