@@ -932,7 +932,7 @@ fn load_included(path_literal: &str, base: &std::path::Path) -> Option<feature::
 }
 
 /// The variable names a scenario's own steps write, or `None` when it has a
-/// step whose writes cannot be listed (SRP and AES derive a prefix, a name
+/// step whose writes cannot be listed (AES derives a prefix, a name
 /// holding a `<<slot>>` or an Outline `<column>`, a macro or include exporting
 /// a glob, a plugin step that declares no effects, which can publish what the
 /// host cannot see). A plugin step's family stays in the list with its `*`.

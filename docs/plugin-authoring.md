@@ -407,7 +407,7 @@ The failing step's own handle is included unless its reply already showed someth
 
 A panic the plugin catches itself (an export that unwinds into the host aborts the process, so guard it and answer an envelope), a NULL, a reply that does not parse, one that says `"ok": false` or carries an `error`, or a diagnostic whose shape does not fit adds one line, `failure context of plugin "<name>" unavailable: …`, and never changes the failure's class or the step's own message. The line quotes nothing of a malformed reply or a misfit diagnostic; the plugin's own `error` text is shown, masked. An empty `diagnostics` adds nothing. The host sets no timeout on the call: one that blocks holds the failing file's report until it returns, as a blocking dispatch does.
 
-Per feature file, like `bddkit_reset_scenario`: a `shared` plugin that exports it is refused at load when the run has `concurrency` above 1. The host keeps `world.http.last()` in the dump until the HTTP API leaves the core; contexts are appended beside it.
+Per feature file, like `bddkit_reset_scenario`: a `shared` plugin that exports it is refused at load when the run has `concurrency` above 1.
 
 ### `bddkit_free_string`
 

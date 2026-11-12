@@ -4,6 +4,8 @@
 
 **Baseline.** `bddkit/bddkit` `main` at `f303902` (0.2.2 plus unreleased work), `bddkit-browser` at `07c7beb`, `bddkit-exec` at `b641e71`, `bddkit-s3` at `0db5f06` (all 0.1.0), read on 2026-10-06. References are by function or type name, not line number. Section 14 lists every claim this specification leans on — re-check them against the files before trusting the prose.
 
+**Since 0.5.0.** The HTTP API with SRP and Hawk, and the databases, are no longer in the binary: they are the `bddkit-api` and `bddkit-db` plugins. What this specification says of the API module, `HttpState`, the built-in SRP and Hawk steps and the database module now holds for those plugins. They report each exchange and each statement as a structured `http` or `sql` diagnostic (ABI 4, `docs/plugin-authoring.md`), and the host masks and renders it in `diagnostic.rs`. The plugin ABI has moved on since section 10 as well. Sections 4 and 14 are facts about the baseline above and are not kept up to date with the code.
+
 **Scope.** Only what changes in the `bddkit` binary. The hub, the sender that ships a run to it, the upload protocol and the UI are separate projects and appear here only as the reason a rule exists.
 
 ## 1. Why

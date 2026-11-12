@@ -3,7 +3,7 @@
 //! (`docs/events-design.md` 9.3).
 //!
 //! A structure carries everything masking needs, so the renderer never asks
-//! `HttpState` anything: sensitive header names, the form of the request body,
+//! the plugin anything: sensitive header names, the form of the request body,
 //! and the text itself. Values under sensitive names are hidden by position,
 //! then the secret set is applied, and only then is a body cut — a secret that
 //! straddles the cut cannot show its start.
@@ -233,10 +233,9 @@ impl HttpDiagnostic {
         })
     }
 
-    /// Adds to the set what the exchange holds under sensitive names, as
-    /// `HttpState::send` does for a built-in one: the listed headers' values
-    /// (whole and in parts), the query's and the request body's fields, and
-    /// the response body's JSON fields.
+    /// Adds to the set what the exchange holds under sensitive names: the
+    /// listed headers' values (whole and in parts), the query's and the
+    /// request body's fields, and the response body's JSON fields.
     pub fn register(&self, redactor: &Redactor) {
         let listed = |name: &str| {
             self.sensitive_headers
