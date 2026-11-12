@@ -438,32 +438,39 @@ impl Trace {
             redactor,
             ..Self::off()
         };
+        let mut fields = trace.file_fields(lf);
+        fields["file"] = trace.file.clone().into();
+        events.emit("file_started", fields);
+        trace
+    }
+
+    /// What `file_started` says of a feature, without the `file`. `bddkit list`
+    /// prints the same object, so the two cannot drift apart.
+    pub(crate) fn file_fields(&self, lf: &LoadedFeature) -> Value {
         let feature = &lf.feature;
         let mut fields = json!({
-            "file": trace.file,
-            "name": trace.redactor.mask(&feature.name),
-            "tags": trace.tags(lf.own_tags(feature.position.line).iter().map(|(name, _)| name.as_str())),
+            "name": self.redactor.mask(&feature.name),
+            "tags": self.tags(lf.own_tags(feature.position.line).iter().map(|(name, _)| name.as_str())),
         });
-        trace.put(
+        self.put(
             &mut fields,
             "description",
             lf.description(feature.position.line).unwrap_or(""),
         );
-        trace.put(
+        self.put(
             &mut fields,
             "comment",
             lf.annotations.comment(feature.position.line).unwrap_or(""),
         );
         if let Some(background) = &feature.background {
-            fields["background"] = trace.element(
+            fields["background"] = self.element(
                 background.position.line,
                 &background.name,
                 lf.description(background.position.line).unwrap_or(""),
                 lf.annotations.comment(background.position.line),
             );
         }
-        events.emit("file_started", fields);
-        trace
+        fields
     }
 
     fn mask_strings(&self, value: &mut Value) {
@@ -494,7 +501,7 @@ impl Trace {
     }
 
     /// Tag names as a reader of the source sees them, with the `@`.
-    fn tags<'a>(&self, names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    pub(crate) fn tags<'a>(&self, names: impl Iterator<Item = &'a str>) -> Vec<String> {
         names
             .map(|name| self.redactor.mask(&format!("@{name}")))
             .collect()
@@ -519,12 +526,27 @@ impl Trace {
             .any(|(name, _)| *name == "evidence");
         *self.held() = Held::default();
         (self.started, self.live, self.deferred) = (0, 0, 0);
+        let mut fields = self.scenario_fields(lf, sc, ex);
+        fields["file"] = self.file.clone().into();
+        fields["scenario"] = self.scenario.into();
+        events.emit("scenario_started", fields);
+    }
+
+    /// What `scenario_started` says of one scenario or example row, without the
+    /// `file` and the run's `scenario` ordinal. `bddkit list` prints the same
+    /// object, so the two cannot name a field differently.
+    pub(crate) fn scenario_fields(
+        &self,
+        lf: &LoadedFeature,
+        sc: ScenarioRef<'_>,
+        ex: &ExpandedScenario,
+    ) -> Value {
         let tags = lf
             .effective_tags(sc, ex.examples_line)
             .into_iter()
             .map(|(name, _)| name);
         let mut fields = json!({
-            "file": self.file, "scenario": self.scenario, "name": self.redactor.mask(&ex.name),
+            "name": self.redactor.mask(&ex.name),
             "line": ex.line, "tags": self.tags(tags),
         });
         if let Some(example) = ex.example {
@@ -575,7 +597,7 @@ impl Trace {
         if let Some(row) = ex.row_line {
             fields["row_line"] = json!(row);
         }
-        events.emit("scenario_started", fields);
+        fields
     }
 
     /// A failed scenario's deferred evidence is written first, unless the run

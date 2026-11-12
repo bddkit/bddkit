@@ -17,6 +17,7 @@ mod failure;
 mod feature;
 mod include;
 mod init;
+mod list;
 mod macros;
 mod options;
 mod plugin;
@@ -70,6 +71,8 @@ enum Command {
     Steps(StepsArgs),
     /// Set up a new suite: answer a few questions, or pass flags
     Init(init::InitArgs),
+    /// Show the scenarios a run would run, without running them
+    List(list::ListArgs),
     /// Check a suite without running it and list every problem found; --live also probes what it talks to
     Doctor(DoctorArgs),
     /// Render an event stream (`run --events`) as a report
@@ -650,10 +653,10 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
     Ok(report.exit_code())
 }
 
-/// The flag layer of the privacy options (spec §7.7); `run` and `doctor` flatten
-/// the same struct so they cannot disagree about what a flag means.
+/// The flag layer of the privacy options (spec §7.7); `run`, `list` and `doctor`
+/// flatten the same struct so they cannot disagree about what a flag means.
 #[derive(Args, Default)]
-struct PrivacyArgs {
+pub(crate) struct PrivacyArgs {
     /// Show real values instead of `***` in everything printed or written
     #[arg(long = "privacy-reveal", visible_alias = "reveal")]
     reveal: bool,
@@ -675,7 +678,7 @@ struct PrivacyArgs {
 }
 
 impl PrivacyArgs {
-    fn layer(&self) -> privacy::PrivacyLayer {
+    pub(crate) fn layer(&self) -> privacy::PrivacyLayer {
         // `--privacy-fields-only ''` arrives as one empty part; the same
         // trimming as a variable's turns it into the empty list it means.
         let list = |list: &Option<Vec<String>>| {
@@ -939,6 +942,7 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Init(args) => (init::command(args).await, "nothing written"),
+        Command::List(args) => (Ok(list::command(args)), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Report(args) => (report_command(args).await, "nothing written"),
         Command::Resource(args) => (resource_command(args).await, "nothing listed"),
@@ -1343,7 +1347,7 @@ async fn run(cli: RunArgs) -> Result<i32> {
 /// `a` are one), with the lines of all its arguments, or whole when it, or a
 /// directory holding it, is also named without a line. A line that selects
 /// nothing is the inner `Err`, whether or not the file ends up whole.
-fn select_features(
+pub(crate) fn select_features(
     paths: &[PathBuf],
     split: bool,
     filter: &feature::TagFilter,
