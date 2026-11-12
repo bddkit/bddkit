@@ -12,12 +12,12 @@ use dialoguer::console::Term;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// The question of `telemetry.md`, section 6, word for word.
+/// The telemetry question `run`, `doctor` and `init` ask.
 pub const QUESTION_TEXT: &str =
     "bddkit can send anonymous usage counts to its maintainers after each run:
 the bddkit version and OS, how long the run took, how many files, scenarios
-and failures it had, and which kinds of resources the suite uses (APIs,
-database engines, official plugins).
+and failures it had, and which official plugins the suite uses (the API
+and database ones among them).
 Never sent: names, step text, URLs, addresses, values, your config.
 Your IP address reaches our server with the request and is dropped there;
 it is never stored and never passed on.
