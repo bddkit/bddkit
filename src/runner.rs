@@ -836,7 +836,7 @@ pub struct RunContext {
 
 impl RunContext {
     // An aggregator for run-wide config: the parameter list grows with each
-    // resource (srp, …), a separate builder for a single constructor is overkill.
+    // setting, a separate builder for a single constructor is overkill.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         reg: Registry,

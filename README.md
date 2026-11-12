@@ -60,7 +60,7 @@ The new release is downloaded, checksummed and asked for its version and plugin 
 
 Old plugin versions stay on disk after an upgrade so that a rollback has something to go back to, and `plugin remove` and `plugin update` leave a version that another lock file or a backup still points into. `bddkit plugin prune` removes the ones no lock file points into any more, the `.before-upgrade` backups a rollback would restore included, so the versions of your latest upgrade stay until the next one (`--dry-run` lists them and their size, `--yes` skips the question and is required without a terminal); it looks only at the shared, user and `--bddkit-dir` data directories, never at a project layer, and nothing runs it for you.
 
-Nothing checks for a newer release on its own: `run` and `doctor` open no socket for it. In CI pin the version instead of upgrading: `curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh -s -- --version 0.4.1`, or `BDDKIT_VERSION=0.4.1`.
+Nothing checks for a newer release on its own: `run` and `doctor` open no socket for it. In CI pin the version instead of upgrading: `curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh -s -- --version 0.5.0`, or `BDDKIT_VERSION=0.5.0`.
 
 ## Quick start
 
@@ -70,7 +70,7 @@ Nothing checks for a newer release on its own: `run` and `doctor` open no socket
 bddkit init
 ```
 
-`init` asks a few questions, in this order: the base URL of the API under test (an empty answer means none), a database (none, PostgreSQL, MySQL or MariaDB, with a DSN — prefer an environment reference such as `${BDDKIT_DB_DSN}` over a literal password; the `db` plugin that serves it is installed with the others), which plugins of the official index to install (nothing is ticked: arrows move, Space ticks, Enter accepts), whether they are for you on this machine or vendored into `.bddkit/` for everyone with the repository, whether scenarios of different files may run at the same time (`concurrency` 8, which is safe only when every scenario brings its own data, see `<<unique()>>`; otherwise 1), and last whether to allow anonymous usage counts. Every list is built without a preselected answer, so nothing is chosen that you did not choose; Ctrl-C at any question, and Esc at a list, leaves without writing anything (exit `130`); a text question has no Esc.
+`init` asks a few questions, in this order: the base URL of the API under test (an empty answer means none; an answer installs the `api` plugin with the others), a database (none, PostgreSQL, MySQL or MariaDB, with a DSN — prefer an environment reference such as `${BDDKIT_DB_DSN}` over a literal password; the `db` plugin that serves it is installed with the others), which plugins of the official index to install (nothing is ticked: arrows move, Space ticks, Enter accepts), whether they are for you on this machine or vendored into `.bddkit/` for everyone with the repository, whether scenarios of different files may run at the same time (`concurrency` 8, which is safe only when every scenario brings its own data, see `<<unique()>>`; otherwise 1), and last whether to allow anonymous usage counts. Every list is built without a preselected answer, so nothing is chosen that you did not choose; Ctrl-C at any question, and Esc at a list, leaves without writing anything (exit `130`); a text question has no Esc.
 
 Then it writes `bddkit.yaml` (a comment above each key), `features/example.feature` (one scenario that passes without a network, with a commented-out request to your API that the report shows as a disabled step), the missing lines of `.gitignore` (`.bddkit/*.local.yaml` and `.env.local`, only inside a git work tree), installs the plugins one at a time, prints for each plugin group that needs a resource the `bddkit resource add …` command that declares it, and ends with the `doctor` report. A plugin that fails to install does not stop the others or undo the config, and neither does an environment reference such as `${BDDKIT_DB_DSN}` that is not exported yet: the closing `doctor` report fails on it (exit `1`) until it is. `init` never overwrites a config: when `bddkit.yaml` (or `bddkit.yml`, or the file `--config` names) exists it refuses with exit `2` and points at `bddkit resource add` and `bddkit plugin install`, which extend a suite.
 
@@ -447,13 +447,11 @@ What masking does not do:
 - Images are not filtered.
 - A masked assertion is harder to debug. Use `--reveal`.
 
-**Upgrading.** Failure dumps change for every existing suite: the values of `Authorization`, `Cookie` and `Set-Cookie`, and of any JSON key, form field or query parameter with `password`, `secret` or `token` as a word, are now `***`. Whoever relied on reading them there needs `--reveal`, or a `fields_only` list of their own.
-
 ## Telemetry
 
 bddkit can count how it is used, anonymously, and it does nothing of the kind until a person has said yes. The counts answer four questions and nothing else: how many runs happen, and how many of them in CI; how large suites are and how long their scenarios take; how often a run fails or never starts; which official plugins suites use and where the steps spend their time.
 
-**Sending.** While telemetry is on, each command writes its payload to `telemetry-last.json` in your user layer (`bddkit telemetry show` prints it), and to the file `BDDKIT_TELEMETRY_LOG` names if you set one, then sends it once as `POST https://telemetry.bddkit.dev/v1/run`. The request waits at most 500 ms to connect and 1.5 s in all, DNS included, so a dead network or a broken resolver costs a command at most 1.5 s; it is not retried, prints nothing and never changes the exit code, a run you interrupt sends nothing, and a signal while the request is out ends the command at once with its own exit code. `BDDKIT_TELEMETRY_URL` points it at a collector of your own. Since sending starts with this release, an existing yes now takes effect: turn it off with `bddkit telemetry off`, `BDDKIT_TELEMETRY=0`, `DO_NOT_TRACK=1` or `telemetry: false` in `bddkit.yaml`.
+**Sending.** While telemetry is on, each command writes its payload to `telemetry-last.json` in your user layer (`bddkit telemetry show` prints it), and to the file `BDDKIT_TELEMETRY_LOG` names if you set one, then sends it once as `POST https://telemetry.bddkit.dev/v1/run`. The request waits at most 500 ms to connect and 1.5 s in all, DNS included, so a dead network or a broken resolver costs a command at most 1.5 s; it is not retried, prints nothing and never changes the exit code, a run you interrupt sends nothing, and a signal while the request is out ends the command at once with its own exit code. `BDDKIT_TELEMETRY_URL` points it at a collector of your own. Turn it off with `bddkit telemetry off`, `BDDKIT_TELEMETRY=0`, `DO_NOT_TRACK=1` or `telemetry: false` in `bddkit.yaml`.
 
 **What a payload holds.** A fixed list of numbers, booleans and names from bddkit's own vocabulary: the bddkit version, the OS and architecture, which CI system (only that one of its variables is set), the command and its exit code, how long it took, how many files, scenarios and failures a run had and how many of those failures were of each class (`assertion`, `transport`, `db_connection`, `db_statement`, `input`, `plugin`, `reset`, `panic`), how long scenarios took (median, 90th percentile, longest, and how many fell under 100 ms, 1 s, 10 s and 60 s), which options were on (never their values), how many instances of which official plugin (`api`, `srp` and `db` among them), and how many steps of each group ran and for how long. A plugin is named only when its lock entry says it was installed from a repository of the `bddkit` owner (`bddkit plugin install` writes that; a hand-written entry says nothing); any other is counted as "other". The full list is in [`docs/telemetry.md`](docs/telemetry.md).
 
@@ -576,17 +574,9 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 
 ## Design notes
 
-**Why not cucumber-rs.** Three axes diverge: steps register at compile time
-via proc-macros (here they load from YAML at run time), `World` is recreated
-per scenario (here variables are file-scoped), and concurrency is a flat pool
-over scenarios (here it's chains of files). Working around all three leaves
-only its run loop while breaking its own step diagnostics — which is the part
-worth strengthening. The `gherkin` crate underneath it is reused directly.
+**Why not cucumber-rs.** Three axes diverge: steps register at compile time via proc-macros (here they load from YAML at run time), `World` is recreated per scenario (here variables are file-scoped), and concurrency is a flat pool over scenarios (here it's chains of files). Working around all three leaves only its run loop while breaking its own step diagnostics — which is the part worth strengthening. The `gherkin` crate underneath it is reused directly.
 
-**Why no transactional rollback.** The service under test reads over its own
-connection and would never see uncommitted rows, so rolling back per scenario
-would break any test where a step writes and the API reads. Isolation comes
-from unique data instead.
+**Why no transactional rollback.** The service under test reads over its own connection and would never see uncommitted rows, so rolling back per scenario would break any test where a step writes and the API reads. Isolation comes from unique data instead.
 
 **Where this is going.** The core ships no resource kind: every key under `resources:` is a capability group a plugin serves, the HTTP API's `api` and `srp`, the databases' `db` among them, so reaching an object store or a mailbox is the same move as reaching a second database. The seams that made that possible were there from the start: options cascade per instance, `I use "<name>" <kind>` is one step shape, and dispatch returns `passed | not yet | fatal` so eventual assertions work without knowing what they retry. `bddkit plugin install <name>` fetches one from the index into your `.bddkit/` chain — see `docs/plugin-authoring.md` §7.
 

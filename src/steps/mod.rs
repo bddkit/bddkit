@@ -661,8 +661,8 @@ impl Registry {
 
     /// Registers `I use "<name>" <group>` over the groups the loaded plugins
     /// actually claim. The alternation is built from the real group names, so
-    /// the pattern cannot overlap `I use "<name>" api` and no existing
-    /// .feature changes meaning.
+    /// a group no plugin claims has no switch step and its `I use` is an
+    /// unknown step before the first request.
     pub fn add_use_group_step(&mut self, groups: &[String]) -> Result<(), String> {
         if groups.is_empty() {
             return Ok(());

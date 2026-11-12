@@ -325,8 +325,7 @@ pub(crate) fn source_dir(dir: &Path) -> String {
 /// A plugin step is checked by its plugin, on the RAW step: no variable has a
 /// value yet, so captures, doc string and table are as written. One function
 /// for the three places a step can sit (a feature file, an include body, a
-/// macro body), the way `check_attached_file` is shared; any other target
-/// passes.
+/// macro body); any other target passes.
 pub(crate) fn check_plugin_step(
     reg: &Registry,
     target: &StepTarget,
