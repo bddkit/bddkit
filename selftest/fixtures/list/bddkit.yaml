@@ -1,0 +1,8 @@
+paths: [selftest/fixtures/list/features]
+
+resources:
+  exec:
+    main:
+      # Named like a secret, so the config walk registers its value.
+      env:
+        client_secret: list-secret-value-8

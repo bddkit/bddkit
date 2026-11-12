@@ -72,7 +72,7 @@ Plugins live in their own repositories (names in `plugin-registry.yaml`, e.g. `b
 
 ## Module map (`src/`), one line per area
 
-`main.rs` CLI and orchestration · `runner.rs` worker pool, chains, `run_file` · `world.rs` per-file state · `steps/` registry, expressions, step functions · `plugin/` third-party `cdylib` step libraries · `vars.rs` variables and interpolation · `feature.rs` / `macros.rs` / `annotate.rs` / `validate.rs` parsing, macros, static check · `privacy.rs` secrets and the filter · `diagnostic.rs` `http`/`sql` diagnostics as data and their one renderer · `events.rs` / `report/` event stream and reports · `config.rs` / `dirs.rs` / `settings.rs` / `options.rs` configuration and its layers · `doctor.rs` / `resource.rs` / `init.rs` / `upgrade.rs` / `telemetry*` the other commands · `failure.rs` `FailureKind` and `StepError`.
+`main.rs` CLI and orchestration · `list.rs` `bddkit list`, the selection printed · `runner.rs` worker pool, chains, `run_file` · `world.rs` per-file state · `steps/` registry, expressions, step functions · `plugin/` third-party `cdylib` step libraries · `vars.rs` variables and interpolation · `feature.rs` / `macros.rs` / `annotate.rs` / `validate.rs` parsing, macros, static check · `privacy.rs` secrets and the filter · `diagnostic.rs` `http`/`sql` diagnostics as data and their one renderer · `events.rs` / `report/` event stream and reports · `config.rs` / `dirs.rs` / `settings.rs` / `options.rs` configuration and its layers · `doctor.rs` / `resource.rs` / `init.rs` / `upgrade.rs` / `telemetry*` the other commands · `failure.rs` `FailureKind` and `StepError`.
 
 ## Dev workflow
 
