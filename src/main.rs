@@ -36,6 +36,7 @@ mod world;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -711,7 +712,8 @@ struct RunArgs {
     /// Path to the YAML config [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Run only these directories or .feature files instead of the config's `paths`
+    /// Run only these directories or .feature files instead of the config's `paths`;
+    /// a file may end in `:LINE` or `:LINE#ROW` to run only that scenario or example row
     paths: Vec<PathBuf>,
     /// Run only scenarios with one of these tags (repeatable); replaces the
     /// config's `tags` [default: $BDDKIT_TAG, comma-separated]
@@ -1335,6 +1337,75 @@ async fn run(cli: RunArgs) -> Result<i32> {
     outcome
 }
 
+/// The features to run, loaded and narrowed. With `split`, an argument may end
+/// in `:LINE` or `:LINE#ROW` and then runs only those scenarios of its file; a
+/// file named more than once runs once (found by its real path, so `./a` and
+/// `a` are one), with the lines of all its arguments, or whole when it, or a
+/// directory holding it, is also named without a line. A line that selects
+/// nothing is the inner `Err`, whether or not the file ends up whole.
+fn select_features(
+    paths: &[PathBuf],
+    split: bool,
+    filter: &feature::TagFilter,
+) -> Result<Result<Vec<Arc<feature::LoadedFeature>>, String>> {
+    struct Target {
+        path: PathBuf,
+        sels: Vec<feature::LineSel>,
+        whole: bool,
+    }
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut targets: BTreeMap<PathBuf, Target> = BTreeMap::new();
+    let mut plain = Vec::new();
+    for arg in paths {
+        let (file, sels) = if split {
+            feature::split_line_selection(arg)
+        } else {
+            (arg.clone(), Vec::new())
+        };
+        if sels.is_empty() {
+            plain.push(file);
+        } else {
+            targets
+                .entry(real(&file))
+                .or_insert_with(|| Target {
+                    path: file,
+                    sels: Vec::new(),
+                    whole: false,
+                })
+                .sels
+                .extend(sels);
+        }
+    }
+    for file in feature::discover(&plain)? {
+        targets
+            .entry(real(&file))
+            .or_insert_with(|| Target {
+                path: file,
+                sels: Vec::new(),
+                whole: false,
+            })
+            .whole = true;
+    }
+    let mut targets: Vec<Target> = targets.into_values().collect();
+    targets.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut loaded = Vec::new();
+    for target in targets {
+        let mut lf = feature::load(&target.path)?;
+        if !target.sels.is_empty() {
+            if let Err(message) = lf.select_lines(&target.sels) {
+                return Ok(Err(message));
+            }
+            if target.whole {
+                lf.select_all();
+            }
+        }
+        if lf.has_selected_scenario(filter) {
+            loaded.push(Arc::new(lf));
+        }
+    }
+    Ok(Ok(loaded))
+}
+
 async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32> {
     privacy::set_flags(cli.privacy.layer());
     cli.reports
@@ -1438,13 +1509,14 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         cli.paths.as_slice()
     };
 
-    let mut loaded = Vec::new();
-    for path in feature::discover(paths)? {
-        let lf = feature::load(&path)?;
-        if lf.has_selected_scenario(&filter) {
-            loaded.push(Arc::new(lf));
+    // Only a typed argument carries a line: the config's paths are plain.
+    let loaded = match select_features(paths, !cli.paths.is_empty(), &filter)? {
+        Ok(loaded) => loaded,
+        Err(message) => {
+            eprintln!("error: {message}, run not started");
+            return Ok(2);
         }
-    }
+    };
     if loaded.is_empty() {
         eprintln!("error: no scenario selected, run not started");
         return Ok(2);

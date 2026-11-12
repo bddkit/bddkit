@@ -24,6 +24,10 @@ pub struct ExpandedScenario {
     /// The line of the `Examples` block the row came from; `None` for a plain
     /// scenario. Rows of different blocks of one outline share `line`.
     pub examples_line: Option<usize>,
+    /// The line of the row's own `|` line in the source; `None` for a plain
+    /// scenario, and for an expansion that has no source (`expand_outlines`
+    /// alone, an include). `LoadedFeature::expand` fills it.
+    pub row_line: Option<usize>,
     pub steps: Vec<ExpandedStep>,
     /// Outline replacements, also applied to commented steps before matching.
     pub substitutions: Vec<(String, String)>,
@@ -38,6 +42,60 @@ pub struct LoadedFeature {
     pub annotations: crate::annotate::Source,
     /// Each element's own tags as `(name without "@", line)`, by keyword line.
     tags: BTreeMap<usize, Vec<(String, usize)>>,
+    /// The source line of every data row of an `Examples` table, in order, by
+    /// the line of the block's keyword. gherkin positions the table, not its rows.
+    row_lines: BTreeMap<usize, Vec<usize>>,
+    /// The scenarios a `path:LINE` argument kept, as `(line, example)`; `None`
+    /// keeps every scenario of the file.
+    chosen: Option<BTreeSet<(usize, Option<usize>)>>,
+}
+
+/// One `:LINE` or `:LINE#ROW` a path argument ended in (see `split_line_selection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineSel {
+    Line(usize),
+    /// A report id: the outline on `.0`, its example `.1` (0-based, across its blocks).
+    Row(usize, usize),
+}
+
+/// Splits `path:LINE[:LINE…]` / `path:LINE#ROW` into the file and what it selects.
+/// Only a trailing `:<digits>` counts, and only when what comes before it is an
+/// existing file: an argument that exists as written (a path with a colon in its
+/// name, `C:\suite\a.feature`) is never split. A path that is no file stays
+/// whole, so `discover` reports it as it always did.
+pub fn split_line_selection(arg: &Path) -> (PathBuf, Vec<LineSel>) {
+    let whole = || (arg.to_path_buf(), Vec::new());
+    let Some(text) = arg.to_str() else {
+        return whole();
+    };
+    if arg.exists() {
+        return whole();
+    }
+    // The longest file name first: `a:1.feature:3` is the file `a:1.feature`.
+    for (at, _) in text.match_indices(':').rev() {
+        let (head, tail) = text.split_at(at);
+        if let Some(sels) = parse_line_sels(tail).filter(|_| Path::new(head).is_file()) {
+            return (PathBuf::from(head), sels);
+        }
+    }
+    whole()
+}
+
+fn parse_line_sels(tail: &str) -> Option<Vec<LineSel>> {
+    // `str::parse` takes a leading `+`; a line number is digits only.
+    let number = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    tail.strip_prefix(':')?
+        .split(':')
+        .map(|part| match part.split_once('#') {
+            None => number(part).map(LineSel::Line),
+            Some((line, row)) => Some(LineSel::Row(number(line)?, number(row)?)),
+        })
+        .collect()
 }
 
 /// Formats a path for user-facing output with `/` throughout, even on Windows,
@@ -67,12 +125,6 @@ impl TagFilter {
             || tags
                 .iter()
                 .any(|t| self.wanted.iter().any(|w| w == strip_at(t)))
-    }
-
-    /// Whether any of the scenario's rows can be selected: the scenario's own
-    /// tags (feature and rule merged in) or those of any of its `Examples` blocks.
-    pub fn selects_any(&self, sc: &gherkin::Scenario) -> bool {
-        self.matches(&sc.tags) || sc.examples.iter().any(|ex| self.matches(&ex.tags))
     }
 
     /// Whether the row from the `Examples` block on `examples_line` (`None` for
@@ -345,6 +397,28 @@ fn scan_tags(text: &str, feature: &Feature) -> BTreeMap<usize, Vec<(String, usiz
         .collect()
 }
 
+/// The source line of every data row of every `Examples` table. The rows are the
+/// first `|` lines after the table's header line: a blank or `#` line between
+/// two rows is skipped, and nothing else can sit inside a table.
+fn scan_row_lines(text: &str, feature: &Feature) -> BTreeMap<usize, Vec<usize>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let scenarios = feature
+        .scenarios
+        .iter()
+        .chain(feature.rules.iter().flat_map(|rule| &rule.scenarios));
+    scenarios
+        .flat_map(|sc| &sc.examples)
+        .filter_map(|block| {
+            let table = block.table.as_ref()?;
+            let rows = (table.position.line + 1..=lines.len())
+                .filter(|n| lines[n - 1].trim_start().starts_with('|'))
+                .take(table.rows.len().saturating_sub(1))
+                .collect();
+            Some((block.position.line, rows))
+        })
+        .collect()
+}
+
 impl LoadedFeature {
     /// A feature built or changed by hand, which has no source text to describe.
     #[cfg(test)]
@@ -355,6 +429,8 @@ impl LoadedFeature {
             descriptions: BTreeMap::new(),
             annotations: crate::annotate::Source::default(),
             tags: BTreeMap::new(),
+            row_lines: BTreeMap::new(),
+            chosen: None,
         }
     }
 
@@ -378,6 +454,7 @@ impl LoadedFeature {
         }
         let descriptions = scan_descriptions(text, &feature);
         let tags = scan_tags(text, &feature);
+        let row_lines = scan_row_lines(text, &feature);
         let annotations = crate::annotate::Source::scan(text, &feature);
         Ok(LoadedFeature {
             path,
@@ -385,6 +462,8 @@ impl LoadedFeature {
             descriptions,
             annotations,
             tags,
+            row_lines,
+            chosen: None,
         })
     }
 
@@ -451,9 +530,128 @@ impl LoadedFeature {
             .collect()
     }
 
-    /// Whether the file has at least one scenario, or outline row, passing the filter.
+    /// Whether the file has at least one scenario, or outline row, passing the
+    /// tag filter and the lines the file was asked for.
     pub fn has_selected_scenario(&self, filter: &TagFilter) -> bool {
-        self.scenarios().any(|sc| filter.selects_any(sc.scenario))
+        self.scenarios()
+            .any(|sc| self.keeps_a_row(filter, sc.scenario))
+    }
+
+    /// Whether any row of `sc` runs under the tag filter and the lines asked for.
+    pub fn keeps_a_row(&self, filter: &TagFilter, sc: &gherkin::Scenario) -> bool {
+        self.expand(sc)
+            .iter()
+            .any(|ex| self.selects_row(filter, sc, ex))
+    }
+
+    /// `expand_outlines` with the source line of each row, which only a loaded
+    /// file knows.
+    pub fn expand(&self, sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
+        let mut out = expand_outlines(sc);
+        let mut taken: BTreeMap<usize, usize> = BTreeMap::new();
+        for ex in &mut out {
+            let Some(block) = ex.examples_line else {
+                continue;
+            };
+            let nth = taken.entry(block).or_default();
+            ex.row_line = self
+                .row_lines
+                .get(&block)
+                .and_then(|l| l.get(*nth))
+                .copied();
+            *nth += 1;
+        }
+        out
+    }
+
+    /// Whether the row runs: the tag filter keeps it AND the lines asked for do.
+    pub fn selects_row(
+        &self,
+        filter: &TagFilter,
+        sc: &gherkin::Scenario,
+        ex: &ExpandedScenario,
+    ) -> bool {
+        self.chosen
+            .as_ref()
+            .is_none_or(|c| c.contains(&(ex.line, ex.example)))
+            && filter.selects_row(sc, ex.examples_line)
+    }
+
+    /// Drops a line selection: the whole file runs.
+    pub fn select_all(&mut self) {
+        self.chosen = None;
+    }
+
+    /// Restricts the file to what `sels` name; several are a union. An error
+    /// names the file and the line, for a line that selects nothing.
+    pub fn select_lines(&mut self, sels: &[LineSel]) -> Result<(), String> {
+        let mut chosen = BTreeSet::new();
+        for &sel in sels {
+            chosen.extend(self.resolve(sel)?);
+        }
+        self.chosen = Some(chosen);
+        Ok(())
+    }
+
+    fn resolve(&self, sel: LineSel) -> Result<Vec<(usize, Option<usize>)>, String> {
+        let file = display_path(&self.path);
+        let key = |ex: &ExpandedScenario| (ex.line, ex.example);
+        match sel {
+            LineSel::Row(line, row) => self
+                .scenarios()
+                .filter(|r| r.scenario.position.line == line)
+                .flat_map(|r| self.expand(r.scenario))
+                .find(|ex| ex.example == Some(row))
+                .map(|ex| vec![key(&ex)])
+                .ok_or_else(|| {
+                    format!("{file}: the scenario on line {line} has no example #{row}")
+                }),
+            LineSel::Line(line) => {
+                let mut keys = Vec::new();
+                let mut known = false;
+                for r in self.scenarios() {
+                    let sc = r.scenario;
+                    let in_rule = r.rule.is_some_and(|rule| rule.position.line == line);
+                    known |= sc.position.line == line
+                        || sc.examples.iter().any(|b| b.position.line == line);
+                    for ex in self.expand(sc) {
+                        if in_rule
+                            || ex.line == line
+                            || ex.examples_line == Some(line)
+                            || ex.row_line == Some(line)
+                        {
+                            keys.push(key(&ex));
+                        }
+                    }
+                }
+                known |= self
+                    .feature
+                    .rules
+                    .iter()
+                    .any(|rule| rule.position.line == line);
+                if keys.is_empty() && !known {
+                    return Err(self.not_a_selection(line));
+                }
+                Ok(keys)
+            }
+        }
+    }
+
+    /// The refusal for a line that is no scenario, `Examples` block, example
+    /// row or rule: it names the scenario the line sits in (the last one that
+    /// starts at or above it, the first when the line is above them all).
+    fn not_a_selection(&self, line: usize) -> String {
+        let file = display_path(&self.path);
+        let mut starts: Vec<usize> = self.scenarios().map(|r| r.scenario.position.line).collect();
+        starts.sort_unstable();
+        let nearest = starts.iter().rev().find(|&&s| s <= line).or(starts.first());
+        let hint = nearest.map_or_else(
+            || "the file has no scenario".to_string(),
+            |s| format!("the nearest scenario starts on line {s}"),
+        );
+        format!(
+            "{file}:{line} is not the line of a scenario, an Examples block, an example row or a rule; {hint}"
+        )
     }
 }
 
@@ -535,6 +733,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
             line: sc.position.line,
             example: None,
             examples_line: None,
+            row_line: None,
             steps: base,
             substitutions: Vec::new(),
         }];
@@ -565,6 +764,7 @@ pub fn expand_outlines(sc: &gherkin::Scenario) -> Vec<ExpandedScenario> {
                 line: sc.position.line,
                 example: Some(out.len()),
                 examples_line: Some(ex.position.line),
+                row_line: None,
                 steps,
                 substitutions: keys.iter().cloned().zip(row.iter().cloned()).collect(),
             });
@@ -1441,5 +1641,41 @@ Feature: F
     fn scenario_placeholders_ignores_double_bracket_runtime_tokens() {
         let sc = parse_inline_scenario("Scenario Outline: s\n  Given I use \"<<userId>>\"\n");
         assert!(scenario_placeholders(&sc).is_empty());
+    }
+
+    #[test]
+    fn a_trailing_line_selection_is_split_off_an_existing_file_only() {
+        let dir = std::env::temp_dir().join(format!("bddkit-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.feature");
+        std::fs::write(&file, "Feature: f\n").unwrap();
+        let at = |tail: &str| split_line_selection(Path::new(&format!("{}{tail}", file.display())));
+        assert_eq!(at(":3"), (file.clone(), vec![LineSel::Line(3)]));
+        assert_eq!(
+            at(":3:10#2"),
+            (file.clone(), vec![LineSel::Line(3), LineSel::Row(10, 2)])
+        );
+        // Not digits, or a sign: the whole argument stays a path.
+        for bad in [":x", ":+3", ":3:", ":#1", ":3#"] {
+            assert_eq!(at(bad).1, vec![], "{bad}");
+        }
+        // What precedes the colon is no file.
+        let (path, sels) = split_line_selection(Path::new("nope.feature:3"));
+        assert_eq!((path, sels), (PathBuf::from("nope.feature:3"), vec![]));
+    }
+
+    #[test]
+    fn row_lines_are_the_lines_of_the_rows_across_comments_and_blocks() {
+        let src = "Feature: f\n  Scenario Outline: o <n>\n    Then x <n>\n    Examples:\n      | n |\n      | 1 |\n\n      # note\n      | 2 |\n    Examples: b\n      | n |\n      | 3 |\n";
+        let lf = LoadedFeature::from_text(PathBuf::from("f.feature"), src).unwrap();
+        let rows: Vec<_> = lf
+            .expand(&lf.feature.scenarios[0])
+            .iter()
+            .map(|e| (e.examples_line, e.row_line))
+            .collect();
+        assert_eq!(
+            rows,
+            [(Some(4), Some(6)), (Some(4), Some(9)), (Some(10), Some(12))]
+        );
     }
 }

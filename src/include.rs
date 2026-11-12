@@ -170,6 +170,7 @@ pub fn build_scenario(
                 line: sc.position.line,
                 example: None,
                 examples_line: None,
+                row_line: None,
                 steps,
                 substitutions: header.iter().cloned().zip(tokens).collect(),
             })
