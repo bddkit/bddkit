@@ -560,6 +560,10 @@ A plugin runs inside the bddkit process with full privileges and there is no san
 
 Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the complete contract, `tests/fixtures/echo-plugin/` is a minimal plugin to copy, and [`bddkit-s3`](https://github.com/bddkit/bddkit-s3) is a real one to read — it serves the `s3` group in the example above.
 
+### Tools beside bddkit
+
+`bddkit <name>` runs `bddkit-<name>` when `<name>` is not a built-in command, the way `git` and `cargo` do: first from the directory of the running `bddkit`, then from `PATH`. The arguments pass through unchanged, the tool's exit code is the command's, and the tool gets `BDDKIT_BIN` (the path of the `bddkit` that launched it) and `BDDKIT_VERSION`. Built-in names are never looked up, and an external command is not counted by telemetry.
+
 ## Where to look next
 
 | For | Look at |
