@@ -99,7 +99,7 @@ impl Context {
         let layers = dirs::layers(os, &env, config_dir)?;
         let sources = Sources::from_env();
         Ok(Self {
-            acted: Default::default(),
+            acted: std::sync::Mutex::default(),
             os,
             env,
             layers,
@@ -246,7 +246,7 @@ impl Context {
     /// comes from its manifest and is never guessed.
     async fn install_into(&self, target: &Target, repo: &str, version: &str) -> Result<String> {
         let fetched = self.fetch_into(target, repo, version).await?;
-        match self.register(target, repo, version, &fetched) {
+        match Self::register(target, repo, version, &fetched) {
             Ok((name, previous)) => {
                 fetched.commit();
                 if let Some(previous) = previous
@@ -272,7 +272,6 @@ impl Context {
     /// is registered that `run` would refuse. The plugin's name comes from its
     /// manifest and is never guessed; the entry it replaced is returned.
     fn register(
-        &self,
         target: &Target,
         repo: &str,
         version: &str,
@@ -341,7 +340,13 @@ impl Context {
     /// does not load serves nothing.
     pub(crate) fn served_groups(&self) -> Vec<String> {
         let loaded = lock::load(&dirs::candidates(&self.layers, "plugins")).and_then(|entries| {
-            super::Plugins::load_collecting(entries, &[], &[], 1, &Default::default())
+            super::Plugins::load_collecting(
+                entries,
+                &[],
+                &[],
+                1,
+                &crate::options::Options::default(),
+            )
         });
         loaded
             .map(|plugins| {
@@ -414,14 +419,19 @@ impl Context {
 
     /// What the last `install`, `update` or `remove` acted on, for telemetry.
     pub fn take_acted(&self) -> Vec<PluginInfo> {
-        std::mem::take(&mut *self.acted.lock().expect("acted is never poisoned"))
+        std::mem::take(
+            &mut *self
+                .acted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn note<T>(&self, acted: &Acted, outcome: &Result<T>) {
         let info = PluginInfo::of(acted, install::result_of(outcome));
         self.acted
             .lock()
-            .expect("acted is never poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(info);
     }
 
@@ -546,6 +556,7 @@ impl Context {
         Ok(out)
     }
 
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub async fn update(
         &self,
         names: &[String],
@@ -648,7 +659,7 @@ impl Context {
         Ok(i32::from(failed))
     }
 
-    pub async fn remove(&self, name: &str, layer: Option<&str>) -> Result<i32> {
+    pub fn remove(&self, name: &str, layer: Option<&str>) -> Result<i32> {
         let mut acted = Acted::default();
         let outcome = self.remove_one(name, layer, &mut acted);
         self.note(&acted, &outcome);
@@ -733,6 +744,7 @@ impl Context {
     /// Only the shape `install` makes qualifies: a real directory holding
     /// exactly one regular file, a dynamic library. A symlink, a dev build
     /// with more files, anything else is not bddkit's to delete.
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub(crate) fn unreferenced(&self) -> Result<Vec<PathBuf>> {
         let used = self.referenced_paths()?;
         let mut seen = std::collections::HashSet::new();
@@ -797,7 +809,7 @@ impl Context {
         Ok(i32::from(failed > 0))
     }
 
-    pub async fn show(&self, name: Option<&str>) -> Result<i32> {
+    pub fn show(&self, name: Option<&str>) -> Result<i32> {
         let effective = lock::load(&dirs::candidates(&self.layers, "plugins"))?;
         let Some(name) = name else {
             if effective.is_empty() {
@@ -921,6 +933,8 @@ fn size(dir: &Path) -> u64 {
         .sum()
 }
 
+// Display only: one decimal, so a rounded 53-bit mantissa is exact enough.
+#[expect(clippy::cast_precision_loss, reason = "size shown with one decimal")]
 fn human(bytes: u64) -> String {
     match bytes {
         b if b >= 1 << 20 => format!("{:.1} MiB", b as f64 / (1u64 << 20) as f64),

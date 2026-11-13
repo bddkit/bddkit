@@ -2,6 +2,13 @@
 //! over `dialoguer` that nobody unit-tests; what they produce goes through the same
 //! `from_flags` and `apply`.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

@@ -1,6 +1,12 @@
 //! `bddkit <name>` runs `bddkit-<name>` (issue #171). Unix only: the tools are
 //! shell scripts, and the `exec` is proven by the child's PID.
 #![cfg(unix)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -21,7 +27,9 @@ impl Sandbox {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).expect("mkdir");
         std::fs::create_dir_all(dir.join("path")).expect("mkdir");
-        let _turn = FORK.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = FORK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A hard link opens no write fd and costs no 200 MB copy.
         let (from, to) = (env!("CARGO_BIN_EXE_bddkit"), dir.join("bin/bddkit"));
         std::fs::hard_link(from, &to)
@@ -31,7 +39,9 @@ impl Sandbox {
     }
 
     fn tool(dir: &Path, name: &str, body: &str) {
-        let _turn = FORK.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = FORK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let file = dir.join(format!("bddkit-{name}"));
         std::fs::write(&file, format!("#!/bin/sh\n{body}\n")).expect("write tool");
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -46,7 +56,9 @@ impl Sandbox {
     }
 
     fn spawn(&self, args: &[&str]) -> Child {
-        let _turn = FORK.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = FORK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.command()
             .args(args)
             .stdout(Stdio::piped())

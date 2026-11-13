@@ -8,6 +8,10 @@ use crate::feature::{
 };
 use crate::steps::Registry;
 
+#[expect(
+    clippy::expect_used,
+    reason = "vendored data: a malformed file is a source defect, met by the first run"
+)]
 static KEYWORDS: LazyLock<BTreeMap<String, BTreeMap<String, Vec<String>>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("gherkin_keywords.json")).expect("vendored Gherkin keywords")
 });
@@ -51,6 +55,8 @@ impl Source {
         self.comments.get(&line).map(String::as_str)
     }
 
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
+    #[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
     pub(crate) fn scan(text: &str, feature: &gherkin::Feature) -> Self {
         let walk = Walk::new(feature);
         let lines: Vec<_> = text.lines().collect();

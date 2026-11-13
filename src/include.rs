@@ -110,81 +110,78 @@ pub fn build_scenario(
     sc: &gherkin::Scenario,
     with_table: Option<&[Vec<String>]>,
 ) -> Result<ExpandedScenario, String> {
-    match with_table {
-        Some(table) => {
-            if sc.examples.is_empty() {
-                return Err(format!(
-                    "I include: `with:` is only valid on a Scenario Outline, \
-                     but {:?} is a plain Scenario",
-                    sc.name
-                ));
-            }
-            // The row's own values are irrelevant here: with `with:`, every
-            // placeholder becomes a runtime token regardless of what this
-            // (validation-time, possibly not-yet-interpolated) row contains
-            // — only its PRESENCE matters, to enforce "exactly one data row".
-            let [header, _row] = table else {
-                return Err(format!(
-                    "I include {:?}: `with:` must have exactly one data row, found {}",
-                    sc.name,
-                    table.len().saturating_sub(1)
-                ));
-            };
-            let placeholders = scenario_placeholders(sc);
-            for column in header {
-                if !placeholders.contains(column) {
-                    return Err(format!(
-                        "I include {:?}: `with:` column {column:?} is not a \
-                         placeholder this scenario uses",
-                        sc.name
-                    ));
-                }
-            }
-            for name in &placeholders {
-                if !header.contains(name) {
-                    return Err(format!(
-                        "I include {:?}: placeholder <{name}> has no value in `with:`",
-                        sc.name
-                    ));
-                }
-            }
-            let tokens: Vec<String> = header.iter().map(|name| format!("<<{name}>>")).collect();
-            let steps = sc
-                .steps
-                .iter()
-                .map(to_step)
-                .map(|s| ExpandedStep {
-                    keyword: s.keyword,
-                    text: substitute(&s.text, header, &tokens),
-                    line: s.line,
-                    docstring: s.docstring.map(|d| substitute(&d, header, &tokens)),
-                    table: s.table.map(|t| {
-                        t.iter()
-                            .map(|r| r.iter().map(|c| substitute(c, header, &tokens)).collect())
-                            .collect()
-                    }),
-                })
-                .collect();
-            Ok(ExpandedScenario {
-                name: sc.name.clone(),
-                line: sc.position.line,
-                example: None,
-                examples_line: None,
-                row_line: None,
-                steps,
-                substitutions: header.iter().cloned().zip(tokens).collect(),
-            })
+    if let Some(table) = with_table {
+        if sc.examples.is_empty() {
+            return Err(format!(
+                "I include: `with:` is only valid on a Scenario Outline, \
+                 but {:?} is a plain Scenario",
+                sc.name
+            ));
         }
-        None => {
-            let mut expanded = crate::feature::expand_outlines(sc);
-            match expanded.len() {
-                1 => Ok(expanded.remove(0)),
-                n => Err(format!(
-                    "I include {:?}: has {n} Examples rows — pass `with:` to pick one, \
-                     or reduce Examples to a single row",
+        // The row's own values are irrelevant here: with `with:`, every
+        // placeholder becomes a runtime token regardless of what this
+        // (validation-time, possibly not-yet-interpolated) row contains
+        // — only its PRESENCE matters, to enforce "exactly one data row".
+        let [header, _row] = table else {
+            return Err(format!(
+                "I include {:?}: `with:` must have exactly one data row, found {}",
+                sc.name,
+                table.len().saturating_sub(1)
+            ));
+        };
+        let placeholders = scenario_placeholders(sc);
+        for column in header {
+            if !placeholders.contains(column) {
+                return Err(format!(
+                    "I include {:?}: `with:` column {column:?} is not a \
+                     placeholder this scenario uses",
                     sc.name
-                )),
+                ));
             }
+        }
+        for name in &placeholders {
+            if !header.contains(name) {
+                return Err(format!(
+                    "I include {:?}: placeholder <{name}> has no value in `with:`",
+                    sc.name
+                ));
+            }
+        }
+        let tokens: Vec<String> = header.iter().map(|name| format!("<<{name}>>")).collect();
+        let steps = sc
+            .steps
+            .iter()
+            .map(to_step)
+            .map(|s| ExpandedStep {
+                keyword: s.keyword,
+                text: substitute(&s.text, header, &tokens),
+                line: s.line,
+                docstring: s.docstring.map(|d| substitute(&d, header, &tokens)),
+                table: s.table.map(|t| {
+                    t.iter()
+                        .map(|r| r.iter().map(|c| substitute(c, header, &tokens)).collect())
+                        .collect()
+                }),
+            })
+            .collect();
+        Ok(ExpandedScenario {
+            name: sc.name.clone(),
+            line: sc.position.line,
+            example: None,
+            examples_line: None,
+            row_line: None,
+            steps,
+            substitutions: header.iter().cloned().zip(tokens).collect(),
+        })
+    } else {
+        let mut expanded = crate::feature::expand_outlines(sc);
+        match expanded.len() {
+            1 => Ok(expanded.remove(0)),
+            n => Err(format!(
+                "I include {:?}: has {n} Examples rows — pass `with:` to pick one, \
+                 or reduce Examples to a single row",
+                sc.name
+            )),
         }
     }
 }
@@ -279,7 +276,7 @@ mod tests {
         );
         let lf = crate::feature::load(&path).unwrap();
         let err = select_scenario(&lf, None).unwrap_err();
-        assert!(err.contains("a") && err.contains("b"), "{err}");
+        assert!(err.contains('a') && err.contains('b'), "{err}");
     }
 
     #[test]

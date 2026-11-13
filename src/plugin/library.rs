@@ -25,6 +25,10 @@ type SelectInstanceFn = unsafe extern "C" fn(u64, *const c_char) -> *mut c_char;
 /// every function pointer below points into `_library`'s mapping. `_library`
 /// is declared last so it is unloaded last. The leading underscore says the
 /// rest: the field is never read, it exists only to be dropped last.
+#[expect(
+    clippy::struct_field_names,
+    reason = "`_library` is the drop-order anchor the doc above names"
+)]
 pub struct Library {
     pub name: String,
     pub manifest: Manifest,
@@ -48,7 +52,7 @@ impl std::fmt::Debug for Library {
             .field("name", &self.name)
             .field("groups", &self.manifest.groups)
             .field("steps", &self.steps.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -81,7 +85,7 @@ impl Library {
         // The version check comes before any other symbol is resolved: a
         // binary from another ABI generation may not even have the rest.
         //
-        // SAFETY (every `library.get` below): resolving a symbol is unsafe
+        // SAFETY: (for every `library.get` in this function) resolving a symbol is unsafe
         // because nothing proves the binary's declared type matches ours —
         // that is exactly what `ABI_VERSION` is checked for. Dereferencing the
         // returned `Symbol` copies out a bare function pointer with no
@@ -102,31 +106,41 @@ impl Library {
         let reported = unsafe { abi() };
         check_abi_version(name, reported)?;
 
+        // SAFETY: as for the first `library.get` above.
         let manifest_fn: NoArgFn = *unsafe { library.get(b"bddkit_manifest\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_manifest"))?;
+        // SAFETY: as for the first `library.get` above.
         let list_steps_fn: NoArgFn = *unsafe { library.get(b"bddkit_list_steps\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_list_steps"))?;
+        // SAFETY: as for the first `library.get` above.
         let free_string: FreeFn = *unsafe { library.get(b"bddkit_free_string\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_free_string"))?;
+        // SAFETY: as for the first `library.get` above.
         let validate_config: JsonFn = *unsafe { library.get(b"bddkit_validate_config\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_validate_config"))?;
+        // SAFETY: as for the first `library.get` above.
         let init_instance: JsonFn = *unsafe { library.get(b"bddkit_init_instance\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_init_instance"))?;
+        // SAFETY: as for the first `library.get` above.
         let dispatch: DispatchFn = *unsafe { library.get(b"bddkit_dispatch\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_dispatch"))?;
+        // SAFETY: as for the first `library.get` above.
         let drop_instance: HandleFn = *unsafe { library.get(b"bddkit_drop_instance\0") }
             .with_context(|| format!("plugin {name:?} exports no bddkit_drop_instance"))?;
         // Optional: a plugin with no per-scenario state need not export it.
+        // SAFETY: as for the first `library.get` above.
         let reset_scenario: Option<HandleFn> = unsafe { library.get(b"bddkit_reset_scenario\0") }
             .ok()
             .map(|symbol| *symbol);
         // Optional in the same way: a plugin that cannot check reachability
         // simply has no live check, which is reported as "not available".
+        // SAFETY: as for the first `library.get` above.
         let probe_config: Option<JsonFn> = unsafe { library.get(b"bddkit_probe_config\0") }
             .ok()
             .map(|symbol| *symbol);
         // Optional: a plugin that checks nothing before a run simply accepts
         // every step.
+        // SAFETY: as for the first `library.get` above.
         let validate_step: Option<StepValidateFn> =
             unsafe { library.get(b"bddkit_validate_step\0") }
                 .ok()
@@ -134,6 +148,7 @@ impl Library {
 
         // Optional: a plugin that needs no notice of `I use "<name>" <group>`
         // exports nothing.
+        // SAFETY: as for the first `library.get` above.
         let select_instance: Option<SelectInstanceFn> =
             unsafe { library.get(b"bddkit_select_instance\0") }
                 .ok()
@@ -141,22 +156,29 @@ impl Library {
 
         // Optional: a plugin that adds nothing to a failure's dump exports
         // nothing.
+        // SAFETY: as for the first `library.get` above.
         let failure_context: Option<HandleFn> = unsafe { library.get(b"bddkit_failure_context\0") }
             .ok()
             .map(|symbol| *symbol);
 
-        // SAFETY: `manifest_fn` takes no arguments, and the pointer it returns
-        // is handed straight back to this same plugin's `free_string` inside
-        // `take` — the host never frees plugin memory itself.
-        let manifest_json = unsafe { take(free_string, manifest_fn()) }
+        // SAFETY: `manifest_fn` was resolved from this library with its declared
+        // signature after the ABI check, and takes no arguments.
+        let manifest_ptr = unsafe { manifest_fn() };
+        // SAFETY: the pointer came from this plugin's `manifest_fn` and goes
+        // straight back to its `free_string` inside `take` — the host never
+        // frees plugin memory itself.
+        let manifest_json = unsafe { take(free_string, manifest_ptr) }
             .with_context(|| format!("plugin {name:?} returned no manifest"))?;
         let manifest: Manifest = serde_json::from_str(&manifest_json)
             .with_context(|| format!("plugin {name:?} returned a malformed manifest"))?;
         if manifest.groups.is_empty() {
             bail!("plugin {name:?} claims no resource group");
         }
-        // SAFETY: as for `manifest_fn` above.
-        let steps_json = unsafe { take(free_string, list_steps_fn()) }
+        // SAFETY: `list_steps_fn` was resolved from this library with its declared
+        // signature after the ABI check, and takes no arguments.
+        let steps_ptr = unsafe { list_steps_fn() };
+        // SAFETY: as for `manifest_ptr` above.
+        let steps_json = unsafe { take(free_string, steps_ptr) }
             .with_context(|| format!("plugin {name:?} returned no step list"))?;
         let mut steps: Vec<StepSpec> = serde_json::from_str(&steps_json)
             .with_context(|| format!("plugin {name:?} returned a malformed step list"))?;
@@ -259,15 +281,12 @@ impl Library {
             )
         })?;
         // SAFETY: `argument` outlives the call, and the plugin only reads from
-        // it. The returned pointer goes straight back to this plugin's own
-        // `free_string` inside `take`.
-        let reply = unsafe {
-            take(
-                self.free_string,
-                (self.dispatch)(handle, step, argument.as_ptr()),
-            )
-        }
-        .with_context(|| format!("plugin {:?} returned nothing from dispatch", self.name))?;
+        // it.
+        let reply_ptr = unsafe { (self.dispatch)(handle, step, argument.as_ptr()) };
+        // SAFETY: the pointer came from this plugin's `dispatch` and goes
+        // straight back to its own `free_string` inside `take`.
+        let reply = unsafe { take(self.free_string, reply_ptr) }
+            .with_context(|| format!("plugin {:?} returned nothing from dispatch", self.name))?;
         serde_json::from_str(&reply).or_else(|error| {
             let message = self.malformed("dispatch", &reply);
             // The message quotes the reply, secrets included: hand them to the
@@ -361,9 +380,12 @@ impl Library {
     }
 
     fn call_handle(&self, function: HandleFn, handle: u64, what: &str) -> Result<String> {
-        // SAFETY: as for `call_json`, with a plain integer argument instead of
-        // a borrowed string.
-        unsafe { take(self.free_string, function(handle)) }
+        // SAFETY: `function` was resolved from this library with its declared
+        // signature after the ABI check; its one argument is a plain integer.
+        let reply_ptr = unsafe { function(handle) };
+        // SAFETY: as for `call_with`: the pointer came from this plugin and
+        // `take` frees it with the plugin's own `free_string`.
+        unsafe { take(self.free_string, reply_ptr) }
             .with_context(|| format!("plugin {:?} returned nothing from {what}", self.name))
     }
 

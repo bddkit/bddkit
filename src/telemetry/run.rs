@@ -68,7 +68,7 @@ impl RunProbe {
                 .map(|c| c.usage())
                 .unwrap_or_default(),
         });
-        payload.privacy = self.privacy.clone();
+        payload.privacy.clone_from(&self.privacy);
         payload.resources = Some(self.resources.clone());
         payload
     }

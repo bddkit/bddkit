@@ -1,6 +1,13 @@
 //! `bddkit steps` — the vocabulary a tester (or an agent writing for one)
 //! reads before writing a feature file.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 use std::process::Command;
 
 fn steps(args: &[&str]) -> (String, Option<i32>) {

@@ -158,7 +158,7 @@ fn all_tags(lf: &LoadedFeature) -> impl Iterator<Item = &String> {
 }
 
 static SERIAL_TAG: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^serial\((.*)\)$").expect("constant regex"));
+    std::sync::LazyLock::new(|| crate::constant::regex(r"^serial\((.*)\)$"));
 
 /// Chain name from the `@serial(name)` tag. Files in the same chain run strictly one
 /// after another; the chain sets ORDER, not shared state — variables live per
@@ -171,7 +171,7 @@ pub fn serial_of(lf: &LoadedFeature) -> Result<Option<String>, String> {
         let Some(c) = SERIAL_TAG.captures(strip_at(tag)) else {
             continue;
         };
-        let name = c.get(1).expect("group 1 is required").as_str().trim();
+        let name = c[1].trim();
         if name.is_empty() {
             return Err(format!(
                 "{}: @serial() tag has no chain name",
@@ -194,7 +194,7 @@ pub fn serial_of(lf: &LoadedFeature) -> Result<Option<String>, String> {
 }
 
 static PRIORITY_TAG: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^priority\((.*)\)$").expect("constant regex"));
+    std::sync::LazyLock::new(|| crate::constant::regex(r"^priority\((.*)\)$"));
 
 /// A file's priority from the `@priority(N)` tag: higher goes earlier in the queue,
 /// no tag means 0, negatives are allowed. A file takes the MAXIMUM across all its
@@ -208,7 +208,7 @@ pub fn priority_of(lf: &LoadedFeature) -> Result<i64, String> {
         let Some(c) = PRIORITY_TAG.captures(strip_at(tag)) else {
             continue;
         };
-        let raw = c.get(1).expect("group 1 is required").as_str();
+        let raw = &c[1];
         let value = raw.trim().parse::<i64>().map_err(|_| {
             format!(
                 "{}: tag @priority({raw}) — the argument must be an integer \
@@ -222,7 +222,7 @@ pub fn priority_of(lf: &LoadedFeature) -> Result<i64, String> {
 }
 
 static EXPORTS_TAG: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^exports\((.*)\)$").expect("constant regex"));
+    std::sync::LazyLock::new(|| crate::constant::regex(r"^exports\((.*)\)$"));
 
 /// Names an `I include`-d scenario hands back to its caller, from
 /// `@exports(a,b,*)`. A scenario may carry more than one such tag (its own
@@ -234,7 +234,7 @@ pub fn exports_of(lf: &LoadedFeature, sc: &gherkin::Scenario) -> Result<Vec<Stri
         let Some(c) = EXPORTS_TAG.captures(strip_at(tag)) else {
             continue;
         };
-        let raw = c.get(1).expect("group 1 is required").as_str();
+        let raw = &c[1];
         for name in raw.split(',') {
             let name = name.trim();
             if name.is_empty() {
@@ -288,7 +288,12 @@ impl<'a> Walk<'a> {
             below: Vec::new(),
             tables: Vec::new(),
         };
-        walk.push("feature", f.position.line, &f.description, Some(&f.tags));
+        walk.push(
+            "feature",
+            f.position.line,
+            f.description.as_ref(),
+            Some(&f.tags),
+        );
         if let Some(bg) = &f.background {
             walk.background("background", bg);
         }
@@ -299,7 +304,7 @@ impl<'a> Walk<'a> {
             walk.push(
                 "rule",
                 rule.position.line,
-                &rule.description,
+                rule.description.as_ref(),
                 Some(&rule.tags),
             );
             if let Some(bg) = &rule.background {
@@ -316,10 +321,10 @@ impl<'a> Walk<'a> {
         &mut self,
         kind: &'static str,
         line: usize,
-        description: &'a Option<String>,
+        description: Option<&'a String>,
         tags: Option<&'a [String]>,
     ) {
-        let description = description.as_deref();
+        let description = description.map(String::as_str);
         self.elements.push(Element {
             kind,
             line,
@@ -329,7 +334,7 @@ impl<'a> Walk<'a> {
     }
 
     fn background(&mut self, kind: &'static str, bg: &'a gherkin::Background) {
-        self.push(kind, bg.position.line, &bg.description, None);
+        self.push(kind, bg.position.line, bg.description.as_ref(), None);
         self.below.extend(bg.steps.iter().map(|s| s.position.line));
         self.tables
             .extend(bg.steps.iter().filter_map(|s| s.table.as_ref()));
@@ -339,7 +344,7 @@ impl<'a> Walk<'a> {
         self.push(
             "scenario",
             sc.position.line,
-            &sc.description,
+            sc.description.as_ref(),
             Some(&sc.tags),
         );
         self.below.extend(sc.steps.iter().map(|s| s.position.line));
@@ -349,7 +354,7 @@ impl<'a> Walk<'a> {
             self.push(
                 "examples",
                 ex.position.line,
-                &ex.description,
+                ex.description.as_ref(),
                 Some(&ex.tags),
             );
             self.below.extend(ex.table.iter().map(|t| t.position.line));
@@ -582,17 +587,18 @@ impl LoadedFeature {
         self.chosen = None;
     }
 
-    /// Restricts the file to what `sels` name; several are a union. An error
+    /// Restricts the file to what `selections` name; several are a union. An error
     /// names the file and the line, for a line that selects nothing.
-    pub fn select_lines(&mut self, sels: &[LineSel]) -> Result<(), String> {
+    pub fn select_lines(&mut self, selections: &[LineSel]) -> Result<(), String> {
         let mut chosen = BTreeSet::new();
-        for &sel in sels {
+        for &sel in selections {
             chosen.extend(self.resolve(sel)?);
         }
         self.chosen = Some(chosen);
         Ok(())
     }
 
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     fn resolve(&self, sel: LineSel) -> Result<Vec<(usize, Option<usize>)>, String> {
         let file = display_path(&self.path);
         let key = |ex: &ExpandedScenario| (ex.line, ex.example);
@@ -666,7 +672,7 @@ pub fn to_step(s: &gherkin::Step) -> ExpandedStep {
 }
 
 static PLACEHOLDER: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"<<(\w+)>>|<(\w+)>").expect("constant regex"));
+    std::sync::LazyLock::new(|| crate::constant::regex(r"<<(\w+)>>|<(\w+)>"));
 
 /// Every `<name>` (single-bracket, Outline-style) token a scenario's steps,
 /// docstrings and table cells use. Used to validate an `I include ... with:`
@@ -707,17 +713,11 @@ pub(crate) fn substitute(text: &str, keys: &[String], row: &[String]) -> String 
             if let Some(m) = caps.get(1) {
                 return format!("<<{}>>", m.as_str()); // runtime token, leave untouched
             }
-            let key = caps
-                .get(2)
-                .expect("second group when the first is absent")
-                .as_str();
+            // Group 1 is absent, so the other alternative matched: group 2 is there.
+            let key = &caps[2];
             match keys.iter().position(|k| k == key) {
                 Some(i) => row[i].clone(),
-                None => caps
-                    .get(0)
-                    .expect("group 0 always exists")
-                    .as_str()
-                    .to_string(),
+                None => caps[0].to_string(),
             }
         })
         .into_owned()

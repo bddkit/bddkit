@@ -1,5 +1,12 @@
 //! `bddkit report` as a user runs it: exit codes and what lands on disk.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use std::process::Command;
@@ -82,6 +89,10 @@ fn stream_with_shots(dir: &std::path::Path, names: &[&str]) -> std::path::PathBu
     path
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a test pattern, the value is taken modulo 256 first"
+)]
 fn blocks(w: u32, h: u32) -> Vec<u8> {
     let mut data = Vec::new();
     for y in 0..h as usize {
@@ -262,6 +273,10 @@ fn the_same_stream_and_options_give_the_same_bytes_and_no_flag_adds_nothing() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the files are named by the code under test, lower case"
+)]
 fn a_sigint_during_embedding_exits_130_and_leaves_nothing_beside_the_target() {
     let dir = scratch("sigint");
     std::fs::create_dir_all(dir.join("art")).expect("art");

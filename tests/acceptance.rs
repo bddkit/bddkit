@@ -1,3 +1,10 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use serde_json::{Value, json};
@@ -6110,6 +6117,10 @@ fn annotations_the_junit_and_cucumber_reports_do_not_change() {
         let timing = regex::Regex::new(r#"time="[0-9.]+"|\([0-9.]+s\)"#).unwrap();
         let xml = std::fs::read_to_string(&junit).unwrap();
         let xml = timing.replace_all(&xml, "TIMING").into_owned();
+        #[expect(
+            clippy::items_after_statements,
+            reason = "the helper reads next to its only use"
+        )]
         fn normalize_times(value: &mut Value) {
             match value {
                 Value::Object(map) => {

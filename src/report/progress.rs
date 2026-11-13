@@ -50,8 +50,10 @@ impl Progress {
             "{pos}/{len}"
         };
         let template = format!("[{n}/{}] {name} {{bar:30}} {counts}{eta}", self.stages);
-        self.bar
-            .set_style(ProgressStyle::with_template(&template).expect("a constant template"));
+        // A stage name that breaks the template keeps the style the bar has.
+        if let Ok(style) = ProgressStyle::with_template(&template) {
+            self.bar.set_style(style);
+        }
         self.bar.set_length(total);
         self.bar.set_position(0);
     }

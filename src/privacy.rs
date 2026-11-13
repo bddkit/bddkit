@@ -191,7 +191,7 @@ impl Privacy {
 }
 
 fn owned(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
+    list.iter().map(std::string::ToString::to_string).collect()
 }
 
 impl Privacy {
@@ -350,7 +350,7 @@ impl Scan<'_> {
     }
 
     fn decoded(&self, range: &std::ops::Range<usize>) -> Option<String> {
-        serde_json::from_str(&self.text[range.start - 1..range.end + 1]).ok()
+        serde_json::from_str(&self.text[(range.start - 1)..=range.end]).ok()
     }
 
     fn value<S: AsRef<str>>(&mut self, inherited: bool, fields: &[S]) {
@@ -492,9 +492,8 @@ pub fn unmarked_names<'a>(
     texts: impl IntoIterator<Item = Scanned<'a>>,
     words: &[String],
 ) -> BTreeMap<String, BTreeSet<String>> {
-    static SLOT_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"<<([^\W\d]\w*)>>").expect("constant regex")
-    });
+    static SLOT_NAME: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| crate::constant::regex(r"<<([^\W\d]\w*)>>"));
     let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (place, text, marked) in texts {
         for captures in SLOT_NAME.captures_iter(text) {
@@ -625,7 +624,7 @@ fn process() -> std::sync::MutexGuard<'static, Process> {
     // A panic elsewhere must not stop an error message from being masked.
     PROCESS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `main` hands over the flag layer once, before any config is read. The
@@ -713,7 +712,7 @@ impl Redactor {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// An independent copy: a file starts from the run-wide set and what it
@@ -1198,7 +1197,10 @@ mod tests {
 
     fn walked(yaml: &str) -> Vec<String> {
         let doc = serde_yaml_ng::from_str(yaml).expect("yaml");
-        let fields: Vec<String> = DEFAULT_FIELDS.iter().map(|s| s.to_string()).collect();
+        let fields: Vec<String> = DEFAULT_FIELDS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         secrets_in(&doc, &fields)
     }
 
@@ -1269,7 +1271,10 @@ mod tests {
     }
 
     fn hits(json: &str) -> Vec<(String, Option<String>)> {
-        let fields: Vec<String> = DEFAULT_FIELDS.iter().map(|s| s.to_string()).collect();
+        let fields: Vec<String> = DEFAULT_FIELDS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         json_hits(json, &fields)
             .into_iter()
             .map(|hit| (json[hit.range].to_string(), hit.value))

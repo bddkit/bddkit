@@ -172,10 +172,10 @@ impl Config {
             self.concurrency = n;
         }
         if let Some(v) = &o.paths {
-            self.paths = v.clone();
+            self.paths.clone_from(v);
         }
         if let Some(v) = &o.macro_paths {
-            self.macro_paths = v.clone();
+            self.macro_paths.clone_from(v);
         }
         for (group, name) in &o.defaults {
             self.set_default(group, name).with_context(|| {
@@ -194,7 +194,7 @@ impl Config {
             self.fail_fast = v;
         }
         if let Some(v) = &o.tags {
-            self.tags = v.clone();
+            self.tags.clone_from(v);
         }
         self.resolve_options()
     }
@@ -205,7 +205,7 @@ mod tests {
     use super::*;
 
     fn groups(names: &[&str]) -> Vec<String> {
-        names.iter().map(|n| n.to_string()).collect()
+        names.iter().map(std::string::ToString::to_string).collect()
     }
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {

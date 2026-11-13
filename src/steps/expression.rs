@@ -144,13 +144,13 @@ impl ParamType {
     /// does (`__{id}_0`, `__{id}_1`), so the quotes of a bare parameter sit
     /// outside what it captures.
     fn pattern(&self, quoting: Quoting) -> String {
-        self.wrap(quoting, self.value())
+        Self::wrap(quoting, self.value())
     }
 
     /// `pattern` with a typed parameter's value widened to anything: the same
     /// quotes and groups, so it matches a literal the strict regex refused.
     fn loose_pattern(&self, quoting: Quoting) -> String {
-        self.wrap(
+        Self::wrap(
             quoting,
             if self.typed {
                 ".*?".into()
@@ -160,7 +160,7 @@ impl ParamType {
         )
     }
 
-    fn wrap(&self, quoting: Quoting, value: String) -> String {
+    fn wrap(quoting: Quoting, value: String) -> String {
         match quoting {
             Quoting::AsWritten => value,
             Quoting::Required => format!(r#""({value})""#),
@@ -255,6 +255,10 @@ impl Param {
 /// `text` elsewhere. Nothing is type-checked (`check` is `None`); the list
 /// exists so the runner and `Registry::display_text` treat a plugin's secret
 /// group exactly as a `{name:secret}` of a builtin. `secret_groups` is 1-based.
+#[expect(
+    clippy::expect_used,
+    reason = "`TYPES` declares every type name used here"
+)]
 pub fn plugin_params(secret_groups: &[usize]) -> Vec<Param> {
     let ty = |name| {
         TYPES
@@ -337,7 +341,7 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
                 .flat_map(|single| {
                     single.iter().fold(vec![Vec::new()], |acc, piece| {
                         cross(
-                            acc,
+                            &acc,
                             &match piece {
                                 Alternative::Text(text) => vec![exact(&unescape(text))],
                                 Alternative::Optional(optional) => optional_variants(&optional.0),
@@ -382,7 +386,7 @@ pub fn compile(expr: &str, default_type: &str) -> Result<Compiled, String> {
                 alternatives
             }
         };
-        variants = cross(variants, &alternatives);
+        variants = cross(&variants, &alternatives);
     }
     template.push_str(&expr[last..]);
     let regex = Expression::regex_with_parameters(expr, &types)
@@ -422,7 +426,7 @@ fn param(raw: &str, default_type: &str, expr: &str) -> Result<Param, String> {
         .ok_or_else(|| format!("parameter {{{raw}}} in {expr:?} has unknown type {type_name:?}"))?;
     let check = ty
         .typed
-        .then(|| Regex::new(&format!("^(?:{})$", ty.regex)).expect("type regexes are constants"));
+        .then(|| crate::constant::regex(&format!("^(?:{})$", ty.regex)));
     Ok(Param {
         name: name.to_string(),
         ty,
@@ -460,10 +464,7 @@ fn exact(text: &str) -> Vec<PatternToken> {
 // quoted and the unquoted form), so a template with ~20 of them means ~10^6
 // variants at startup; cap the count with a load error if real templates ever
 // approach that.
-fn cross(
-    prefixes: Vec<Vec<PatternToken>>,
-    suffixes: &[Vec<PatternToken>],
-) -> Vec<Vec<PatternToken>> {
+fn cross(prefixes: &[Vec<PatternToken>], suffixes: &[Vec<PatternToken>]) -> Vec<Vec<PatternToken>> {
     prefixes
         .iter()
         .flat_map(|prefix| {

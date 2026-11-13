@@ -1,11 +1,19 @@
 use crate::failure::StepError;
 use crate::world::World;
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "step functions share one signature"
+)]
 pub fn debug_on(w: &mut World) -> Result<(), StepError> {
     w.debug = true;
     Ok(())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "step functions share one signature"
+)]
 pub fn debug_off(w: &mut World) -> Result<(), StepError> {
     w.debug = false;
     Ok(())
@@ -179,7 +187,7 @@ mod tests {
         let rows = vec![
             vec!["order".to_string(), "статус".to_string()],
             vec!["ord-7f3a91".to_string(), "оплачен".to_string()],
-            vec!["ord-1".to_string(), "".to_string()],
+            vec!["ord-1".to_string(), String::new()],
         ];
         assert_eq!(
             grid(&rows),

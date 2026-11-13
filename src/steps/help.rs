@@ -11,6 +11,10 @@ const LOCALES: &[(&str, &str)] = &[
 ];
 
 /// The overlay for one language, empty for English and for anything unknown.
+#[expect(
+    clippy::panic,
+    reason = "compiled-in data, pinned by `every_embedded_locale_parses_and_names_real_steps`"
+)]
 pub fn translations(lang: &str) -> BTreeMap<String, String> {
     LOCALES
         .iter()
@@ -26,7 +30,7 @@ pub fn translations(lang: &str) -> BTreeMap<String, String> {
 /// and not per file: a translation always lags the steps added since it was
 /// written, and a blank line helps nobody.
 pub fn describe<'a>(id: &str, english: &'a str, overlay: &'a BTreeMap<String, String>) -> &'a str {
-    overlay.get(id).map(String::as_str).unwrap_or(english)
+    overlay.get(id).map_or(english, String::as_str)
 }
 
 /// `--lang`, else `BDDKIT_LANG`, else English.
@@ -256,7 +260,7 @@ mod tests {
     #[test]
     fn a_digit_group_and_an_alternation_read_like_the_step() {
         assert_eq!(
-            template(r#"^the response code is (?P<code>\d+)$"#),
+            template(r"^the response code is (?P<code>\d+)$"),
             "the response code is <code>"
         );
         assert_eq!(

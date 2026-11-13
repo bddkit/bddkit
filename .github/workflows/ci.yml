@@ -126,6 +126,11 @@ jobs:
           cargo fmt --check --manifest-path tests/fixtures/worker-plugin/Cargo.toml
           cargo fmt --check --manifest-path tests/fixtures/group-plugin/Cargo.toml
 
+      # Over-limit files are in .github/file-size-baseline.txt and may only
+      # shrink; see scripts/file-budget.sh.
+      - name: File size budget
+        run: scripts/file-budget.sh
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

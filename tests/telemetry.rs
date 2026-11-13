@@ -6,6 +6,13 @@
 //! CI variables: `BDDKIT_DIR` replaces the layer chain with a directory of the
 //! test's, and the variables that decide are removed before a test sets its own.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use serde_json::Value;
@@ -249,6 +256,10 @@ fn an_unreadable_config_sends_nothing() {
 }
 
 #[test]
+#[expect(
+    clippy::items_after_statements,
+    reason = "the alias reads next to its only use"
+)]
 fn a_refusal_after_the_config_reports_the_stage_it_stopped_in() {
     let unknown = "Feature: f\n  Scenario: s\n    Given nothing like this is a step\n";
     type Case<'a> = (
@@ -892,16 +903,14 @@ fn a_signal_while_the_request_is_out_does_not_wait_for_it() {
     hole.set_nonblocking(true).expect("nonblocking");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let _held = loop {
-        match hole.accept() {
-            Ok((held, _)) => break held,
-            Err(_) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the request never connected"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+        if let Ok((held, _)) = hole.accept() {
+            break held;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the request never connected"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
     };
     let signalled = std::time::Instant::now();
     let _ = Command::new("kill")
@@ -909,7 +918,7 @@ fn a_signal_while_the_request_is_out_does_not_wait_for_it() {
         .status();
     // The run had passed, so its own code is returned, and at once.
     assert_eq!(child.wait().expect("wait").code(), Some(0));
-    assert!(signalled.elapsed() < std::time::Duration::from_millis(1000));
+    assert!(signalled.elapsed() < std::time::Duration::from_secs(1));
 }
 
 #[test]

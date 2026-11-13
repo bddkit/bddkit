@@ -48,7 +48,7 @@ pub fn load(candidates: &[Candidate]) -> Result<Vec<LockEntry>> {
     let mut entries: Vec<LockEntry> = Vec::new();
     for candidate in candidates {
         for mut entry in read_file(&candidate.path)? {
-            entry.layer = candidate.layer.clone();
+            entry.layer.clone_from(&candidate.layer);
             match entries.iter_mut().find(|e| e.name == entry.name) {
                 Some(existing) => *existing = entry,
                 None => entries.push(entry),
@@ -147,7 +147,7 @@ fn read_value(file: &Path) -> Result<Value> {
 /// empty file parses as `Null`.
 fn plugin_list<'a>(doc: &'a mut Value, file: &Path) -> Result<&'a mut Vec<Value>> {
     if doc.is_null() {
-        *doc = Value::Mapping(Default::default());
+        *doc = Value::Mapping(serde_yaml_ng::Mapping::default());
     }
     let Value::Mapping(map) = doc else {
         bail!("{} is not a mapping", file.display());

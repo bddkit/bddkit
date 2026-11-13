@@ -9,6 +9,7 @@ macro_rules! debug_eprintln {
 mod annotate;
 mod artifacts;
 mod config;
+mod constant;
 mod diagnostic;
 mod dirs;
 mod doctor;
@@ -137,6 +138,10 @@ struct RenderArgs {
   bddkit upgrade                  to the latest release
   bddkit upgrade --version 0.4.1  to a given release, older ones included
   bddkit upgrade --rollback       back to the version the last upgrade replaced")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one bool per command-line switch"
+)]
 struct UpgradeArgs {
     /// Show the plan, change nothing
     #[arg(long, conflicts_with = "rollback")]
@@ -319,12 +324,14 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
                 layer,
                 dry_run,
             } => ctx.update(&names, layer.as_deref(), dry_run).await,
-            PluginCommand::Remove { name, layer } => ctx.remove(&name, layer.as_deref()).await,
+            PluginCommand::Remove { name, layer } => ctx.remove(&name, layer.as_deref()),
             PluginCommand::Prune { dry_run, yes } => ctx.prune(dry_run, yes),
-            PluginCommand::Show { name } => ctx.show(name.as_deref()).await,
+            PluginCommand::Show { name } => ctx.show(name.as_deref()),
             PluginCommand::Check { .. } => unreachable!("answered before the layers are read"),
         };
-        *acted.lock().expect("acted is never poisoned") = ctx.take_acted();
+        *acted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ctx.take_acted();
         outcome
     }
     .await;
@@ -334,7 +341,11 @@ async fn plugin_command(args: PluginArgs) -> Result<i32> {
     });
     if let Some(command) = telemetry_command {
         let mut payload = telemetry::payload::Payload::new(command, code, started.elapsed());
-        payload.plugin = Some(acted.into_inner().expect("acted is never poisoned"));
+        payload.plugin = Some(
+            acted
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         telemetry::command::record_if_on(setting.as_ref(), &payload).await;
     }
     Ok(code)
@@ -379,7 +390,7 @@ enum TelemetryCommand {
 }
 
 /// Exit 1 on any failure, like `plugin`: nothing ran that a 2 would date.
-fn telemetry_command(args: TelemetryCommandArgs) -> Result<i32> {
+fn telemetry_command(args: TelemetryCommandArgs) -> i32 {
     let outcome: Result<String> = (|| {
         let setting =
             telemetry::command::Setting::discover(args.config.as_deref(), args.bddkit_dir)?;
@@ -394,7 +405,7 @@ fn telemetry_command(args: TelemetryCommandArgs) -> Result<i32> {
             }
         }
     })();
-    Ok(match outcome {
+    match outcome {
         Ok(text) => {
             print!("{text}");
             0
@@ -403,7 +414,7 @@ fn telemetry_command(args: TelemetryCommandArgs) -> Result<i32> {
             eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
             1
         }
-    })
+    }
 }
 
 /// Every failure is exit 1, like `plugin`: nothing ran that a 2 would date.
@@ -512,9 +523,9 @@ struct FieldsArgs {
 }
 
 /// Bare `bddkit resource` is a signpost, exactly as bare `bddkit steps` is.
-async fn resource_command(args: ResourceArgs) -> Result<i32> {
+fn resource_command(args: ResourceArgs) -> Result<i32> {
     match args.command {
-        Some(ResourceCommand::Fields(args)) => list_fields(args),
+        Some(ResourceCommand::Fields(args)) => list_fields(&args),
         Some(ResourceCommand::Add(mut args)) => {
             // ponytail: `trailing_var_arg` starts swallowing every remaining
             // token, known flags included, the moment it meets the first one
@@ -542,7 +553,7 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
                     return Ok(1);
                 }
             };
-            resource::add(resource::AddInput {
+            resource::add(&resource::AddInput {
                 group: &args.group,
                 name: &args.name,
                 config: &config_path,
@@ -551,13 +562,12 @@ async fn resource_command(args: ResourceArgs) -> Result<i32> {
                 no_check: args.no_check,
                 flags: &args.fields,
             })
-            .await
         }
         None => subcommand_help("resource"),
     }
 }
 
-fn list_fields(args: FieldsArgs) -> Result<i32> {
+fn list_fields(args: &FieldsArgs) -> Result<i32> {
     let mut kinds = Vec::new();
 
     // A plugin's field list lives inside its `cdylib`, so reading it means
@@ -646,8 +656,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
         &args.privacy.layer(),
         &args.settings,
         args.telemetry.enabled,
-    )
-    .await;
+    );
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -861,7 +870,7 @@ fn subcommand_help(name: &str) -> Result<i32> {
     // a line the reader cannot type.
     cli.build();
     cli.find_subcommand_mut(name)
-        .expect("the subcommand is declared")
+        .with_context(|| format!("subcommand {name:?} is not declared"))?
         .print_help()?;
     println!();
     Ok(0)
@@ -871,10 +880,10 @@ fn steps_command(args: StepsArgs) -> Result<i32> {
     let Some(StepsCommand::List(args)) = args.command else {
         return subcommand_help("steps");
     };
-    list_steps(args)
+    list_steps(&args)
 }
 
-fn list_steps(args: ListArgs) -> Result<i32> {
+fn list_steps(args: &ListArgs) -> Result<i32> {
     let overlay = steps::help::translations(&steps::help::language(args.lang.as_deref()));
     let mut rows = steps::help::builtin_rows(&overlay);
 
@@ -947,14 +956,14 @@ async fn main() {
         Command::Run(args) => (run(args).await, "run not started"),
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Init(args) => (init::command(args).await, "nothing written"),
-        Command::List(args) => (Ok(list::command(args)), "nothing listed"),
+        Command::List(args) => (Ok(list::command(&args)), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Report(args) => (report_command(args).await, "nothing written"),
-        Command::Resource(args) => (resource_command(args).await, "nothing listed"),
+        Command::Resource(args) => (resource_command(args), "nothing listed"),
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
-        Command::Telemetry(args) => (telemetry_command(args), "nothing changed"),
-        Command::External(args) => (external::run(args), "nothing started"),
+        Command::Telemetry(args) => (Ok(telemetry_command(args)), "nothing changed"),
+        Command::External(args) => (external::run(&args), "nothing started"),
         Command::Version { json: true } => {
             let target = plugin::install::host_target().unwrap_or("unknown");
             println!(
@@ -1059,7 +1068,7 @@ fn load_plugins_collecting(
     //
     // This leaks the mapping only. The instances a plugin created are still
     // dropped through FFI by `Plugins::shutdown`, once the worker pool drains.
-    std::mem::forget(plugins.clone());
+    std::mem::forget(Arc::clone(&plugins));
     Ok(Some(plugins))
 }
 
@@ -1113,6 +1122,10 @@ struct Interrupts {
 
 #[cfg(unix)]
 impl Interrupts {
+    #[expect(
+        clippy::expect_used,
+        reason = "the OS refused a signal handler before anything started"
+    )]
     fn install() -> Self {
         use tokio::signal::unix::{SignalKind, signal};
         Self {
@@ -1142,6 +1155,10 @@ struct Interrupts {
 
 #[cfg(windows)]
 impl Interrupts {
+    #[expect(
+        clippy::expect_used,
+        reason = "the OS refused a console handler before anything started"
+    )]
     fn install() -> Self {
         use tokio::signal::windows::{ctrl_break, ctrl_c};
         Self {
@@ -1416,6 +1433,7 @@ pub(crate) fn select_features(
     Ok(Ok(loaded))
 }
 
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32> {
     privacy::set_flags(cli.privacy.layer());
     cli.reports
@@ -1505,7 +1523,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
         Err(error) => {
             eprintln!(
                 "error: 1 problem, run not started\n\n  {}",
-                privacy::mask_text(&error.to_string())
+                privacy::mask_text(&error)
             );
             return Ok(2);
         }
@@ -1604,7 +1622,7 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     }
     let mut ctx = runner::RunContext::new(
         reg,
-        generator.clone(),
+        Arc::clone(&generator),
         filter,
         plugins.clone(),
         cfg.effective_options.clone(),
@@ -1616,10 +1634,14 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     ctx.evidence_buffer = evidence_buffer;
     ctx.redactor = privacy::Redactor::new(&privacy, privacy::recorded());
     let ctx = Arc::new(ctx);
-    probe.counters = Some(ctx.counters.clone());
+    probe.counters = Some(Arc::clone(&ctx.counters));
 
-    let interrupt = tokio::spawn(handle_interrupt(ctx.clone(), plugins.clone(), interrupts));
-    let results = runner::run_all(chains, ctx.clone(), cfg.concurrency).await;
+    let interrupt = tokio::spawn(handle_interrupt(
+        Arc::clone(&ctx),
+        plugins.clone(),
+        interrupts,
+    ));
+    let results = runner::run_all(chains, Arc::clone(&ctx), cfg.concurrency).await;
     // A normal finish races a signal that arrives in the gap before the
     // shutdown below. The claim settles it: a handler that already took it
     // owns the plugin shutdown, the last line of the stream and the exit, and
@@ -1691,8 +1713,8 @@ mod tests {
     use clap::Parser;
 
     fn privacy_layer(args: &[&str]) -> privacy::PrivacyLayer {
-        let argv = ["bddkit", "run"].into_iter().chain(args.iter().copied());
-        match Cli::try_parse_from(argv).expect("flags parse").command {
+        let full_args = ["bddkit", "run"].into_iter().chain(args.iter().copied());
+        match Cli::try_parse_from(full_args).expect("flags parse").command {
             Command::Run(run) => run.privacy.layer(),
             _ => unreachable!("parsed `run`"),
         }

@@ -27,6 +27,10 @@ struct Page<'a> {
 
 /// Every `<` becomes `<`: the JSON stays valid and no `</script>` or
 /// `<!--` can occur inside the element.
+#[expect(
+    clippy::expect_used,
+    reason = "the model is plain data, so it always serializes"
+)]
 fn embed(page: &Page<'_>) -> String {
     serde_json::to_string(page)
         .expect("the model is plain data")

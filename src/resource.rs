@@ -91,14 +91,13 @@ pub fn parse_flags(rest: &[String]) -> Result<Vec<(String, String)>, String> {
         let Some(flag) = token.strip_prefix("--") else {
             return Err(format!("expected a --field, got {token:?}"));
         };
-        let (key, value) = match flag.split_once('=') {
-            Some((key, value)) => (key.to_string(), value.to_string()),
-            None => {
-                let value = rest
-                    .next()
-                    .ok_or_else(|| format!("--{flag} has no value"))?;
-                (flag.to_string(), value.clone())
-            }
+        let (key, value) = if let Some((key, value)) = flag.split_once('=') {
+            (key.to_string(), value.to_string())
+        } else {
+            let value = rest
+                .next()
+                .ok_or_else(|| format!("--{flag} has no value"))?;
+            (flag.to_string(), value.clone())
         };
         if out.iter().any(|(seen, _)| *seen == key) {
             return Err(format!("--{key} was given twice"));
@@ -198,6 +197,10 @@ pub fn assemble_body(
 
 /// One resource kind: a host kind or a plugin group.
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field name is part of the serialized schema"
+)]
 pub struct Kind {
     pub kind: String,
     /// Who described it — the host itself, or the plugin serving the group.
@@ -455,7 +458,7 @@ fn strip_comment(rest: &str) -> &str {
 fn indent_step(raw: &str, anchor: &Anchor) -> usize {
     raw[anchor.end..]
         .split_inclusive('\n')
-        .filter_map(|line| {
+        .find_map(|line| {
             let trimmed = line.trim_end_matches(['\r', '\n']);
             let content = trimmed.trim_start();
             if content.is_empty() || content.starts_with('#') {
@@ -463,10 +466,8 @@ fn indent_step(raw: &str, anchor: &Anchor) -> usize {
             }
             Some(trimmed.len() - content.len())
         })
-        .next()
         .filter(|indent| *indent > anchor.indent)
-        .map(|indent| indent - anchor.indent)
-        .unwrap_or(2)
+        .map_or(2, |indent| indent - anchor.indent)
 }
 
 /// The block, indented and ready to insert. `group` is `Some` only when the
@@ -572,8 +573,12 @@ pub struct AddInput<'a> {
 ///
 /// The one thing that still exits 2 is clap's own usage error, which happens
 /// before this function is called at all.
-pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
+pub fn add(input: &AddInput<'_>) -> anyhow::Result<i32> {
     /// Prints the reason, and the block when one was assembled, and answers 1.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "one return type with the other branches of its caller"
+    )]
     fn refuse(reason: &str, block: Option<&str>) -> anyhow::Result<i32> {
         let mask = crate::privacy::mask_text;
         println!("{}\n\nnothing was written.", mask(reason));
@@ -654,7 +659,7 @@ pub async fn add(input: AddInput<'_>) -> anyhow::Result<i32> {
         Ok(cfg) => cfg,
         Err(error) => return refuse(&format!("{error:#}"), Some(&block)),
     };
-    if let Err(error) = check_new_resource(&cfg, &input, input.config).await {
+    if let Err(error) = check_new_resource(&cfg, input, input.config) {
         return refuse(&error, Some(&block));
     }
 
@@ -698,7 +703,7 @@ fn under_the_name<'a, T>(
 /// Deliberately not `doctor`'s whole stage list: a broken `.feature` elsewhere
 /// in the suite is not a reason to refuse to add a resource, and `doctor` is
 /// the command that answers that question.
-async fn check_new_resource(
+fn check_new_resource(
     cfg: &config::Config,
     input: &AddInput<'_>,
     config_path: &std::path::Path,
@@ -727,7 +732,7 @@ async fn check_new_resource(
         ),
         Some(Err(error)) => return Err(error),
         None => {
-            println!("the plugin exports no bddkit_probe_config, so nothing was probed")
+            println!("the plugin exports no bddkit_probe_config, so nothing was probed");
         }
     }
     Ok(())

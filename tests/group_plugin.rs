@@ -3,6 +3,13 @@
 //! the environment switches). The calls the plugin receives are read from its
 //! log, so a test sees `init`, `select`, `reset` and `drop` from outside.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use std::path::PathBuf;

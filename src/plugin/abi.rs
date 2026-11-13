@@ -170,7 +170,7 @@ pub enum StepKind {
 
 /// A `{param}` in a step effect.
 static EFFECT_PLACEHOLDER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").expect("a constant"));
+    LazyLock::new(|| crate::constant::regex(r"\{([^{}]*)\}"));
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StepSpec {
@@ -320,7 +320,8 @@ impl From<&crate::options::Options> for OptionsJson {
         Self {
             polling: PollingJson {
                 timeout_secs: options.polling.timeout.as_secs(),
-                interval_ms: options.polling.interval.as_millis() as u64,
+                interval_ms: u64::try_from(options.polling.interval.as_millis())
+                    .unwrap_or(u64::MAX),
             },
         }
     }
@@ -480,7 +481,7 @@ impl DispatchResult {
             .collect();
         let scan: Vec<crate::diagnostic::ScanItem> = list("scan")
             .unwrap_or_default()
-            .into_iter()
+            .iter()
             .filter_map(lenient_scan_item)
             .collect();
         // Each diagnostic on its own: one that does not fit must not take the
@@ -524,7 +525,7 @@ impl DispatchResult {
 /// A `scan` item of a malformed reply, read as far as it can be: a `content`
 /// that is not a string is registered as its JSON text, a pair that is not two
 /// strings is skipped.
-fn lenient_scan_item(item: serde_json::Value) -> Option<crate::diagnostic::ScanItem> {
+fn lenient_scan_item(item: &serde_json::Value) -> Option<crate::diagnostic::ScanItem> {
     serde_json::from_value(item.clone()).ok().or_else(|| {
         Some(crate::diagnostic::ScanItem {
             kind: item.get("kind")?.as_str()?.to_string(),
@@ -840,7 +841,7 @@ mod tests {
             "evidence",
             "vars",
         ];
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(keys, expected);
         assert!(
             value["docstring"].is_null(),
@@ -889,7 +890,7 @@ mod tests {
         let mut keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
         keys.sort();
         let mut expected = ["group", "instance", "config", "options", "concurrency"];
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(keys, expected);
         assert_eq!(value["config"], config);
     }

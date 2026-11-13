@@ -29,7 +29,7 @@ fn base36(mut n: u64) -> String {
         n /= 36;
     }
     out.reverse();
-    String::from_utf8(out).expect("base36 is always ASCII")
+    out.into_iter().map(char::from).collect()
 }
 
 fn base36_pad(n: u64, width: usize) -> String {
@@ -48,6 +48,14 @@ pub struct Generator {
 }
 
 impl Generator {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "microseconds fit in u64 for 584,000 years; the random value is cut to 32 bits on purpose"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "a clock before 1970 is a host fault met before anything ran"
+    )]
     pub fn new() -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

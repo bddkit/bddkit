@@ -81,6 +81,7 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
 }
 
 /// Decimal, one place: `12.4 MB`. The same units `--embed-limit` reads.
+#[expect(clippy::cast_precision_loss, reason = "a size shown with one decimal")]
 pub fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes as f64;
@@ -242,7 +243,7 @@ pub fn plan(run: &Run, root: Option<&Path>, limit: u64) -> Plan {
                 full.starts_with(root).then_some(full)
             })
             .and_then(|full| std::fs::metadata(full).ok())
-            .filter(|m| m.is_file())
+            .filter(std::fs::Metadata::is_file)
             .map(|m| m.len());
         match on_disk {
             Some(size) => candidates.push((size, path, reference.media_type)),
@@ -401,6 +402,7 @@ fn embed_one(
 /// indices from one counter and the result is assembled in plan order, so the
 /// page is the same bytes however many threads there were. `tick` is called
 /// once per finished file.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub fn encode(
     plan: Plan,
     root: Option<&Path>,
@@ -438,7 +440,10 @@ pub fn encode(
             .collect();
         workers
             .into_iter()
-            .flat_map(|w| w.join().expect("an encoder thread panicked"))
+            .flat_map(|w| {
+                w.join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+            })
             .collect()
     });
     slots.sort_by_key(|(i, _)| *i);
@@ -495,6 +500,10 @@ mod tests {
     }
 
     /// Blocks of flat colour, the shape of a screenshot.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is taken modulo 256 first"
+    )]
     fn gradient(color: png::ColorType, depth: png::BitDepth, w: u32, h: u32) -> Vec<u8> {
         let channels = color.samples();
         let per = if depth == png::BitDepth::Sixteen {
@@ -523,6 +532,10 @@ mod tests {
     }
 
     /// Noise no encoder can shrink.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the generated value wraps by design"
+    )]
     fn noise(w: u32, h: u32) -> Vec<u8> {
         let mut x = 0x2545_f491_4f6c_dd1du64;
         let data: Vec<u8> = (0..w * h * 3)
@@ -733,8 +746,7 @@ mod tests {
             let mut want = Vec::new();
             for p in px.data.chunks_exact(color.samples()) {
                 match color {
-                    png::ColorType::Rgba => want.extend_from_slice(p),
-                    png::ColorType::Rgb => want.extend_from_slice(p),
+                    png::ColorType::Rgba | png::ColorType::Rgb => want.extend_from_slice(p),
                     png::ColorType::Grayscale => want.extend_from_slice(&[p[0]; 3]),
                     _ => want.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
                 }
@@ -748,6 +760,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::cast_sign_loss, reason = "palette indexes are 0..2")]
     fn a_palette_png_is_expanded_and_encoded() {
         let mut out = Vec::new();
         let mut enc = png::Encoder::new(&mut out, 300, 300);
@@ -807,6 +820,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::cast_possible_truncation, reason = "the index is below 20")]
     fn one_thread_and_many_give_the_same_embeds() {
         let d = scratch("threads");
         let names: Vec<String> = (0..20).map(|i| format!("{i:02}.png")).collect();

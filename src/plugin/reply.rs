@@ -140,7 +140,6 @@ impl Shown {
     pub fn dump(&self, redactor: &Redactor) -> Option<String> {
         match self {
             Self::Http { diagnostic, .. } => diagnostic.dump(redactor),
-            Self::Sql { .. } => None,
             Self::Plain(plain) if plain.in_dump => {
                 let mut out = format!("--- {} ({}) ---", plain.title, plain.kind);
                 if let Some(content) = &plain.content {
@@ -156,7 +155,7 @@ impl Shown {
                 }
                 Some(out)
             }
-            Self::Plain(_) => None,
+            Self::Sql { .. } | Self::Plain(_) => None,
         }
     }
 
@@ -365,7 +364,7 @@ pub fn context_dumps(
         // below and may quote what the same reply declares secret.
         let result = DispatchResult {
             status: super::abi::Status::Passed,
-            vars: Default::default(),
+            vars: std::collections::BTreeMap::default(),
             diagnostics: parsed.diagnostics,
             secrets: parsed.secrets,
             scan: parsed.scan,
@@ -373,7 +372,7 @@ pub fn context_dumps(
             class: None,
             options_instance: None,
             output: Vec::new(),
-            global_vars: Default::default(),
+            global_vars: std::collections::BTreeMap::default(),
         };
         let absorbed = absorb(&result, redactor, "");
         if parsed.ok == Some(false) || parsed.error.is_some() {

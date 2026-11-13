@@ -51,6 +51,10 @@ pub struct Events {
 }
 
 impl Events {
+    #[expect(
+        clippy::expect_used,
+        reason = "the OS refused a thread before any file ran"
+    )]
     pub fn start(out: impl Write + Send + 'static) -> Self {
         let (tx, rx) = channel();
         let writer = std::thread::Builder::new()
@@ -87,7 +91,10 @@ impl Events {
     /// `spawn_blocking`. The error is the first write that failed.
     pub fn finish(&self, fields: Value) -> io::Result<()> {
         let _ = self.tx.send(self.envelope(TERMINATOR, fields));
-        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match writer.take() {
             Some(handle) => handle
                 .join()
@@ -406,7 +413,9 @@ impl Trace {
     }
 
     fn held(&self) -> MutexGuard<'_, Held> {
-        self.held.lock().unwrap_or_else(|e| e.into_inner())
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// An evidence event of the step in flight: written, held or dropped.
@@ -917,12 +926,13 @@ impl Trace {
                 // Beside a `path` the reference is nested, so the file the
                 // plugin reported cannot overwrite its keys.
                 Value::Object(reference) if diagnostic.path.is_some() => {
-                    payload["content"] = Value::Object(reference)
+                    payload["content"] = Value::Object(reference);
                 }
-                Value::Object(reference) => payload
-                    .as_object_mut()
-                    .expect("an object literal")
-                    .extend(reference),
+                Value::Object(reference) => {
+                    if let Some(object) = payload.as_object_mut() {
+                        object.extend(reference);
+                    }
+                }
                 inline => payload["content"] = inline,
             }
         }
@@ -1036,7 +1046,7 @@ mod tests {
         let barrier = Arc::new(std::sync::Barrier::new(5));
         let spammers: Vec<_> = (0..4)
             .map(|_| {
-                let (events, barrier) = (events.clone(), barrier.clone());
+                let (events, barrier) = (events.clone(), Arc::clone(&barrier));
                 std::thread::spawn(move || {
                     for _ in 0..2_000 {
                         events.emit("step_started", json!({"text": "x"}));
@@ -1094,7 +1104,7 @@ mod tests {
         tx.send(json!({"type": TERMINATOR, "t": 0})).expect("queue");
         let sizes = Arc::new(Mutex::new(Vec::new()));
 
-        write_loop(Writes(sizes.clone()), &rx).expect("write");
+        write_loop(Writes(Arc::clone(&sizes)), &rx).expect("write");
 
         let sizes = sizes.lock().expect("sizes");
         assert!(sizes.len() > 5, "{} writes for ~700 KB", sizes.len());

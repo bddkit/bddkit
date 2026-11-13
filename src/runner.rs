@@ -244,6 +244,7 @@ fn execute_step<'a>(
     })
 }
 
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_step(
     world: &mut World,
     reg: &Registry,
@@ -261,7 +262,9 @@ async fn run_step(
             if matches!(id, StepId::Include | StepId::IncludeScenario) {
                 return run_include(world, reg, step, id, caps, source, generator, depth).await;
             }
-            let args = args.expect("resolve interpolates every step but an include");
+            let Some(args) = args else {
+                unreachable!("resolve interpolates every step but an include");
+            };
             match kind {
                 StepKind::Action => dispatch(world, id, &args)
                     .await
@@ -296,7 +299,9 @@ async fn run_step(
         }
         StepTarget::Macro(index) => {
             let definition = reg.macro_def(index);
-            let args = args.expect("resolve interpolates every step but an include");
+            let Some(args) = args else {
+                unreachable!("resolve interpolates every step but an include");
+            };
             world.vars.push_frame();
             for (param, value) in definition.compiled.params.iter().zip(args.caps) {
                 world.vars.set(&param.name, value);
@@ -375,7 +380,9 @@ async fn run_step(
             // Arguments cross the boundary already interpolated: a plugin
             // never sees raw step text and never sees `<<variable>>`
             // syntax (invariant 1, restated at the FFI boundary).
-            let args = args.expect("resolve interpolates every step but an include");
+            let Some(args) = args else {
+                unreachable!("resolve interpolates every step but an include");
+            };
             let Some(plugins) = world.plugins.plugins().cloned() else {
                 return Err(StepError::plugin(
                     "this step is served by a plugin, but no plugin is loaded",
@@ -442,7 +449,7 @@ async fn run_step(
                     vars: if wants_vars {
                         crate::plugin::request_vars(&world.vars, &world.redactor)
                     } else {
-                        Default::default()
+                        BTreeMap::default()
                     },
                     attempt: attempts + 1,
                     source_dir: source_dir.clone(),
@@ -455,7 +462,7 @@ async fn run_step(
                 // spawn_blocking keeps it off the executor. Passing the
                 // host's tokio Handle across the boundary instead would
                 // pin plugin and host to one tokio version.
-                let plugins_for_call = plugins.clone();
+                let plugins_for_call = Arc::clone(&plugins);
                 let (call_group, call_instance) = (group.clone(), instance.clone());
                 // The handle this file already holds, if any. Passing it in
                 // keeps the dispatch to one blocking hop: resolving it out
@@ -584,7 +591,7 @@ async fn run_step(
                             }
                             attempts += 1;
                             world.trace.attempt(attempts, &error.message);
-                            polling.after_not_yet(&error).await?
+                            polling.after_not_yet(&error).await?;
                         }
                     },
                 }
@@ -603,6 +610,8 @@ async fn run_step(
 /// `globals` from any frame, so isolation needs the whole stack replaced,
 /// not just a new top frame.
 #[allow(clippy::too_many_arguments)]
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 fn run_include<'a>(
     world: &'a mut World,
     reg: &'a Registry,
@@ -635,10 +644,10 @@ fn run_include<'a>(
         };
         let prefix = (!prefix_raw.is_empty()).then_some(prefix_raw);
 
-        let base_dir = source
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let base_dir = source.parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
 
         crate::include::check_literal(path_literal).map_err(StepError::input)?;
         let resolved =
@@ -930,11 +939,9 @@ async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) ->
     if handles.is_empty() {
         return Vec::new();
     }
-    let replies = match tokio::task::spawn_blocking(move || plugins.failure_contexts(&handles))
-        .await
-    {
-        Ok(replies) => replies,
-        Err(_) => return vec!["failure context unavailable: the plugin task failed".to_string()],
+    let Ok(replies) = tokio::task::spawn_blocking(move || plugins.failure_contexts(&handles)).await
+    else {
+        return vec!["failure context unavailable: the plugin task failed".to_string()];
     };
     crate::plugin::reply::context_dumps(replies, &world.redactor)
 }
@@ -943,23 +950,25 @@ async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) ->
 /// state is recreated for each scenario; the Background reruns before each
 /// one. Arguments are owned (`Arc`), not borrowed: a file is one `tokio`
 /// task, and `tokio::spawn` requires `'static`.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResult {
     let mut world = World::new(
-        ctx.generator.clone(),
+        Arc::clone(&ctx.generator),
         ctx.plugins.clone(),
         ctx.options.clone(),
-        ctx.artifacts.clone(),
+        Arc::clone(&ctx.artifacts),
     );
     let redactor = ctx.redactor.fork();
     world.trace = Trace::new(ctx.events.clone(), &lf, redactor.clone());
     world.set_redactor(redactor);
     world.collect_evidence(ctx.evidence, ctx.evidence_buffer);
-    world.counters = Some(ctx.counters.clone());
+    world.counters = Some(Arc::clone(&ctx.counters));
     let mut scenarios = Vec::new();
 
     // The generator handle is cloned once: inside the loop `&world.generator`
     // would conflict with the later `&mut world` in the dispatch call.
-    let generator = world.generator.clone();
+    let generator = Arc::clone(&world.generator);
 
     for scenario_ref in lf.scenarios() {
         let ScenarioRef { scenario: sc, rule } = scenario_ref;
@@ -1266,6 +1275,7 @@ pub fn build_chains(files: Vec<Arc<LoadedFeature>>) -> Result<Vec<Chain>, String
 /// The nested `tokio::spawn` per file exists for exactly two properties: it
 /// isolates panics (a worker survives a bad file and picks up the next one),
 /// and the immediate `await` keeps tasks from outrunning the pool size.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub async fn run_all(
     chains: Vec<Chain>,
     ctx: Arc<RunContext>,
@@ -1279,8 +1289,12 @@ pub async fn run_all(
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
-        let (chains, cursor, results, ctx) =
-            (chains.clone(), cursor.clone(), results.clone(), ctx.clone());
+        let (chains, cursor, results, ctx) = (
+            Arc::clone(&chains),
+            Arc::clone(&cursor),
+            Arc::clone(&results),
+            Arc::clone(&ctx),
+        );
         handles.push(tokio::spawn(async move {
             loop {
                 if ctx.stopped() {
@@ -1294,7 +1308,7 @@ pub async fn run_all(
                     if ctx.stopped() {
                         break;
                     }
-                    let task = tokio::spawn(run_file(lf.clone(), ctx.clone()));
+                    let task = tokio::spawn(run_file(Arc::clone(lf), Arc::clone(&ctx)));
                     let (result, panicked) = match task.await {
                         Ok(r) => (r, false),
                         Err(error) => (panicked_file(lf, &error, &ctx.redactor), true),
@@ -1319,7 +1333,9 @@ pub async fn run_all(
                     // Printing and collecting under one lock: a file's output
                     // lands in stdout as a whole, not interleaved with another
                     // worker's dump.
-                    let mut collected = results.lock().expect("results mutex");
+                    let mut collected = results
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     print!("{}", render_file(&result));
                     collected.push(result);
                 }
@@ -1331,7 +1347,11 @@ pub async fn run_all(
         // above; but it still must not bring down the rest of the run.
         let _ = handle.await;
     }
-    std::mem::take(&mut *results.lock().expect("results mutex"))
+    std::mem::take(
+        &mut *results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
 }
 
 #[cfg(test)]
@@ -1411,7 +1431,7 @@ mod tests {
         let plugins = Arc::new(plugins);
         let world = World::new(
             Arc::new(Generator::new()),
-            Some(plugins.clone()),
+            Some(Arc::clone(&plugins)),
             Options::default(),
             crate::artifacts::Artifacts::for_test(),
         );
@@ -1436,7 +1456,7 @@ mod tests {
             docstring: None,
             table: None,
         };
-        let generator = world.generator.clone();
+        let generator = Arc::clone(&world.generator);
         let source = std::path::Path::new("test.feature");
         let origin = Origin {
             line: 1,
@@ -1815,13 +1835,13 @@ Feature: macro
             "- step: I do business\n  do: [Show all variables]\n",
         );
         let result = run(
-            r#"
+            r"
 Feature: macro
   Scenario: table
     When I do business
       | value |
       | x     |
-"#,
+",
             registry,
         )
         .await;
@@ -1930,7 +1950,7 @@ Feature: eventual assertion
             )
             .expect("the plugin registry builds");
             let generator = Arc::new(Generator::new());
-            let context = context_with(registry, generator.clone(), Some(Arc::new(plugins)));
+            let context = context_with(registry, Arc::clone(&generator), Some(Arc::new(plugins)));
             let before = generator
                 .next(crate::unique::UniqueKind::Number)
                 .parse::<u64>()
@@ -2068,11 +2088,11 @@ Feature: eventual assertion
         #[tokio::test(start_paused = true)]
         async fn a_dangling_modifier_passes_silently() {
             let result = run(
-                r#"
+                r"
 Feature: eventual assertion
   Scenario: dangling
     Given I expect the next assertion to pass eventually
-"#,
+",
                 Registry::new().unwrap(),
             )
             .await;

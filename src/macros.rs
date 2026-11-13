@@ -44,8 +44,7 @@ enum RawStep {
 }
 
 static MACRO_START: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^([ \t]*)-\s*(?:\{\s*)?(?:step|"step"|'step')\s*:"#)
-        .expect("constant macro-start regex")
+    crate::constant::regex(r#"^([ \t]*)-\s*(?:\{\s*)?(?:step|"step"|'step')\s*:"#)
 });
 
 impl MacroCatalog {
@@ -521,14 +520,14 @@ mod tests {
     fn registry_rejects_nested_macro_call_with_docstring() {
         let path = fixture(
             "nested-docstring",
-            r#"
+            r"
 - step: 'I do inner:'
   do: [Show all variables]
 - step: I do outer
   do:
     - I do inner: |
         unsupported
-"#,
+",
         );
 
         let error = Registry::with_macros(MacroCatalog::load(&[path]).unwrap()).unwrap_err();

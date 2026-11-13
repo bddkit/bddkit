@@ -38,6 +38,7 @@ impl Counters {
     /// One leaf step that ran: a macro call and an `I include` are not leaves,
     /// the steps they run are. A group nobody declared counts as `other`.
     pub fn leaf(&self, group: &str, elapsed: Duration) {
+        #[expect(clippy::expect_used, reason = "`other` is declared with the groups")]
         let (steps, micros) = self
             .usage
             .get(group)

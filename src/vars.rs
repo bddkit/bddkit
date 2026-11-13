@@ -22,7 +22,7 @@ impl VarStack {
         Self {
             frames: vec![HashMap::new()],
             globals: HashMap::new(),
-            secret_names: Default::default(),
+            secret_names: std::collections::HashSet::default(),
             redactor: Redactor::disabled(),
         }
     }
@@ -54,6 +54,7 @@ impl VarStack {
             .collect()
     }
 
+    #[expect(clippy::expect_used, reason = "the frame stack is never empty")]
     pub fn set(&mut self, name: &str, value: String) {
         self.redactor.variable(name, &value);
         self.frames
@@ -80,6 +81,7 @@ impl VarStack {
     /// this name is permanently shadowed and never surfaces through `get`.
     /// A macro-local frame shadowing `name` does not count: it is gone once
     /// the macro pops, and the global write becomes visible again.
+    #[expect(clippy::expect_used, reason = "the frame stack is never empty")]
     pub fn shadowed_by_frame(&self, name: &str) -> bool {
         self.frames
             .first()
@@ -89,7 +91,7 @@ impl VarStack {
 
     #[cfg(test)]
     pub fn remove(&mut self, name: &str) {
-        for frame in self.frames.iter_mut() {
+        for frame in &mut self.frames {
             frame.remove(name);
         }
         self.globals.remove(name);
@@ -102,6 +104,7 @@ impl VarStack {
     /// Pops the top frame, copying into the parent only what `exports` lists.
     /// Supports a glob of the form `last_insert_id_*`. Returns the exported
     /// pairs so a caller in debug mode can log them.
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub fn pop_frame(&mut self, exports: &[String]) -> Result<Vec<(String, String)>, String> {
         // Check BEFORE popping: `Vec::pop` is irreversible, and the root frame must not be popped.
         if self.frames.len() <= 1 {
@@ -165,14 +168,12 @@ pub const PLACEHOLDER: &str = r"<<[^\W\d]\w*(?:\([^)]*\))?>>";
 
 /// True when `text` is exactly one slot and nothing else.
 pub fn is_whole_slot(text: &str) -> bool {
-    static WHOLE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(&format!("^(?:{PLACEHOLDER})$")).expect("constant regex")
-    });
+    static WHOLE: LazyLock<regex::Regex> =
+        LazyLock::new(|| crate::constant::regex(&format!("^(?:{PLACEHOLDER})$")));
     WHOLE.is_match(text)
 }
 
-static SLOT: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(PLACEHOLDER).expect("constant regex"));
+static SLOT: LazyLock<regex::Regex> = LazyLock::new(|| crate::constant::regex(PLACEHOLDER));
 
 /// Substitutes `<<…>>`. Applied ONLY to arguments, doc strings, and table
 /// cells — never to the whole step text, or pre-run validation would be impossible.
@@ -481,7 +482,7 @@ mod tests {
 
     #[test]
     fn the_placeholder_is_one_whole_slot_without_capture_groups() {
-        let re = regex::Regex::new(&format!("^(?:{PLACEHOLDER})$")).expect("valid regex");
+        let re = crate::constant::regex(&format!("^(?:{PLACEHOLDER})$"));
         for slot in [
             "<<code>>",
             "<<unique()>>",

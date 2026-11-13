@@ -2,6 +2,13 @@
 //! for the two kinds the host serves. The plugin half needs a loaded
 //! `cdylib` and lives in `tests/plugin.rs`.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 use std::process::Command;
 
 fn resource(args: &[&str]) -> (String, Option<i32>) {

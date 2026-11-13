@@ -156,7 +156,7 @@ pub fn print_summary(results: &[FileResult], run_id: &str) -> i32 {
     let failed: usize = results.iter().map(FileResult::failed).sum();
     println!("\nrun {run_id}");
     println!("{}", summary_line(results));
-    if failed == 0 { 0 } else { 1 }
+    i32::from(failed != 0)
 }
 
 /// Creates (truncates) a report file before anything runs. A run that dies on

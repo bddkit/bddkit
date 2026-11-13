@@ -52,8 +52,8 @@ fn stages_failed(report: &Report) -> Vec<String> {
 
 pub fn payload(report: &Report, note: &Note, elapsed: Duration) -> Payload {
     let mut payload = Payload::new(Command::Doctor, report.exit_code(), elapsed);
-    payload.privacy = note.privacy.clone();
-    payload.resources = note.resources.clone();
+    payload.privacy.clone_from(&note.privacy);
+    payload.resources.clone_from(&note.resources);
     payload.doctor = Some(DoctorInfo {
         live: report.live,
         failed: report.failed() as u64,

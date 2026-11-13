@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field name is part of the serialized schema"
+)]
 pub struct Run {
     pub run_id: String,
     pub bddkit: String,
@@ -48,6 +52,10 @@ pub struct Finished {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field name is part of the serialized schema"
+)]
 pub struct File {
     pub file: String,
     pub name: String,
@@ -428,6 +436,18 @@ impl Builder {
 /// Turns `parents` into children lists. A parent always starts before its
 /// child, so one forward pass sees every parent first.
 fn nest(work: Work) -> Vec<Item> {
+    #[expect(
+        clippy::expect_used,
+        reason = "`parents` is a forest: each item is taken once, by its one parent"
+    )]
+    fn take(at: usize, slots: &mut [Option<Item>], children: &[Vec<usize>]) -> Item {
+        let mut item = slots[at].take().expect("each item has one parent");
+        item.children = children[at]
+            .iter()
+            .map(|child| take(*child, slots, children))
+            .collect();
+        item
+    }
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); work.items.len()];
     let mut roots = Vec::new();
     for (at, parent) in work.parents.iter().enumerate() {
@@ -437,14 +457,6 @@ fn nest(work: Work) -> Vec<Item> {
         }
     }
     let mut slots: Vec<Option<Item>> = work.items.into_iter().map(Some).collect();
-    fn take(at: usize, slots: &mut [Option<Item>], children: &[Vec<usize>]) -> Item {
-        let mut item = slots[at].take().expect("each item has one parent");
-        item.children = children[at]
-            .iter()
-            .map(|child| take(*child, slots, children))
-            .collect();
-        item
-    }
     roots
         .into_iter()
         .map(|at| take(at, &mut slots, &children))
@@ -456,6 +468,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[expect(clippy::format_collect, reason = "test helper")]
     fn stream(events: &[Value]) -> String {
         events
             .iter()

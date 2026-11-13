@@ -194,6 +194,7 @@ impl ScenarioMs {
 
 /// What was ON for this run, whichever source turned it on; never a value.
 #[derive(Debug, Default, Clone, Serialize)]
+#[expect(clippy::struct_excessive_bools, reason = "one bool per switch")]
 pub struct Features {
     pub junit: bool,
     pub cucumber_json: bool,

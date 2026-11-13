@@ -1,5 +1,12 @@
 //! `bddkit list`: what a run would run, without running it (issue #170).
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
