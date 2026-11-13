@@ -1,0 +1,16 @@
+src/config.rs 1422
+src/doctor.rs 1233
+src/events.rs 1212
+src/feature.rs 1681
+src/main.rs 1747
+src/plugin/library.rs 1110
+src/plugin/manage.rs 1068
+src/plugin/mod.rs 1897
+src/privacy.rs 1419
+src/report/markdown.rs 1320
+src/resource.rs 1306
+src/runner.rs 2403
+src/steps/mod.rs 1757
+tests/acceptance.rs 6545
+tests/plugin.rs 3828
+tests/plugin_cli.rs 2661
