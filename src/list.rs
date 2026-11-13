@@ -35,8 +35,8 @@ pub struct ListArgs {
 
 /// Exit 0 with the list, 2 with the reason on stderr and, under `--json`, an
 /// `error` object on stdout. Nothing here is a plugin, a socket or telemetry.
-pub fn command(args: ListArgs) -> i32 {
-    match build(&args) {
+pub fn command(args: &ListArgs) -> i32 {
+    match build(args) {
         Ok(list) => match print(&list, args.json) {
             Ok(()) => 0,
             // `bddkit list | head`: the reader left, which is not a failure.

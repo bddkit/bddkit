@@ -106,7 +106,7 @@ impl Scalar {
     }
 
     /// The same names, for an error message and for `resource fields`.
-    pub fn declared_name(&self) -> &'static str {
+    pub fn declared_name(self) -> &'static str {
         match self {
             Scalar::Str => "string",
             Scalar::Bool => "boolean",
@@ -203,7 +203,12 @@ impl Config {
         };
         let empty = BTreeMap::new();
         let names = self.resources.groups.get(group).unwrap_or(&empty).keys();
-        resolve_default(&field, &format!("resources.{group}"), &explicit, names)
+        resolve_default(
+            &field,
+            &format!("resources.{group}"),
+            explicit.as_ref(),
+            names,
+        )
     }
 
     /// `extra` keeps every top-level key the host does not name itself, because
@@ -248,7 +253,7 @@ impl Config {
 fn resolve_default<'a>(
     field: &str,
     section: &str,
-    explicit: &Option<String>,
+    explicit: Option<&String>,
     mut names: impl Iterator<Item = &'a String> + Clone,
 ) -> Result<Option<String>> {
     if let Some(name) = explicit {
@@ -359,10 +364,9 @@ fn load_env_layers(config_dir: &Path, app_env: &str) -> Result<BTreeMap<String, 
 /// this project's configs never needed it). Upgrade if needed: recursively
 /// run `expand_env` over the extracted `arg` before use.
 fn expand_env(src: &str, env_map: &BTreeMap<String, String>) -> Result<String> {
-    let re = regex::Regex::new(
+    let re = crate::constant::regex(
         r"\$\$|\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:-|-|:\?|\?|:\+|\+)(?P<arg>[^}]*))?\}|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)",
-    )
-    .expect("constant regex");
+    );
 
     let lookup = |name: &str| -> Option<String> {
         std::env::var(name)
@@ -373,7 +377,7 @@ fn expand_env(src: &str, env_map: &BTreeMap<String, String>) -> Result<String> {
     let mut out = String::with_capacity(src.len());
     let mut last = 0usize;
     for c in re.captures_iter(src) {
-        let m = c.get(0).expect("group 0 always exists");
+        let m = c.get_match();
         out.push_str(&src[last..m.start()]);
         last = m.end();
 
@@ -382,13 +386,15 @@ fn expand_env(src: &str, env_map: &BTreeMap<String, String>) -> Result<String> {
             continue;
         }
 
-        let name = c
+        let Some(name) = c
             .name("name")
             .or_else(|| c.name("bare"))
-            .expect("either name or bare — otherwise the regex would not have matched")
-            .as_str();
+            .map(|m| m.as_str())
+        else {
+            unreachable!("`$$` is handled above, every other alternative names the variable");
+        };
         let op = c.name("op").map(|o| o.as_str());
-        let arg = c.name("arg").map(|a| a.as_str()).unwrap_or("");
+        let arg = c.name("arg").map_or("", |a| a.as_str());
         let value = lookup(name);
 
         let resolved = match op {
@@ -473,7 +479,7 @@ pub enum ConfigSource {
 }
 
 impl ConfigSource {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             ConfigSource::Flag => "--config",
             ConfigSource::Env => "BDDKIT_CONFIG",
@@ -523,20 +529,20 @@ fn resolve_config_path_in(
             source: ConfigSource::Env,
         }));
     }
-    let yaml = cwd.join("bddkit.yaml");
-    let yml = cwd.join("bddkit.yml");
-    match (yaml.is_file(), yml.is_file()) {
+    let long_name = cwd.join("bddkit.yaml");
+    let short_name = cwd.join("bddkit.yml");
+    match (long_name.is_file(), short_name.is_file()) {
         (true, true) => bail!(
             "both {} and {} exist; keep one, or pass --config to pick",
-            yaml.display(),
-            yml.display()
+            long_name.display(),
+            short_name.display()
         ),
         (true, false) => Ok(Some(ResolvedConfig {
-            path: yaml,
+            path: long_name,
             source: ConfigSource::Discovered,
         })),
         (false, true) => Ok(Some(ResolvedConfig {
-            path: yml,
+            path: short_name,
             source: ConfigSource::Discovered,
         })),
         (false, false) => Ok(None),
@@ -609,24 +615,34 @@ mod tests {
     /// The sink is process-wide and only ever grows, so each test uses values
     /// no other test writes. Never load a config here that sets `reveal` or a
     /// large `min_length`: `record` overwrites both for every test in the process.
-    fn load_api_with(body: &str) {
+    fn load_api_in(body: &str, dir: &Path) {
         let src =
             format!("paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://x\n{body}");
-        load_str(&src, Path::new("."), None).expect("config loads");
+        load_str(&src, dir, None).expect("config loads");
     }
 
     #[test]
     fn a_url_password_and_a_field_word_value_are_recorded_after_expansion() {
-        unsafe { std::env::set_var("BDDKIT_TEST_DB_PW", "from-env-pw-3") };
-        load_api_with(
+        // The value arrives through the `.env` layer, as it would from the
+        // environment: the test never touches the process environment.
+        let dir = std::env::temp_dir().join("bddkit_config_secret_after_expansion");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        std::fs::write(dir.join(".env"), "BDDKIT_TEST_DB_PW=from-env-pw-3\n").expect("write .env");
+        load_api_in(
             "      password: literal-pw-4\ndb_url: postgres://app:${BDDKIT_TEST_DB_PW}@db/app\n",
+            &dir,
         );
         assert_eq!(privacy::mask_text("x from-env-pw-3 y"), "x *** y");
         assert_eq!(privacy::mask_text("x literal-pw-4 y"), "x *** y");
     }
 
     fn parse(src: &str) -> Result<Config> {
-        let expanded = expand_env(src, &BTreeMap::new())?;
+        parse_with_env(src, &BTreeMap::new())
+    }
+
+    fn parse_with_env(src: &str, env_map: &BTreeMap<String, String>) -> Result<Config> {
+        let expanded = expand_env(src, env_map)?;
         let mut cfg: Config = serde_yaml_ng::from_str(&expanded)?;
         cfg.resolve_options()?;
         Ok(cfg)
@@ -695,9 +711,11 @@ mod tests {
 
     #[test]
     fn expands_environment_variables() {
-        unsafe { std::env::set_var("BDDKIT_TEST_HOST", "example.test") };
-        let c = parse(
+        let env_map =
+            BTreeMap::from([("BDDKIT_TEST_HOST".to_string(), "example.test".to_string())]);
+        let c = parse_with_env(
             "paths: [f]\nresources:\n  s3:\n    a:\n      endpoint: http://${BDDKIT_TEST_HOST}\n",
+            &env_map,
         )
         .expect("config parses");
         assert_eq!(

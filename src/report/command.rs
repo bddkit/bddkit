@@ -101,6 +101,7 @@ pub fn format_names(outputs: &[PathBuf]) -> Vec<&'static str> {
 /// target under a temporary name and renamed only once all are complete.
 /// Returns the exit code (0), every failure being an error for `main` to turn
 /// into exit 2.
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 pub fn run(
     events: &Path,
     outputs: &[PathBuf],

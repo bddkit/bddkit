@@ -3,6 +3,12 @@
 //! fixture packed as a release archive. Everything lands in a temporary
 //! `--bddkit-dir` unless a test is about the layer chain itself.
 #![cfg(not(windows))] // the stub packs .tar.gz; Windows assets are .zip
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
 
 mod common;
 

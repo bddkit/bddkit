@@ -3,6 +3,13 @@
 //! No test here needs the axum stub, so plain `#[test]` is right — nothing
 //! spawns a server for `Command::output()` to starve.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -129,11 +136,11 @@ fn run_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::O
         .expect("failed to run bddkit")
 }
 
-const DIRECTORIES: &str = r#"Feature: directories
+const DIRECTORIES: &str = r"Feature: directories
   Scenario: two dispatches write evidence
     When I echo the directories
     And I echo the directories
-"#;
+";
 
 fn assert_green(out: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -195,10 +202,10 @@ fn a_plugin_assertion_is_polled_by_the_host() {
 fn an_unarmed_assertion_that_answers_not_yet_fails_immediately() {
     let dir = project(
         "unarmed",
-        r#"Feature: plugin assertions
+        r"Feature: plugin assertions
   Scenario: no modifier means no second attempt
     Then the echo counter should reach 3
-"#,
+",
         ECHO_GROUP,
     );
     let out = run(&dir);
@@ -213,10 +220,10 @@ fn plugin_diagnostics_appear_in_the_failure_dump() {
     // never behind a debug flag, and inside the file's single output string.
     let dir = project(
         "diagnostics",
-        r#"Feature: plugin failures
+        r"Feature: plugin failures
   Scenario: a fatal result carries its evidence
     Then the echo should fail
-"#,
+",
         ECHO_GROUP,
     );
     let out = run(&dir);
@@ -451,10 +458,10 @@ fn a_failed_reset_is_a_reset_failure() {
 fn shutdown_drops_the_instance_even_after_a_failed_run() {
     let dir = project(
         "shutdown",
-        r#"Feature: plugin failures
+        r"Feature: plugin failures
   Scenario: a fatal result still leaves shutdown to run
     Then the echo should fail
-"#,
+",
         ECHO_GROUP,
     );
     let marker = dir.join("dropped.marker");
@@ -699,9 +706,7 @@ fn a_per_worker_instance_is_dropped_when_its_file_ends() {
     let mut ended = false;
     while std::time::Instant::now() < deadline {
         ended = child.try_wait().expect("wait on bddkit").is_some();
-        recorded = std::fs::read_to_string(&log)
-            .map(|text| text.lines().count())
-            .unwrap_or(0);
+        recorded = std::fs::read_to_string(&log).map_or(0, |text| text.lines().count());
         if recorded > 0 || ended {
             break;
         }
@@ -793,9 +798,7 @@ fn interrupted_run(
     }
 
     let out = child.wait_with_output().expect("collect bddkit output");
-    let recorded = std::fs::read_to_string(&log)
-        .map(|text| text.lines().count())
-        .unwrap_or(0);
+    let recorded = std::fs::read_to_string(&log).map_or(0, |text| text.lines().count());
     let _ = std::fs::remove_file(&log);
     (out, recorded)
 }

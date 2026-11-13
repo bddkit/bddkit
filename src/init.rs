@@ -215,6 +215,7 @@ fn text(term: &Term, prompt: &str, initial: &str, allow_empty: bool) -> Result<O
 }
 
 /// The questions the flags did not answer. `None`: Esc or Ctrl-C.
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
     check_flags(args)?;
     let term = Term::stderr();
@@ -235,15 +236,14 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
     };
 
     // `--db` answers the engine only; the DSN is asked unless `--dsn` gave it.
-    let db = match args.db {
-        Some(db) => db,
-        None => {
-            let items = ["none", "PostgreSQL", "MySQL", "MariaDB"];
-            let Some(engine) = select(&term, "A database?", &items)? else {
-                return Ok(None);
-            };
-            [Db::None, Db::Postgres, Db::Mysql, Db::Mariadb][engine]
-        }
+    let db = if let Some(db) = args.db {
+        db
+    } else {
+        let items = ["none", "PostgreSQL", "MySQL", "MariaDB"];
+        let Some(engine) = select(&term, "A database?", &items)? else {
+            return Ok(None);
+        };
+        [Db::None, Db::Postgres, Db::Mysql, Db::Mariadb][engine]
     };
     let dsn = match (db, &args.dsn) {
         (Db::None, _) => None,
@@ -292,31 +292,29 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
         }
     };
 
-    let parallel = match args.parallel {
-        Some(parallel) => parallel,
-        None => {
-            eprintln!(
-                "Files run at the same time (concurrency 8) only when their data cannot collide: use <<unique()>> for it."
-            );
-            match telemetry::ask_yes_no(
-                &term,
-                "Can scenarios of different files run at the same time?",
-                ["yes (concurrency 8)", "no (concurrency 1)"],
-            )? {
-                Some(parallel) => parallel,
-                None => return Ok(None),
-            }
+    let parallel = if let Some(parallel) = args.parallel {
+        parallel
+    } else {
+        eprintln!(
+            "Files run at the same time (concurrency 8) only when their data cannot collide: use <<unique()>> for it."
+        );
+        match telemetry::ask_yes_no(
+            &term,
+            "Can scenarios of different files run at the same time?",
+            ["yes (concurrency 8)", "no (concurrency 1)"],
+        )? {
+            Some(parallel) => parallel,
+            None => return Ok(None),
         }
     };
 
-    let telemetry = match args.telemetry {
-        Some(answer) => Some(answer),
-        None => {
-            eprintln!("{}", telemetry::QUESTION_TEXT);
-            match telemetry::ask_yes_no(&term, telemetry::PROMPT, ["Yes", "No"])? {
-                Some(answer) => Some(answer),
-                None => return Ok(None),
-            }
+    let telemetry = if let Some(answer) = args.telemetry {
+        Some(answer)
+    } else {
+        eprintln!("{}", telemetry::QUESTION_TEXT);
+        match telemetry::ask_yes_no(&term, telemetry::PROMPT, ["Yes", "No"])? {
+            Some(answer) => Some(answer),
+            None => return Ok(None),
         }
     };
 
@@ -558,6 +556,7 @@ fn ignore_local_files() -> Result<()> {
 
 /// Writes, installs and checks. 0 when everything is in place and `doctor` is
 /// clean, 1 when a plugin failed to install or `doctor` found something.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub async fn apply(
     answers: &Answers,
     config_path: &Path,
@@ -611,17 +610,17 @@ pub async fn apply(
                     Ok((missing, _)) => {
                         for entry in missing {
                             // `--plugin` takes `name`, `owner/repo` and either with `@version`.
-                            let named = names.iter().any(|n| {
+                            let already_named = names.iter().any(|n| {
                                 let base = n.split('@').next().unwrap_or(n);
                                 base == entry.name || base == entry.repo
                             });
-                            if !named {
+                            if !already_named {
                                 names.push(entry.name);
                             }
                         }
                     }
                     Err(error) => {
-                        report(error.context("could not work out which plugins the config needs"))
+                        report(error.context("could not work out which plugins the config needs"));
                     }
                 }
                 // Never the auto-pick: with `/etc/bddkit` and no user directory
@@ -660,11 +659,10 @@ pub async fn apply(
         &env,
         &[],
         None,
-        &Default::default(),
-        &Default::default(),
+        &crate::privacy::PrivacyLayer::default(),
+        &crate::settings::SettingsArgs::default(),
         None,
-    )
-    .await;
+    );
     println!();
     print!("{}", checked.render());
     Ok(code.max(checked.exit_code()))

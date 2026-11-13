@@ -6,6 +6,13 @@
 //! The core classes run over core steps only. `a_refused_connection_is_a_transport_failure`
 //! needs a real HTTP request and is marked to move with the HTTP API.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "`allow-*-in-tests` covers only `#[test]` functions, not the helpers here"
+)]
+
 mod common;
 
 use serde_json::Value;

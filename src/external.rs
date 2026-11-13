@@ -44,7 +44,7 @@ fn find(name: &str, exe_dir: Option<&Path>, path: Option<&OsStr>) -> Option<Path
 
 /// Runs the tool and returns its exit code; on Unix it does not return on
 /// success (the process is replaced). `Err` is a refusal to start.
-pub fn run(args: Vec<OsString>) -> Result<i32> {
+pub fn run(args: &[OsString]) -> Result<i32> {
     let name = args
         .first()
         .and_then(|a| a.to_str())
@@ -59,11 +59,13 @@ pub fn run(args: Vec<OsString>) -> Result<i32> {
         // Today's clap error, typo tip included: parse the name again with
         // external subcommands off, then add the hint.
         let shown = args[0].to_string_lossy();
-        let mut error = crate::Cli::command()
+        let Err(mut error) = crate::Cli::command()
             .allow_external_subcommands(false)
             .external_subcommand_value_parser(None::<clap::builder::ValueParser>)
             .try_get_matches_from([OsStr::new("bddkit"), args[0].as_os_str()])
-            .expect_err("an unknown subcommand is refused");
+        else {
+            unreachable!("an unknown subcommand is refused");
+        };
         let mut tips = match error.get(ContextKind::Suggested) {
             Some(ContextValue::StyledStrs(tips)) => tips.clone(),
             _ => Vec::new(),

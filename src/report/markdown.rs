@@ -11,6 +11,7 @@ use super::html;
 use super::model::{File, Item, Run, Scenario};
 use clap::ValueEnum;
 use serde_json::Value;
+use std::fmt::Write as _;
 
 /// Bumped when a tool reading the file could be broken by a change.
 const TEMPLATE_VERSION: u32 = 1;
@@ -98,10 +99,10 @@ fn attr(value: &str) -> String {
 }
 
 fn marker(edge: &str, kind: &str, attrs: &[(&str, &str)]) -> String {
-    let attrs: String = attrs
-        .iter()
-        .map(|(key, value)| format!(" {key}=\"{}\"", attr(value)))
-        .collect();
+    let attrs = attrs.iter().fold(String::new(), |mut out, (key, value)| {
+        let _ = write!(out, " {key}=\"{}\"", attr(value));
+        out
+    });
     format!("<!-- bddkit:{edge} {kind}{attrs} -->")
 }
 
@@ -119,6 +120,10 @@ fn cell(text: &str) -> String {
     one_line(text).replace('|', "\\|")
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a duration shown with two decimals"
+)]
 fn duration(us: u64) -> String {
     match us {
         0..1_000 => format!("{us} µs"),
@@ -294,6 +299,7 @@ fn totals(run: &Run) -> (usize, usize, usize) {
     (run.files.len(), scenarios, failed + panicked)
 }
 
+#[expect(clippy::expect_used, reason = "a string always serializes")]
 fn front_matter(doc: &mut Doc, ctx: &Ctx<'_>, total: usize) {
     let run = ctx.run;
     let quoted = |text: &str| serde_json::to_string(text).expect("a string is JSON");
@@ -664,7 +670,7 @@ fn list<'a>(
         if let Some(us) = item.duration_us {
             line.push_str(&format!(" · {}", duration(us)));
         }
-        for pair in item.vars.iter().flat_map(|v| v.as_array()).flatten() {
+        for pair in item.vars.iter().filter_map(|v| v.as_array()).flatten() {
             let value = pair[1].as_str().map_or_else(|| "null".to_owned(), code);
             line.push_str(&format!(
                 " · {} = {value}",
@@ -780,6 +786,7 @@ fn http(doc: &mut Doc, ctx: &Ctx<'_>, c: &Value) {
 
 /// A body is JSON pretty-printed (sorted) only when it parses, as received
 /// otherwise; a spilled one is a link.
+#[expect(clippy::expect_used, reason = "a parsed value always serializes")]
 fn body_block(doc: &mut Doc, ctx: &Ctx<'_>, value: &Value) {
     match value {
         Value::Null => {}
@@ -866,6 +873,7 @@ mod tests {
 
     // ---- over a whole run -------------------------------------------------
 
+    #[expect(clippy::needless_pass_by_value, reason = "callers pass json! literals")]
     fn event(kind: &str, fields: Value) -> Value {
         let mut event = json!({"type": kind, "file": "features/a.feature"});
         event
@@ -972,6 +980,7 @@ mod tests {
         render(&run, "report.md", "../out/", false, detail)
     }
 
+    #[expect(clippy::format_collect, reason = "test helper")]
     fn render_events(events: &[Value], detail: Detail) -> String {
         render_text(
             &events.iter().map(|e| format!("{e}\n")).collect::<String>(),
@@ -1118,7 +1127,7 @@ mod tests {
         let text = standard(Detail::All);
         // The only column-0 markers are bddkit's own: the ones in the
         // response body, the failure and the description were spaced.
-        let grammar = Regex::new(r#"^<!-- bddkit:(begin|end) [a-z]+ "#).expect("regex");
+        let grammar = Regex::new(r"^<!-- bddkit:(begin|end) [a-z]+ ").expect("regex");
         assert!(text.contains(" <!-- bddkit:end scenario id=\"features/a.feature:8\" -->"));
         assert!(text.contains(" <!-- bddkit:end failure id=\"x\" -->"));
         assert!(
@@ -1155,7 +1164,7 @@ mod tests {
         assert_eq!(text.matches("### [passed]").count(), 3);
         let index: Vec<&str> = text
             .lines()
-            .filter(|l| l.starts_with("| `features/") && l.contains("-"))
+            .filter(|l| l.starts_with("| `features/") && l.contains('-'))
             .collect();
         assert_eq!(index.len(), 4);
         assert!(
@@ -1282,7 +1291,7 @@ mod tests {
             match line.split(':').next().expect("label") {
                 "- Totals" => assert_eq!(first, "---"),
                 "- The index, with exact line ranges" => {
-                    assert!(first.starts_with("<!-- bddkit:begin index"), "{first}")
+                    assert!(first.starts_with("<!-- bddkit:begin index"), "{first}");
                 }
                 "- One scenario by its range" | "- One scenario by id" => {
                     assert!(
@@ -1299,7 +1308,7 @@ mod tests {
                 "- Failed scenarios" => assert!(first.contains("status=\"failed\""), "{first}"),
                 "- All SQL" => assert!(first.contains("kind=\"sql\""), "{first}"),
                 "- Every failure text" => {
-                    assert!(first.starts_with("<!-- bddkit:begin failure"), "{first}")
+                    assert!(first.starts_with("<!-- bddkit:begin failure"), "{first}");
                 }
                 other => panic!("an example the test does not know: {other}"),
             }

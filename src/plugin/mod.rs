@@ -142,6 +142,7 @@ impl Plugins {
     /// `load` without turning a refused instance into an error, so `doctor` can
     /// report each one in its own row. A library that fails to load, or a group
     /// nothing serves, is still an error here: nothing below it can run.
+    #[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
     pub fn load_collecting(
         entries: Vec<lock::LockEntry>,
         instances: &[InstanceSpec],
@@ -358,12 +359,11 @@ impl Plugins {
         if !lib.has_probe_config() {
             return None;
         }
-        let spec = match self
+        let Some(spec) = self
             .declared
             .get(&(group.to_string(), instance.to_string()))
-        {
-            Some(spec) => spec,
-            None => return Some(Err(undeclared(group, instance))),
+        else {
+            return Some(Err(undeclared(group, instance)));
         };
         let request = match self.init_request(spec) {
             Ok(request) => request,
@@ -384,7 +384,12 @@ impl Plugins {
         step: usize,
         request: &str,
     ) -> Option<Result<(), String>> {
-        self.libs.get(lib)?.validate_step(step as u32, request)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a step index is below the manifest's step count, far under u32::MAX"
+        )]
+        let step = step as u32;
+        self.libs.get(lib)?.validate_step(step, request)
     }
 
     /// The spec a plugin declared for one of its steps; `None` for an index
@@ -502,7 +507,7 @@ impl Plugins {
     pub fn first_unknown_class(&self, name: &str) -> bool {
         self.unknown_classes
             .lock()
-            .expect("unknown classes")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.to_string())
     }
 
@@ -538,7 +543,12 @@ impl Plugins {
             None if self.is_per_worker(lib) => self.create_instance(group, instance, lib)?,
             None => self.shared_handle(group, instance, lib)?,
         };
-        match self.libs[lib].dispatch(handle, step as u32, request) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a step index is below the manifest's step count, far under u32::MAX"
+        )]
+        let step = step as u32;
+        match self.libs[lib].dispatch(handle, step, request) {
             Ok(result) => Ok((handle, result)),
             Err(error) => {
                 // A handle the caller never received is a handle nothing drops
@@ -687,14 +697,20 @@ impl Plugins {
     fn shared_handle(&self, group: &str, instance: &str, lib: usize) -> Result<u64, String> {
         let key = self.handle_key(group, instance);
         {
-            let shared = self.shared.lock().expect("plugin instances");
+            let shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(handle) = shared.get(&key) {
                 return Ok(*handle);
             }
         }
         let created = self.create_instance(group, instance, lib)?;
 
-        let mut shared = self.shared.lock().expect("plugin instances");
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Another worker got there first: drop the loser's own instance, off
         // the lock, and answer with the winner's handle either way.
         if let Some(winner) = shared.get(&key).copied() {
@@ -711,7 +727,7 @@ impl Plugins {
     fn register(&self, lib: usize, handle: u64, group: &str, instance: &str) {
         self.registry
             .lock()
-            .expect("plugin registry")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((lib, handle), (group.to_string(), instance.to_string()));
     }
 
@@ -723,7 +739,7 @@ impl Plugins {
             let named = self
                 .registry
                 .lock()
-                .expect("plugin registry")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&(*lib, *handle));
             let Some((group, instance)) = named else {
                 continue;
@@ -740,7 +756,7 @@ impl Plugins {
                             "warning: dropping {} failed: {error}",
                             label(&group, &instance)
                         ))
-                    )
+                    );
                 }
                 Err(error) => {
                     eprintln!(
@@ -749,7 +765,7 @@ impl Plugins {
                             "warning: dropping {} failed: {error:#}",
                             label(&group, &instance)
                         ))
-                    )
+                    );
                 }
             }
         }
@@ -757,7 +773,10 @@ impl Plugins {
 
     #[cfg(test)]
     pub(crate) fn registered_count(&self) -> usize {
-        self.registry.lock().expect("plugin registry").len()
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// What each named handle's plugin adds to a failure dump, in the order
@@ -801,7 +820,7 @@ impl Plugins {
             let named = self
                 .registry
                 .lock()
-                .expect("plugin registry")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&(*lib, *handle))
                 .cloned();
             let Some((group, instance)) = named else {
@@ -843,10 +862,16 @@ impl Plugins {
         // atomic take — not observable, because the worker pool has drained by
         // the time this runs and nothing else touches the registry.
         let live: Vec<(usize, u64)> = {
-            let registry = self.registry.lock().expect("plugin registry");
+            let registry = self
+                .registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             registry.keys().copied().collect()
         };
-        self.shared.lock().expect("plugin instances").clear();
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.drop_instances(&live);
     }
 
@@ -1732,7 +1757,7 @@ pub(crate) mod tests {
         // Sorted: `used` is keyed by (group, instance), so its iteration order
         // is the instance names', which is not what this test is about.
         let mut reset = state.to_reset();
-        reset.sort();
+        reset.sort_unstable();
         assert_eq!(reset, vec![(0, 1), (0, 2)]);
         assert_eq!(state.to_drop(), vec![(0, 1)]);
     }

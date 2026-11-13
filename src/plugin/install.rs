@@ -312,7 +312,12 @@ fn extract_one(
     what: &str,
     accept: fn(&str) -> Option<String>,
 ) -> Result<PathBuf> {
-    let (found, skipped) = if asset.ends_with(".zip") {
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "the host builds the asset name itself in `asset_name`, with a lower-case extension"
+    )]
+    let is_zip = asset.ends_with(".zip");
+    let (found, skipped) = if is_zip {
         zip_entries(archive, accept)
     } else {
         tar_entries(archive, accept)
@@ -926,12 +931,18 @@ mod tests {
             repo: format!("bddkit/bddkit-{name}"),
             description: String::new(),
             abi: BTreeMap::new(),
-            groups: groups.iter().map(|g| g.to_string()).collect(),
+            groups: groups
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         }
     }
 
     fn names(groups: &[&str]) -> Vec<String> {
-        groups.iter().map(|g| g.to_string()).collect()
+        groups
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     #[test]

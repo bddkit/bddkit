@@ -120,7 +120,7 @@ impl World {
             return;
         }
         self.trace
-            .collect_evidence(self.artifacts.clone(), sources, cap);
+            .collect_evidence(Arc::clone(&self.artifacts), sources, cap);
     }
 
     /// The working directory of this feature file, created on first use.

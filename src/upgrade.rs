@@ -31,6 +31,7 @@ const BINARY: &str = if cfg!(windows) {
     "bddkit"
 };
 
+#[expect(clippy::struct_excessive_bools, reason = "one bool per switch")]
 pub struct Options {
     pub check: bool,
     pub version: Option<String>,
@@ -201,6 +202,7 @@ pub async fn run(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Resul
     outcome
 }
 
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Result<i32> {
     let data = dirs::user_data(ctx.os, &ctx.env)
         .context("no user data directory (HOME / LOCALAPPDATA unset)")?;
@@ -343,7 +345,8 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     // same release share one directory: it is fetched and checked once.
     let mut fetched: Vec<(&Move, Fetched)> = Vec::new();
     let mut refused: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashMap<PathBuf, Option<Fetched>> = Default::default();
+    let mut seen: std::collections::HashMap<PathBuf, Option<Fetched>> =
+        std::collections::HashMap::default();
     for planned in &plan.moves {
         let dir = manage::version_dir(&planned.target, &planned.repo, &planned.to);
         if let Some(known) = seen.get(&dir) {
@@ -754,9 +757,9 @@ fn backup(exe: &Path, previous: &Path, locks: &[PathBuf], to: &str) -> Result<()
             .with_context(|| format!("failed to back up {}", from.display()))
     });
     if let Err(error) = prepared {
-        made.iter().for_each(|tmp| {
+        for tmp in &made {
             let _ = std::fs::remove_file(tmp);
-        });
+        }
         return Err(error);
     }
 

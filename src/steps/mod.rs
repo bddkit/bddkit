@@ -124,13 +124,13 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::ExpectWithinEvery,
         "general",
-        r#"I expect the next assertion to pass within {seconds:uint} seconds, checking every {milliseconds:uint} milliseconds"#,
+        r"I expect the next assertion to pass within {seconds:uint} seconds, checking every {milliseconds:uint} milliseconds",
         "lets the next assertion retry for this long, at this interval",
     ),
     action(
         StepId::ExpectWithin,
         "general",
-        r#"I expect the next assertion to pass within {seconds:uint} seconds"#,
+        r"I expect the next assertion to pass within {seconds:uint} seconds",
         "lets the next assertion retry for this long, at the configured interval",
     ),
     action(
@@ -272,7 +272,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
     action(
         StepId::Sleep,
         "general",
-        r#"I sleep {seconds:uint} seconds"#,
+        r"I sleep {seconds:uint} seconds",
         "pauses the scenario — a last resort, an eventual assertion is usually what you want",
     ),
     action(
@@ -352,6 +352,10 @@ pub fn group_of(id: StepId) -> &'static str {
 /// `BUILTIN_STEPS`, compiled once and index-aligned with it. The builtins are
 /// constants, so a failure here is a bug in the table, pinned by
 /// `all_builtin_expressions_compile`.
+#[expect(
+    clippy::panic,
+    reason = "compiled-in data: a malformed built-in step is a build defect every run meets first"
+)]
 pub static COMPILED_BUILTINS: std::sync::LazyLock<Vec<expression::Compiled>> =
     std::sync::LazyLock::new(|| {
         BUILTIN_STEPS
@@ -723,6 +727,7 @@ impl Registry {
         Ok(())
     }
 
+    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     fn validate_macros(&self) -> Result<(), String> {
         for (left_index, left) in self.macros.iter().enumerate() {
             for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
@@ -891,7 +896,7 @@ pub struct Args {
 
 impl Args {
     pub(crate) fn cap(&self, i: usize) -> &str {
-        self.caps.get(i).map(String::as_str).unwrap_or("")
+        self.caps.get(i).map_or("", String::as_str)
     }
 }
 
@@ -1005,6 +1010,10 @@ async fn sleep(secs: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a dispatch arm returns a `Result`, like its siblings"
+)]
 fn show_all_variables(w: &World) -> Result<(), String> {
     debug_eprintln!(w, "=== All variables ===");
     for (name, value) in w.vars.all_vars() {
@@ -1084,7 +1093,7 @@ mod tests {
             .find_with_params("I sleep <<n>> seconds")
             .unwrap()
             .expect("matches");
-        assert!(target == StepId::Sleep);
+        assert_eq!(target, StepId::Sleep);
         assert_eq!(caps, ["<<n>>"]);
         assert_eq!(params[0].name, "seconds");
         assert!(params[0].check("abc").is_err());
@@ -1236,7 +1245,7 @@ mod tests {
         // every match, and validate::check runs `find` over every selected step
         // before the first request.
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 0, r#"^I sleep (\d+) seconds$"#, true, &[])
+        reg.add_plugin_step(0, 0, r"^I sleep (\d+) seconds$", true, &[])
             .expect("valid pattern");
         let error = reg
             .find("I sleep 2 seconds")
@@ -1606,7 +1615,7 @@ mod tests {
             .expect("pattern is unambiguous")
             .expect("step is declared");
 
-        assert!(target == StepId::EncryptWithAes);
+        assert_eq!(target, StepId::EncryptWithAes);
         assert_eq!(
             caps,
             vec![

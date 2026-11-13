@@ -319,10 +319,12 @@ pub fn store_answer(path: &Path, enabled: bool) -> Result<()> {
     let mut map = match std::fs::read_to_string(path) {
         Ok(text) => match serde_yaml_ng::from_str(&text)? {
             serde_yaml_ng::Value::Mapping(map) => map,
-            serde_yaml_ng::Value::Null => Default::default(),
+            serde_yaml_ng::Value::Null => serde_yaml_ng::Mapping::default(),
             _ => bail!("{} is not a mapping", path.display()),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            serde_yaml_ng::Mapping::default()
+        }
         Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
     };
     map.insert("enabled".into(), enabled.into());

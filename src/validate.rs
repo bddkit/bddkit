@@ -37,8 +37,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
         let base_dir = lf
             .path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         for step in selected_steps(lf, filter) {
             match reg.find(&step.text) {
                 Ok(Some((StepTarget::Macro(_), _))) if step.docstring.is_some() => {
@@ -53,7 +52,7 @@ pub fn check(features: &[&LoadedFeature], reg: &Registry, filter: &TagFilter) ->
                         file: lf.path.clone(),
                         line: step.line,
                         message: "macro calls do not support a table".into(),
-                    })
+                    });
                 }
                 Ok(Some((StepTarget::Builtin { id, .. }, caps)))
                     if matches!(
@@ -275,8 +274,7 @@ fn check_include_recursive(
     let expanded = crate::include::build_scenario(scenario, with_table)?;
     let included_base = resolved
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let background = included.background_steps(rule);
 
     stack.push(node);

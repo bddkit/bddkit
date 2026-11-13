@@ -120,7 +120,7 @@ impl Report {
     /// exits 2: a config it cannot even parse is the most ordinary thing it has
     /// to report, not a reason to answer in a different currency.
     pub fn exit_code(&self) -> i32 {
-        if self.failed() == 0 { 0 } else { 1 }
+        i32::from(self.failed() != 0)
     }
 
     /// The whole report as one string, printed with a single `print!`. A
@@ -136,7 +136,7 @@ impl Report {
             };
             let label = match &c.target {
                 Some(target) => format!("{} {target}", c.stage),
-                None => c.stage.to_string(),
+                None => c.stage.clone(),
             };
             // A one-line detail sits on the label's line, which is what the
             // padding is for; anything longer — `validate::check`'s own
@@ -178,7 +178,8 @@ impl Report {
 // Every input is a flag of the command, and `doctor` is the one place they meet:
 // a struct of them would be a second spelling of `DoctorArgs`.
 #[allow(clippy::too_many_arguments)]
-pub async fn check(
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
+pub fn check(
     explicit_config: Option<&Path>,
     env: Option<&str>,
     live: bool,
@@ -508,7 +509,9 @@ fn with_empty_group_hints(
     cfg: &config::Config,
     plugins: Option<&crate::plugin::Plugins>,
 ) -> String {
-    let served = plugins.map(|p| p.group_names()).unwrap_or_default();
+    let served = plugins
+        .map(super::plugin::Plugins::group_names)
+        .unwrap_or_default();
     for (group, instances) in &cfg.resources.groups {
         if instances.is_empty() && !served.contains(group) {
             detail.push_str(&format!(
@@ -543,6 +546,8 @@ type Unmarked = std::collections::BTreeMap<String, std::collections::BTreeSet<St
 /// the failure is certain and is reported as one.
 /// Returns the `<<…>>` slots that look sensitive and carry no privacy word,
 /// each with the places it was found, for the `privacy` row.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
+#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 fn check_features(
     report: &mut Report,
     cfg: &config::Config,
@@ -563,7 +568,7 @@ fn check_features(
                 Status::Skipped,
                 "no feature file was discovered",
             );
-            return Default::default();
+            return std::collections::BTreeMap::default();
         }
     };
     let mut loaded = Vec::new();
@@ -704,6 +709,7 @@ fn check_features(
 // ponytail: callers are the loaded feature files only; a macro body that
 // includes, or a helper outside `paths`, is not scanned. Walk those too if a
 // suite needs it.
+#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 fn include_hints(
     loaded: &[std::sync::Arc<feature::LoadedFeature>],
     registry: &crate::steps::Registry,

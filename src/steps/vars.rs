@@ -5,6 +5,7 @@ use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bddkit_crate_json::{matcher, path};
+use std::fmt::Write as _;
 
 use regex::Regex;
 
@@ -53,13 +54,20 @@ pub fn encrypt_with_aes(
     let mut iv = [0; 16];
     getrandom::fill(&mut iv).map_err(|_| StepError::host("failed to read system entropy"))?;
     let ciphertext = encrypt_aes256_cbc(plaintext, &key, &iv);
-    let iv_hex = iv.iter().map(|byte| format!("{byte:02x}")).collect();
+    let iv_hex = iv.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
 
     world.vars.set(&format!("{prefix}_ciphertext"), ciphertext);
     world.vars.set(&format!("{prefix}_ivHex"), iv_hex);
     Ok(())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "step functions share one signature"
+)]
 pub fn set_variable(w: &mut World, name: &str, value: &str, global: bool) -> Result<(), StepError> {
     if global {
         if w.vars.shadowed_by_frame(name) {
