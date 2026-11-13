@@ -13,6 +13,7 @@ mod diagnostic;
 mod dirs;
 mod doctor;
 mod events;
+mod external;
 mod failure;
 mod feature;
 mod include;
@@ -38,6 +39,7 @@ mod world;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -91,6 +93,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// `bddkit <name>` runs the tool `bddkit-<name>`, found beside bddkit or on PATH
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 #[derive(Args)]
@@ -949,6 +954,7 @@ async fn main() {
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
         Command::Telemetry(args) => (telemetry_command(args), "nothing changed"),
+        Command::External(args) => (external::run(args), "nothing started"),
         Command::Version { json: true } => {
             let target = plugin::install::host_target().unwrap_or("unknown");
             println!(
