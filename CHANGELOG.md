@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/bddkit/bddkit/compare/v0.5.0...v0.5.1) - 2026-11-13
+
+### Added
+
+- bddkit <name> runs bddkit-<name> ([#171](https://github.com/bddkit/bddkit/pull/171))
+- bddkit list shows what a run would run ([#170](https://github.com/bddkit/bddkit/pull/170))
+- select scenarios by file:line and report id
+
+### Fixed
+
+- *(telemetry)* name what the question counts since the split
+- *(init)* write no empty api key for a suite without an API
+
+### Other
+
+- code-health limits for agents and plugin authors ([#200](https://github.com/bddkit/bddkit/pull/200))
+- file size budget with a ratcheting baseline ([#200](https://github.com/bddkit/bddkit/pull/200))
+- clippy policy and the cleanup it needs ([#200](https://github.com/bddkit/bddkit/pull/200))
+- *(events)* share scenario and file fields with list
+- drop what the docs still say about the built-in API and databases
+
 ## [0.5.0](https://github.com/bddkit/bddkit/compare/v0.4.1...v0.5.0) - 2026-11-11
 
 ### Added
