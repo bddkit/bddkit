@@ -1,10 +1,12 @@
 //! `bddkit list`: what a run would run, without running it (issue #170).
 //!
 //! The same config, paths, `--tag` and `file:line` arguments as `run`, and the
-//! same `select::select_features` / `selects_row` behind them, so the two cannot
-//! disagree. It stops where `run` would load plugins: no registry, no step
+//! same selection behind them (`select::select_listed` is `select_features` that
+//! also returns a file that does not parse, which `run` refuses), so the two
+//! cannot disagree about a file that does. It stops where `run` would load plugins: no registry, no step
 //! check, no socket. That is `doctor`'s job.
 
+use crate::select::{Selected, Unparsed};
 use crate::{config, events, feature, privacy, settings};
 use anyhow::Result;
 use clap::Args;
@@ -89,12 +91,16 @@ fn build(args: &ListArgs) -> Result<Value> {
     } else {
         args.paths.as_slice()
     };
-    let loaded = crate::select::select_features(paths, !args.paths.is_empty(), &filter)?
+    let loaded = crate::select::select_listed(paths, !args.paths.is_empty(), &filter)?
         .map_err(anyhow::Error::msg)?;
 
     let files: Vec<Value> = loaded
         .iter()
-        .map(|lf| {
+        .map(|selected| {
+            let lf = match selected {
+                Selected::File(lf) => lf,
+                Selected::Unparsed(broken) => return unparsed_file(broken),
+            };
             let mut scenarios = Vec::new();
             for sc in lf.scenarios() {
                 for ex in lf.expand(sc.scenario) {
@@ -121,6 +127,17 @@ fn build(args: &ListArgs) -> Result<Value> {
     }))
 }
 
+/// A file that did not parse: its path and the `error`, no `scenarios`. The
+/// message is masked like every other text, though gherkin's never quotes the
+/// file.
+fn unparsed_file(broken: &Unparsed) -> Value {
+    let mut error = json!({"message": privacy::mask_text(&broken.message)});
+    if let Some(line) = broken.line {
+        error["line"] = line.into();
+    }
+    json!({"file": feature::display_path(&broken.path), "error": error})
+}
+
 /// `--json`: one line, like the error object. Text: one line per scenario,
 /// `file:LINE  name`; the line is the example row's when it has one, so it can
 /// be pasted back into `run`.
@@ -132,6 +149,11 @@ fn print(list: &Value, json: bool) -> std::io::Result<()> {
     }
     for file in list["files"].as_array().into_iter().flatten() {
         let path = file["file"].as_str().unwrap_or_default();
+        // Stdout is what `run` takes back, so a broken file is told on stderr.
+        if let Some(error) = file.get("error") {
+            eprintln!("error: {}", error["message"].as_str().unwrap_or_default());
+            continue;
+        }
         for scenario in file["scenarios"].as_array().into_iter().flatten() {
             let line = scenario["row_line"].as_u64().or(scenario["line"].as_u64());
             writeln!(

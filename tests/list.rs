@@ -94,10 +94,11 @@ fn listed(json: &Value) -> Vec<(String, u64, Option<u64>)> {
         .iter()
         .flat_map(|f| {
             let file = f["file"].as_str().expect("file").to_string();
-            f["scenarios"]
-                .as_array()
-                .expect("scenarios")
-                .iter()
+            // A file that did not parse has an `error` and no `scenarios`.
+            f.get("scenarios")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
                 .map(move |s| {
                     (
                         file.clone(),
@@ -272,19 +273,120 @@ fn a_missing_path_is_exit_2() {
     assert!(json["error"]["message"].is_string(), "{json}");
 }
 
+/// A feature whose line 4 is not Gherkin: the parser stops there.
+const BROKEN: &str = "\
+Feature: bad
+  Scenario: s
+    When set variable \"x\" to \"1\"
+  this is not gherkin
+";
+
+fn with_broken(name: &str) -> Project {
+    let p = Project::new(name, NONE);
+    std::fs::write(p.0.join("features/bad.feature"), BROKEN).expect("write");
+    p
+}
+
+fn file_named<'a>(json: &'a Value, name: &str) -> &'a Value {
+    json["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|f| f["file"].as_str().is_some_and(|p| p.ends_with(name)))
+        .unwrap_or_else(|| panic!("{name} is not listed: {json}"))
+}
+
 #[test]
-fn a_feature_that_does_not_parse_fails_the_whole_list() {
-    let p = Project::new("unparsed", NONE);
-    std::fs::write(p.0.join("features/bad.feature"), "Not gherkin at all\n").expect("write");
-    let out = p.bddkit("list", &["--json"]);
-    assert_eq!(out.status.code(), Some(2));
-    let json: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+fn a_broken_feature_file_is_listed_with_its_error() {
+    let clean = Project::new("clean", NONE).list_json(&[]);
+    let p = with_broken("unparsed");
+    let json = p.list_json(&[]);
+    let bad = file_named(&json, "bad.feature");
+    assert_eq!(bad["error"]["line"], 4, "{bad}");
     assert!(
-        json["error"]["message"]
+        bad["error"]["message"]
             .as_str()
-            .is_some_and(|m| m.contains("bad.feature")),
-        "{json}"
+            .is_some_and(|m| m.contains("failed to parse") && m.contains("4:")),
+        "{bad}"
     );
+    assert!(bad.get("scenarios").is_none(), "no scenarios: {bad}");
+    // The other file is listed exactly as in the same suite without the broken one.
+    assert_eq!(
+        file_named(&json, "sel.feature")["scenarios"],
+        file_named(&clean, "sel.feature")["scenarios"]
+    );
+    assert_eq!(listed(&json).len(), listed(&clean).len());
+}
+
+#[test]
+fn a_broken_file_is_listed_whatever_the_tags_and_lines() {
+    // Its tags are unknown, so a tag filter cannot drop it; a line argument
+    // cannot select in it either.
+    let p = with_broken("unparsed-tags");
+    let json = p.list_json(&["--tag", "@fast"]);
+    assert_eq!(file_named(&json, "bad.feature")["error"]["line"], 4);
+    assert_eq!(listed(&json).len(), 2, "only the @fast rows of sel.feature");
+    let bad = format!("{}:2", p.0.join("features/bad.feature").display());
+    let json = p.list_json(&[&bad]);
+    assert_eq!(json["files"].as_array().expect("files").len(), 1);
+    assert_eq!(file_named(&json, "bad.feature")["error"]["line"], 4);
+}
+
+#[test]
+fn the_human_list_names_the_broken_file() {
+    let p = with_broken("unparsed-human");
+    let out = p.bddkit("list", &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // stdout stays what `run` takes back: the good file's lines only.
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("sel.feature:") && !text.contains("bad.feature"),
+        "{text}"
+    );
+    assert!(text.lines().all(|l| l.contains(".feature:")), "{text}");
+    // The error is on stderr, with the file and the line.
+    let err = stderr(&out);
+    assert!(err.contains("bad.feature") && err.contains("4:"), "{err}");
+}
+
+#[test]
+fn run_over_the_same_suite_is_still_exit_2() {
+    let p = with_broken("unparsed-run");
+    let out = p.bddkit("run", &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("failed to parse") && err.contains("bad.feature"),
+        "{err}"
+    );
+    assert!(err.contains("run not started"), "{err}");
+}
+
+#[test]
+fn a_file_that_is_not_utf8_is_listed_with_an_error_and_no_line() {
+    let p = Project::new("not-utf8", NONE);
+    std::fs::write(p.0.join("features/bad.feature"), [0xff, 0xfe, 0xfd]).expect("write");
+    let json = p.list_json(&[]);
+    let bad = file_named(&json, "bad.feature");
+    assert!(bad["error"].get("line").is_none(), "{bad}");
+    assert!(
+        bad["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("failed to read")),
+        "{bad}"
+    );
+    assert!(bad.get("scenarios").is_none(), "{bad}");
+    assert!(listed(&json).len() > 1, "the other file is listed: {json}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_that_cannot_be_read_at_all_is_still_exit_2() {
+    let p = Project::new("unreadable", NONE);
+    std::os::unix::fs::symlink("no/such/target", p.0.join("features/bad.feature"))
+        .expect("symlink");
+    let out = p.bddkit("list", &["--json"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
 }
 
 #[test]

@@ -1335,11 +1335,11 @@ Feature: F
         assert_eq!(said(rule.scenarios[0].position.line), Some("rs desc"));
     }
 
-    /// Every `.feature` in the repository's own suites, and `DESCRIBED`, as
-    /// `(name, source)` — what the agreement tests check the scanners against.
+    /// Every `.feature` in the suites, not in `selftest/out` (generated, some of it
+    /// broken on purpose), and `DESCRIBED`, as `(name, source)` — what the tests check.
     fn fixture_sources() -> Vec<(String, String)> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let dirs: Vec<PathBuf> = ["tests", "selftest"].iter().map(|d| root.join(d)).collect();
+        let dirs = ["tests", "selftest/features", "selftest/fixtures"].map(|d| root.join(d));
         let files = discover(&dirs).unwrap();
         assert!(files.len() > 20, "found only {files:?}");
         let mut sources: Vec<_> = files

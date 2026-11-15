@@ -17,6 +17,79 @@ pub(crate) fn select_features(
     split: bool,
     filter: &feature::TagFilter,
 ) -> Result<Result<Vec<Arc<feature::LoadedFeature>>, String>> {
+    Ok(select(paths, split, filter, false)?.map(|all| {
+        all.into_iter()
+            .filter_map(|selected| match selected {
+                Selected::File(file) => Some(file),
+                Selected::Unparsed(_) => None,
+            })
+            .collect()
+    }))
+}
+
+/// A file that is broken in itself (it does not parse, or is not UTF-8), with
+/// the line the parser stopped at when it says one.
+pub(crate) struct Unparsed {
+    pub path: PathBuf,
+    pub message: String,
+    pub line: Option<usize>,
+}
+
+/// What [`select_listed`] found, in path order.
+pub(crate) enum Selected {
+    File(Arc<feature::LoadedFeature>),
+    Unparsed(Unparsed),
+}
+
+/// [`select_features`] for `list`, which shows a file that does not parse
+/// instead of stopping at it: `run` must not start over one, a tree of the rest
+/// can still be drawn. Its tags are unknown, so a tag filter cannot drop it, and
+/// a line argument cannot narrow it. A path that does not exist, or a file that
+/// cannot be read at all, is still the outer `Err`.
+pub(crate) fn select_listed(
+    paths: &[PathBuf],
+    split: bool,
+    filter: &feature::TagFilter,
+) -> Result<Result<Vec<Selected>, String>> {
+    select(paths, split, filter, true)
+}
+
+/// `error` as a file that is broken in itself, when it is one: its text does not
+/// parse, or is not UTF-8. A path that does not exist and a file that cannot be
+/// read at all are not: they stay errors. `message` is the whole chain, the
+/// words `run` says for the same file.
+fn unparsed(path: &std::path::Path, error: &anyhow::Error) -> Option<Unparsed> {
+    let line = if let Some(parse) = error.downcast_ref::<gherkin::ParseError>() {
+        // gherkin 0.16 keeps the position private; its `Display` starts with
+        // "Error at LINE:COL: ", which `a_broken_feature_file_is_listed_with_its_error`
+        // pins. That is where the parser stopped: it can be after the mistake, or
+        // one past the last line. No line when the format ever changes.
+        parse
+            .to_string()
+            .strip_prefix("Error at ")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(line, _)| line.parse().ok())
+    } else if error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|read| read.kind() == std::io::ErrorKind::InvalidData)
+    {
+        None
+    } else {
+        return None;
+    };
+    Some(Unparsed {
+        path: path.to_path_buf(),
+        message: format!("{error:#}"),
+        line,
+    })
+}
+
+fn select(
+    paths: &[PathBuf],
+    split: bool,
+    filter: &feature::TagFilter,
+    lenient: bool,
+) -> Result<Result<Vec<Selected>, String>> {
     struct Target {
         path: PathBuf,
         sels: Vec<feature::LineSel>,
@@ -59,7 +132,17 @@ pub(crate) fn select_features(
     targets.sort_by(|a, b| a.path.cmp(&b.path));
     let mut loaded = Vec::new();
     for target in targets {
-        let mut lf = feature::load(&target.path)?;
+        let mut lf = match feature::load(&target.path) {
+            Ok(lf) => lf,
+            Err(error) if lenient => match unparsed(&target.path, &error) {
+                Some(broken) => {
+                    loaded.push(Selected::Unparsed(broken));
+                    continue;
+                }
+                None => return Err(error),
+            },
+            Err(error) => return Err(error),
+        };
         if !target.sels.is_empty() {
             if let Err(message) = lf.select_lines(&target.sels) {
                 return Ok(Err(message));
@@ -69,7 +152,7 @@ pub(crate) fn select_features(
             }
         }
         if lf.has_selected_scenario(filter) {
-            loaded.push(Arc::new(lf));
+            loaded.push(Selected::File(Arc::new(lf)));
         }
     }
     Ok(Ok(loaded))
