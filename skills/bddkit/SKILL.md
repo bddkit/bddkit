@@ -39,6 +39,10 @@ resources:
 
 `bddkit run --events run.ndjson` then `bddkit report run.ndjson -o report.md`. `grep -n '^<!-- bddkit:' report.md` lists every part; the `index` gives each scenario's line range for `sed -n`.
 
+## MCP tools
+
+When MCP tools of a server named `bddkit` are available (`list_suites`, `list_scenarios`, `run`, `get_run`, `get_report`, `stop_run`: the local UI's MCP server, `bddkit ui mcp`), prefer them to the CLI for running suites and reading results: call `list_suites` first, `run` returns a `run_id` at once, `get_run` with `wait_seconds` waits for the end and lists the failed scenarios, `get_report` gives the report. The CLI stays the way for everything else: `bddkit doctor`, `bddkit steps list`, and any run when those tools are absent or `run` is not offered (read mode).
+
 ## More
 
 | Task | Read |
