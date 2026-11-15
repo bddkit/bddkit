@@ -24,3 +24,17 @@ Feature: bddkit list shows what a run would run and keeps the masking
     And the command output contains "error"
     And the command output contains "no/such/dir"
     And the command error output contains "nothing listed"
+
+  # The broken file is written here, not kept under selftest/: the unit tests
+  # parse every .feature in the repository and it must not parse.
+  Scenario: a feature file that does not parse is listed with its error, and a run over it is exit 2
+    When I run the command "rm -rf selftest/out/list-broken && mkdir -p selftest/out/list-broken/features && printf 'Feature: fine\n  Scenario: still listed\n    When I sleep 0 seconds\n' > selftest/out/list-broken/features/ok.feature && printf 'Feature: bad\n  Scenario: s\n    When I sleep 0 seconds\n  this is not gherkin\n' > selftest/out/list-broken/features/bad.feature && printf 'paths: [selftest/out/list-broken/features]\nresources: {}\n' > selftest/out/list-broken/bddkit.yaml"
+    Then the command exit code is 0
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} list --json --config selftest/out/list-broken/bddkit.yaml"
+    Then the command exit code is 0
+    And the command output contains "still listed"
+    And the command output contains "bad.feature"
+    And the command output contains "Error at 4:"
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/out/list-broken/bddkit.yaml"
+    Then the command exit code is 2
+    And the command error output contains "failed to parse"
