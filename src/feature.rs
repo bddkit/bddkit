@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use gherkin::{Feature, GherkinEnv};
+use gherkin::Feature;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+pub(crate) mod source;
 
 #[derive(Debug, Clone)]
 pub struct ExpandedStep {
@@ -441,7 +443,8 @@ impl LoadedFeature {
 
     /// Parses `text` the way `load` does for the file at `path`.
     pub fn from_text(path: PathBuf, text: &str) -> Result<Self> {
-        let mut feature = Feature::parse(text, GherkinEnv::default())
+        let text = source::strip_bom(text);
+        let mut feature = source::parse(text)
             .with_context(|| format!("failed to parse {}", display_path(&path)))?;
         // Tags above `Feature:` apply to all of its scenarios. gherkin stores them
         // separately, but a tester who writes @billing above the feature expects the
@@ -814,27 +817,10 @@ pub(crate) fn description_of<'a>(lines: impl Iterator<Item = &'a str>) -> Option
 /// no rule of its own: gherkin positions every table, and a `|` line elsewhere is
 /// description text.
 fn scan_descriptions(text: &str, feature: &Feature) -> BTreeMap<usize, String> {
-    let walk = Walk::new(feature);
     let lines: Vec<&str> = text.lines().collect();
-    let marks: BTreeSet<usize> = walk
-        .elements
-        .iter()
-        .map(|e| e.line)
-        .chain(walk.below.iter().copied())
-        .collect();
-    walk.elements
-        .iter()
-        .map(|e| e.line)
-        .filter_map(|line| {
-            // Lines are 1-based, so `lines[line..]` starts right after the keyword.
-            let end = marks
-                .range(line + 1..)
-                .next()
-                .map_or(lines.len(), |next| next - 1);
-            let body = lines.get(line..end)?.iter().copied();
-            let body = body.take_while(|l| !l.trim_start().starts_with('@'));
-            Some((line, description_of(body)?))
-        })
+    source::description_spans(&lines, feature)
+        .into_iter()
+        .filter_map(|(line, span)| Some((line, description_of(lines[span].iter().copied())?)))
         .collect()
 }
 
@@ -877,7 +863,7 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// Parses Gherkin from a string. Used by tests; `parse_path` reads files.
 #[cfg(test)]
 pub fn parse_str(src: &str) -> Result<Feature> {
-    Feature::parse(src, GherkinEnv::default()).context("failed to parse Gherkin")
+    source::parse(src).context("failed to parse Gherkin")
 }
 
 #[cfg(test)]
@@ -1452,7 +1438,7 @@ Feature: F
             let lf = LoadedFeature::from_text(PathBuf::from(name), text).unwrap();
             // `from_text` merges feature and rule tags into each scenario; the
             // parser's own, unmerged view is the reference.
-            let raw = Feature::parse(text, GherkinEnv::default()).unwrap();
+            let raw = Feature::parse(text, gherkin::GherkinEnv::default()).unwrap();
             for Element {
                 kind, line, tags, ..
             } in Walk::new(&raw).elements
@@ -1532,7 +1518,7 @@ Feature: F
         std::fs::remove_file(&path).ok();
         assert!(err.contains("failed to parse"), "{err}");
         assert!(err.contains("bddkit_syntax_error.feature"), "{err}");
-        assert!(err.contains("Error at 5:1"), "{err}");
+        assert!(err.contains("Error at 4:1: not valid Gherkin"), "{err}");
     }
 
     #[test]

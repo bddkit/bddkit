@@ -34,7 +34,16 @@ Feature: bddkit list shows what a run would run and keeps the masking
     Then the command exit code is 0
     And the command output contains "still listed"
     And the command output contains "bad.feature"
-    And the command output contains "Error at 4:"
+    And the command output contains "Error at 4:20: unknown keyword"
     When I run the command "${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/out/list-broken/bddkit.yaml"
     Then the command exit code is 2
     And the command error output contains "failed to parse"
+
+  # Written here for the same reason: a typo'd keyword must not parse, a BOM must.
+  Scenario: a typo'd keyword is listed with its error and a BOM file is listed clean
+    When I run the command "rm -rf selftest/out/list-typo && mkdir -p selftest/out/list-typo/features && printf '\357\273\277Feature: bom\n  Scenario: bom listed\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/bom.feature && printf 'Feature: typo\n  Scenaro: s\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/typo.feature && printf 'paths: [selftest/out/list-typo/features]\nresources: {}\n' > selftest/out/list-typo/bddkit.yaml"
+    Then the command exit code is 0
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} list --json --config selftest/out/list-typo/bddkit.yaml"
+    Then the command exit code is 0
+    And the command output contains "bom listed"
+    And the command output contains "`Scenaro:` is not a keyword"

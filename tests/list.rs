@@ -319,6 +319,54 @@ fn a_broken_feature_file_is_listed_with_its_error() {
 }
 
 #[test]
+fn a_misspelled_keyword_is_listed_as_an_error_not_dropped() {
+    let p = Project::new("typo", NONE);
+    std::fs::write(
+        p.0.join("features/typo.feature"),
+        "Feature: typo\n  Scenaro: s\n    When I sleep 0 seconds\n",
+    )
+    .expect("write");
+    let json = p.list_json(&[]);
+    let typo = file_named(&json, "typo.feature");
+    assert_eq!(typo["error"]["line"], 2, "{typo}");
+    assert!(
+        typo["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("`Scenaro:` is not a keyword")),
+        "{typo}"
+    );
+}
+
+#[test]
+fn a_bom_does_not_break_a_file() {
+    let p = Project::new("bom", NONE);
+    std::fs::write(
+        p.0.join("features/bom.feature"),
+        "\u{feff}Feature: bom\n  Scenario: s\n    When I sleep 0 seconds\n",
+    )
+    .expect("write");
+    let json = p.list_json(&[]);
+    assert!(file_named(&json, "bom.feature").get("error").is_none());
+}
+
+#[test]
+fn an_error_line_stays_in_the_file() {
+    // The last line is the bad one: the parser stops one past it.
+    let p = Project::new("clamp", NONE);
+    std::fs::write(
+        p.0.join("features/clamp.feature"),
+        "Feature: f\n  Scenario: s\n    Given foo\n  Bogus line\n",
+    )
+    .expect("write");
+    let json = p.list_json(&[]);
+    assert_eq!(
+        file_named(&json, "clamp.feature")["error"]["line"],
+        4,
+        "{json}"
+    );
+}
+
+#[test]
 fn a_broken_file_is_listed_whatever_the_tags_and_lines() {
     // Its tags are unknown, so a tag filter cannot drop it; a line argument
     // cannot select in it either.

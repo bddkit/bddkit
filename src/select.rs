@@ -59,16 +59,8 @@ pub(crate) fn select_listed(
 /// read at all are not: they stay errors. `message` is the whole chain, the
 /// words `run` says for the same file.
 fn unparsed(path: &std::path::Path, error: &anyhow::Error) -> Option<Unparsed> {
-    let line = if let Some(parse) = error.downcast_ref::<gherkin::ParseError>() {
-        // gherkin 0.16 keeps the position private; its `Display` starts with
-        // "Error at LINE:COL: ", which `a_broken_feature_file_is_listed_with_its_error`
-        // pins. That is where the parser stopped: it can be after the mistake, or
-        // one past the last line. No line when the format ever changes.
-        parse
-            .to_string()
-            .strip_prefix("Error at ")
-            .and_then(|rest| rest.split_once(':'))
-            .and_then(|(line, _)| line.parse().ok())
+    let line = if let Some(syntax) = error.downcast_ref::<crate::feature::source::SyntaxError>() {
+        Some(syntax.line)
     } else if error
         .downcast_ref::<std::io::Error>()
         .is_some_and(|read| read.kind() == std::io::ErrorKind::InvalidData)
