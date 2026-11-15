@@ -1,7 +1,7 @@
 //! `bddkit list`: what a run would run, without running it (issue #170).
 //!
 //! The same config, paths, `--tag` and `file:line` arguments as `run`, and the
-//! same `select_features` / `selects_row` behind them, so the two cannot
+//! same `select::select_features` / `selects_row` behind them, so the two cannot
 //! disagree. It stops where `run` would load plugins: no registry, no step
 //! check, no socket. That is `doctor`'s job.
 
@@ -89,7 +89,7 @@ fn build(args: &ListArgs) -> Result<Value> {
     } else {
         args.paths.as_slice()
     };
-    let loaded = crate::select_features(paths, !args.paths.is_empty(), &filter)?
+    let loaded = crate::select::select_features(paths, !args.paths.is_empty(), &filter)?
         .map_err(anyhow::Error::msg)?;
 
     let files: Vec<Value> = loaded
