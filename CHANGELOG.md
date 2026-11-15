@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/bddkit/bddkit/compare/v0.5.1...v0.5.2) - 2026-11-15
+
+### Added
+
+- list shows a feature file that does not parse instead of failing ([#263](https://github.com/bddkit/bddkit/pull/263))
+
+### Fixed
+
+- feature parse errors say where and the same thing, a BOM parses, a typo'd keyword is an error ([#267](https://github.com/bddkit/bddkit/pull/267))
+
+### Other
+
+- move select_features into its own module ([#263](https://github.com/bddkit/bddkit/pull/263))
+
 ## [0.5.1](https://github.com/bddkit/bddkit/compare/v0.5.0...v0.5.1) - 2026-11-13
 
 ### Added
