@@ -600,7 +600,7 @@ fn a_plugin_free_config_tolerates_an_unrelated_default_key() {
     )
     .expect("write config");
 
-    let out = run(&dir);
+    let out = run_with(&dir, &["--bddkit-dir", ".bddkit"], &[]); // not the user layer
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
