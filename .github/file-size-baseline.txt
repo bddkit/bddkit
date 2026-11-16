@@ -9,7 +9,7 @@ src/plugin/mod.rs 1897
 src/privacy.rs 1419
 src/report/markdown.rs 1320
 src/resource.rs 1306
-src/runner.rs 2403
+src/runner.rs 2315
 src/steps/mod.rs 1757
 tests/acceptance.rs 6545
 tests/plugin.rs 3828
