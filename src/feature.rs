@@ -601,49 +601,48 @@ impl LoadedFeature {
         Ok(())
     }
 
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     fn resolve(&self, sel: LineSel) -> Result<Vec<(usize, Option<usize>)>, String> {
-        let file = display_path(&self.path);
-        let key = |ex: &ExpandedScenario| (ex.line, ex.example);
         match sel {
             LineSel::Row(line, row) => self
                 .scenarios()
                 .filter(|r| r.scenario.position.line == line)
                 .flat_map(|r| self.expand(r.scenario))
                 .find(|ex| ex.example == Some(row))
-                .map(|ex| vec![key(&ex)])
+                .map(|ex| vec![(ex.line, ex.example)])
                 .ok_or_else(|| {
-                    format!("{file}: the scenario on line {line} has no example #{row}")
+                    format!(
+                        "{}: the scenario on line {line} has no example #{row}",
+                        display_path(&self.path)
+                    )
                 }),
-            LineSel::Line(line) => {
-                let mut keys = Vec::new();
-                let mut known = false;
-                for r in self.scenarios() {
-                    let sc = r.scenario;
-                    let in_rule = r.rule.is_some_and(|rule| rule.position.line == line);
-                    known |= sc.position.line == line
-                        || sc.examples.iter().any(|b| b.position.line == line);
-                    for ex in self.expand(sc) {
-                        if in_rule
-                            || ex.line == line
-                            || ex.examples_line == Some(line)
-                            || ex.row_line == Some(line)
-                        {
-                            keys.push(key(&ex));
-                        }
-                    }
+            LineSel::Line(line) => self.resolve_line(line),
+        }
+    }
+
+    /// Every expanded scenario a bare line selects: scenario, `Examples`, row or rule.
+    fn resolve_line(&self, line: usize) -> Result<Vec<(usize, Option<usize>)>, String> {
+        let mut keys = Vec::new();
+        let mut known = false;
+        for r in self.scenarios() {
+            let sc = r.scenario;
+            let in_rule = r.rule.is_some_and(|rule| rule.position.line == line);
+            known |=
+                sc.position.line == line || sc.examples.iter().any(|b| b.position.line == line);
+            for ex in self.expand(sc) {
+                if in_rule
+                    || ex.line == line
+                    || ex.examples_line == Some(line)
+                    || ex.row_line == Some(line)
+                {
+                    keys.push((ex.line, ex.example));
                 }
-                known |= self
-                    .feature
-                    .rules
-                    .iter()
-                    .any(|rule| rule.position.line == line);
-                if keys.is_empty() && !known {
-                    return Err(self.not_a_selection(line));
-                }
-                Ok(keys)
             }
         }
+        known |= self.feature.rules.iter().any(|r| r.position.line == line);
+        if keys.is_empty() && !known {
+            return Err(self.not_a_selection(line));
+        }
+        Ok(keys)
     }
 
     /// The refusal for a line that is no scenario, `Examples` block, example
