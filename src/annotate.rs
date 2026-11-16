@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use crate::feature::{
-    ExpandedScenario, ExpandedStep, LoadedFeature, ScenarioRef, Walk, substitute,
+    Element, ExpandedScenario, ExpandedStep, LoadedFeature, ScenarioRef, Walk, substitute,
 };
 use crate::steps::Registry;
 
@@ -55,84 +55,17 @@ impl Source {
         self.comments.get(&line).map(String::as_str)
     }
 
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-    #[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
     pub(crate) fn scan(text: &str, feature: &gherkin::Feature) -> Self {
         let walk = Walk::new(feature);
-        let lines: Vec<_> = text.lines().collect();
-        let ends_with_newline = text.ends_with('\n');
-        // The parser accepts a directive only before the feature. All later
-        // `# language:` lines are ordinary comments, including in docstrings.
-        let language_line = lines
-            .iter()
-            .take(feature.position.line - 1)
-            .position(|line| language(line).is_some());
-        let language = language_line
-            .and_then(|i| language(lines[i]))
-            .unwrap_or("en");
-        let mut keywords: Vec<_> = KEYWORDS
-            .get(language)
-            .into_iter()
-            .flat_map(|k| k.values().flatten())
-            .map(String::as_str)
-            .collect();
-        keywords.sort_by_key(|k| std::cmp::Reverse(k.len()));
-        keywords.dedup();
-        let marks: BTreeSet<_> = walk.below.iter().copied().collect();
-        // A keyword-prefixed comment in a block that starts right under a step
-        // or table row is that scenario's disabled step, not the next element's
-        // comment.
-        let ends_a_step = |mut at: usize| {
-            while at > 0 && comment_text(lines[at - 1]).is_some() {
-                at -= 1;
-            }
-            at > 0 && (marks.contains(&at) || lines[at - 1].trim_start().starts_with('|'))
-        };
+        let lines = Lines::new(text, feature, &walk);
         let mut source = Self::default();
         let mut starts = BTreeMap::new();
         for element in &walk.elements {
-            let mut start = element.line - 1;
-            let mut comment = Vec::new();
-            while start > 0 {
-                let previous = lines[start - 1].trim_start();
-                if Some(start - 1) == language_line || previous.starts_with('@') {
-                    start -= 1;
-                } else if let Some(text) = comment_text(previous) {
-                    if keywords.iter().any(|k| text.trim_start().starts_with(*k))
-                        && ends_a_step(start - 1)
-                    {
-                        break;
-                    }
-                    comment.push(text);
-                    start -= 1;
-                } else {
-                    break;
-                }
-            }
-            comment.reverse();
-            let comment = trim_block(&comment);
+            let (start, comment) = lines.block_above(element.line);
             if !comment.is_empty() {
                 source.comments.insert(element.line, comment);
             }
             starts.insert(element.line, start);
-        }
-        let mut table_lines = BTreeSet::new();
-        for table in &walk.tables {
-            // The parser's span runs one byte past a file that ends on a row
-            // with no newline.
-            let body = &text[table.span.start..table.span.end.min(text.len())];
-            if let Some(last) = body
-                .lines()
-                .enumerate()
-                .filter(|(_, line)| line.trim_start().starts_with('|'))
-                .map(|(index, _)| index)
-                .last()
-            {
-                // The parser's span can include trailing comments. Only the
-                // first through last row belong to the table; a note after
-                // its last row may still explain the following step.
-                table_lines.extend(table.position.line..=table.position.line + last);
-            }
         }
         for (index, element) in walk.elements.iter().enumerate() {
             if !matches!(
@@ -144,90 +77,211 @@ impl Source {
             let end = walk
                 .elements
                 .get(index + 1)
-                .map_or(lines.len(), |next| starts[&next.line]);
-            let mut fence: Option<&str> = None;
-            let mut seen_step = false;
-            let mut region = Vec::new();
-            for (index, text) in lines.iter().enumerate().take(end).skip(element.line - 1) {
-                let trimmed = text.trim_start();
-                let delimiter = ["\"\"\"", "```"]
-                    .into_iter()
-                    .find(|f| trimmed.starts_with(f));
-                let kind = if index + 1 == element.line {
-                    Kind::Keyword
-                } else if marks.contains(&(index + 1)) && !trimmed.starts_with('|') {
-                    // Parser-recognized steps are authoritative. An annotation
-                    // scan must never suppress execution, even after a fence.
-                    fence = None;
-                    seen_step = true;
-                    Kind::Step
-                } else if table_lines.contains(&(index + 1)) {
-                    Kind::Table
-                } else if let Some(open) = fence {
-                    if closes_docstring(trimmed, open, index + 1 < lines.len() || ends_with_newline)
-                    {
-                        fence = None;
-                    }
-                    Kind::Docstring
-                } else if let Some(delimiter) = delimiter.filter(|_| seen_step) {
-                    // gherkin accepts inline docstrings and closes at the first
-                    // matching delimiter, including before a trailing comment.
-                    fence = (!closes_docstring(
-                        &trimmed[delimiter.len()..],
-                        delimiter,
-                        index + 1 < lines.len() || ends_with_newline,
-                    ))
-                    .then_some(delimiter);
-                    Kind::Docstring
-                } else if trimmed.is_empty() {
-                    Kind::Blank
-                } else if trimmed.starts_with('#') {
-                    Kind::Comment
-                } else if trimmed.starts_with('@') {
-                    Kind::Tag
-                } else if (seen_step || element.kind == "examples") && trimmed.starts_with('|') {
-                    Kind::Table
-                } else {
-                    Kind::Description
-                };
-                let candidate = (kind == Kind::Comment)
-                    .then(|| {
-                        let text = comment_text(trimmed)?.trim_start();
-                        keywords
-                            .iter()
-                            .find(|k| text.starts_with(**k))
-                            .map(|k| DisabledCandidate {
-                                keyword: (*k).to_string(),
-                                text: text[k.len()..].trim().to_string(),
-                            })
-                    })
-                    .flatten();
-                region.push(SourceLine {
-                    line: index + 1,
-                    kind,
-                    text: (*text).to_string(),
-                    candidate,
-                });
-            }
-            // Comments interspersed in a description are not step annotations.
-            // An Examples block contributes only annotations after its table;
-            // those closing notes repeat only for rows from that Examples block.
-            let start = region
-                .iter()
-                .rposition(|line| {
-                    line.kind
-                        == if element.kind == "examples" {
-                            Kind::Table
-                        } else {
-                            Kind::Description
-                        }
-                })
-                .map_or(0, |i| i + 1);
-            let region = region.split_off(start);
-            source.regions.insert(element.line, region);
+                .map_or(lines.all.len(), |next| starts[&next.line]);
+            source
+                .regions
+                .insert(element.line, lines.region(element, end));
         }
         source
     }
+}
+
+/// One file's lines with what classifying them needs.
+struct Lines<'a> {
+    all: Vec<&'a str>,
+    ends_with_newline: bool,
+    /// Lines of parser-recognized steps and `Examples` tables.
+    marks: BTreeSet<usize>,
+    language_line: Option<usize>,
+    /// Longest first, for the file's language.
+    keywords: Vec<&'static str>,
+    rows: BTreeSet<usize>,
+}
+
+/// Where a scan stands inside one element's body.
+#[derive(Default)]
+struct Block {
+    fence: Option<&'static str>,
+    seen_step: bool,
+}
+
+impl<'a> Lines<'a> {
+    fn new(text: &'a str, feature: &gherkin::Feature, walk: &Walk) -> Self {
+        let all: Vec<_> = text.lines().collect();
+        // The parser accepts a directive only before the feature. All later
+        // `# language:` lines are ordinary comments, including in docstrings.
+        let language_line = all
+            .iter()
+            .take(feature.position.line - 1)
+            .position(|line| language(line).is_some());
+        let language = language_line.and_then(|i| language(all[i])).unwrap_or("en");
+        let mut keywords: Vec<_> = KEYWORDS
+            .get(language)
+            .into_iter()
+            .flat_map(|k| k.values().flatten())
+            .map(String::as_str)
+            .collect();
+        keywords.sort_by_key(|k| std::cmp::Reverse(k.len()));
+        keywords.dedup();
+        Self {
+            all,
+            ends_with_newline: text.ends_with('\n'),
+            marks: walk.below.iter().copied().collect(),
+            language_line,
+            keywords,
+            rows: table_rows(text, walk),
+        }
+    }
+
+    fn has_newline_after(&self, index: usize) -> bool {
+        index + 1 < self.all.len() || self.ends_with_newline
+    }
+
+    /// A keyword-prefixed comment in a block that starts right under a step
+    /// or table row is that scenario's disabled step, not the next element's
+    /// comment.
+    fn ends_a_step(&self, mut at: usize) -> bool {
+        while at > 0 && comment_text(self.all[at - 1]).is_some() {
+            at -= 1;
+        }
+        at > 0 && (self.marks.contains(&at) || self.all[at - 1].trim_start().starts_with('|'))
+    }
+
+    /// Where the tags and comments above an element begin, and the comment.
+    fn block_above(&self, element_line: usize) -> (usize, String) {
+        let mut start = element_line - 1;
+        let mut comment = Vec::new();
+        while start > 0 {
+            let previous = self.all[start - 1].trim_start();
+            if Some(start - 1) == self.language_line || previous.starts_with('@') {
+                start -= 1;
+            } else if let Some(text) = comment_text(previous) {
+                if self.starts_with_keyword(text) && self.ends_a_step(start - 1) {
+                    break;
+                }
+                comment.push(text);
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        comment.reverse();
+        (start, trim_block(&comment))
+    }
+
+    fn starts_with_keyword(&self, text: &str) -> bool {
+        self.keywords
+            .iter()
+            .any(|k| text.trim_start().starts_with(*k))
+    }
+
+    /// The annotation region of one element: its lines up to `end`, cut to
+    /// what follows the body.
+    fn region(&self, element: &Element, end: usize) -> Vec<SourceLine> {
+        let mut block = Block::default();
+        let mut region = Vec::new();
+        for (index, text) in self.all.iter().enumerate().take(end).skip(element.line - 1) {
+            let trimmed = text.trim_start();
+            let kind = self.classify(element, index, trimmed, &mut block);
+            region.push(SourceLine {
+                line: index + 1,
+                kind,
+                text: (*text).to_string(),
+                candidate: (kind == Kind::Comment)
+                    .then(|| self.disabled_candidate(trimmed))
+                    .flatten(),
+            });
+        }
+        // Comments interspersed in a description are not step annotations.
+        // An Examples block contributes only annotations after its table;
+        // those closing notes repeat only for rows from that Examples block.
+        let body = if element.kind == "examples" {
+            Kind::Table
+        } else {
+            Kind::Description
+        };
+        let start = region
+            .iter()
+            .rposition(|line| line.kind == body)
+            .map_or(0, |i| i + 1);
+        region.split_off(start)
+    }
+
+    fn classify(&self, element: &Element, index: usize, trimmed: &str, block: &mut Block) -> Kind {
+        let delimiter = ["\"\"\"", "```"]
+            .into_iter()
+            .find(|f| trimmed.starts_with(f));
+        if index + 1 == element.line {
+            Kind::Keyword
+        } else if self.marks.contains(&(index + 1)) && !trimmed.starts_with('|') {
+            // Parser-recognized steps are authoritative. An annotation
+            // scan must never suppress execution, even after a fence.
+            block.fence = None;
+            block.seen_step = true;
+            Kind::Step
+        } else if self.rows.contains(&(index + 1)) {
+            Kind::Table
+        } else if let Some(open) = block.fence {
+            if closes_docstring(trimmed, open, self.has_newline_after(index)) {
+                block.fence = None;
+            }
+            Kind::Docstring
+        } else if let Some(delimiter) = delimiter.filter(|_| block.seen_step) {
+            // gherkin accepts inline docstrings and closes at the first
+            // matching delimiter, including before a trailing comment.
+            block.fence = (!closes_docstring(
+                &trimmed[delimiter.len()..],
+                delimiter,
+                self.has_newline_after(index),
+            ))
+            .then_some(delimiter);
+            Kind::Docstring
+        } else if trimmed.is_empty() {
+            Kind::Blank
+        } else if trimmed.starts_with('#') {
+            Kind::Comment
+        } else if trimmed.starts_with('@') {
+            Kind::Tag
+        } else if (block.seen_step || element.kind == "examples") && trimmed.starts_with('|') {
+            Kind::Table
+        } else {
+            Kind::Description
+        }
+    }
+
+    fn disabled_candidate(&self, trimmed: &str) -> Option<DisabledCandidate> {
+        let text = comment_text(trimmed)?.trim_start();
+        self.keywords
+            .iter()
+            .find(|k| text.starts_with(**k))
+            .map(|k| DisabledCandidate {
+                keyword: (*k).to_string(),
+                text: text[k.len()..].trim().to_string(),
+            })
+    }
+}
+
+/// The lines of every table's rows, first through last.
+fn table_rows(text: &str, walk: &Walk) -> BTreeSet<usize> {
+    let mut table_lines = BTreeSet::new();
+    for table in &walk.tables {
+        // The parser's span runs one byte past a file that ends on a row
+        // with no newline.
+        let body = &text[table.span.start..table.span.end.min(text.len())];
+        if let Some(last) = body
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.trim_start().starts_with('|'))
+            .map(|(index, _)| index)
+            .last()
+        {
+            // The parser's span can include trailing comments. Only the
+            // first through last row belong to the table; a note after
+            // its last row may still explain the following step.
+            table_lines.extend(table.position.line..=table.position.line + last);
+        }
+    }
+    table_lines
 }
 
 // In gherkin's docstring rule, `nl()` consumes a # comment and its newline
