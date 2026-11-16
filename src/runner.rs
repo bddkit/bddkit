@@ -7,6 +7,8 @@ use crate::polling::{AttemptError, Polling};
 use crate::report::render_file;
 use crate::report::{FileResult, ReportTag, ScenarioResult, StepResult, StepStatus};
 use crate::steps::{Args, OptionsSource, Registry, StepId, StepKind, StepTarget, dispatch};
+mod plugin_step;
+
 use crate::unique::Generator;
 use crate::vars::{VarStack, interpolate, interpolate_with};
 use crate::world::World;
@@ -244,7 +246,6 @@ fn execute_step<'a>(
     })
 }
 
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_step(
     world: &mut World,
     reg: &Registry,
@@ -265,112 +266,13 @@ async fn run_step(
             let Some(args) = args else {
                 unreachable!("resolve interpolates every step but an include");
             };
-            match kind {
-                StepKind::Action => dispatch(world, id, &args)
-                    .await
-                    .map_err(AttemptError::into_error),
-                StepKind::Assertion(source_kind) => {
-                    let Some(layer) = world.take_options() else {
-                        return dispatch(world, id, &args)
-                            .await
-                            .map_err(AttemptError::into_error);
-                    };
-                    let base = match source_kind {
-                        OptionsSource::Global => world.options.clone(),
-                    };
-                    let effective = base.apply(&layer).map_err(StepError::input)?;
-                    let shown = reg.display_text(&step.text, &world.redactor);
-                    let mut polling = Polling::new(&shown, &effective.polling);
-                    let mut attempt = 0;
-                    loop {
-                        let outcome = dispatch(world, id, &args).await;
-                        match outcome {
-                            Ok(()) => return Ok(()),
-                            Err(AttemptError::Fatal(error)) => return Err(error),
-                            Err(AttemptError::NotYet(error)) => {
-                                world.trace.attempt(attempt + 1, &error.message);
-                                polling.after_not_yet(&error).await?;
-                                attempt += 1;
-                            }
-                        }
-                    }
-                }
-            }
+            run_builtin(world, reg, step, id, kind, &args).await
         }
         StepTarget::Macro(index) => {
-            let definition = reg.macro_def(index);
             let Some(args) = args else {
                 unreachable!("resolve interpolates every step but an include");
             };
-            world.vars.push_frame();
-            for (param, value) in definition.compiled.params.iter().zip(args.caps) {
-                world.vars.set(&param.name, value);
-                if param.ty.secret {
-                    world.vars.mark_secret(&param.name);
-                }
-            }
-            if world.debug {
-                debug_eprintln!(
-                    world,
-                    "macro {:?}",
-                    reg.display_text(&step.text, &world.redactor)
-                );
-            }
-
-            // A macro body resolves ITS OWN includes relative to the
-            // macro's own source file, never the caller's — the same
-            // rule the spec states for `I include`.
-            let macro_source = definition.source.clone();
-            for (index, body_step) in definition.body.iter().enumerate() {
-                let expanded = ExpandedStep {
-                    keyword: String::new(),
-                    text: body_step.text.clone(),
-                    line: step.line,
-                    docstring: body_step.docstring.clone(),
-                    table: None,
-                };
-                // The definition's line and the step's position in the body:
-                // `MacroStep` has no line of its own.
-                let origin = Origin {
-                    line: definition.line,
-                    index: Some(index),
-                    comment: None,
-                };
-                if let Err(error) = execute_step(
-                    world,
-                    reg,
-                    &expanded,
-                    &macro_source,
-                    generator,
-                    depth + 1,
-                    origin,
-                )
-                .await
-                {
-                    world.vars.pop_frame(&[]).map_err(StepError::input)?;
-                    // The inner step's class stands; the macro adds context.
-                    return Err(error.wrap(|message| {
-                        format!(
-                            "  {}\n{message}",
-                            reg.display_text(&body_step.text, &world.redactor)
-                        )
-                    }));
-                }
-            }
-            let exported = world
-                .vars
-                .pop_frame(&definition.exports)
-                .map_err(StepError::input)?;
-            if world.debug {
-                for (k, v) in &exported {
-                    debug_eprintln!(
-                        world,
-                        "  export {k} = {}",
-                        world.redactor.shown(k, debug_display(v))
-                    );
-                }
-            }
-            Ok(())
+            run_macro(world, reg, step, generator, depth, index, args).await
         }
         StepTarget::Plugin {
             lib,
@@ -383,221 +285,131 @@ async fn run_step(
             let Some(args) = args else {
                 unreachable!("resolve interpolates every step but an include");
             };
-            let Some(plugins) = world.plugins.plugins().cloned() else {
-                return Err(StepError::plugin(
-                    "this step is served by a plugin, but no plugin is loaded",
-                ));
+            let target = plugin_step::Target {
+                lib,
+                step_index,
+                assertion,
             };
-            let group = plugins.group_of_step(lib, step_index).to_string();
-            let instance = world
-                .plugins
-                .current(&group)
-                .map_err(StepError::input)?
-                .to_string();
-            let base = plugins
-                .options_for(&group, &instance)
-                .map_err(StepError::input)?
-                .clone();
+            plugin_step::run(world, reg, step, source, target, &args).await
+        }
+    }
+}
 
-            // Only an assertion consumes an armed eventual-assertion
-            // modifier; an action leaves it for the assertion that follows.
-            let layer = if assertion {
-                world.take_options()
-            } else {
-                None
+/// A built-in step. An assertion with an armed eventual-assertion modifier is
+/// retried until it passes or the polling runs out.
+async fn run_builtin(
+    world: &mut World,
+    reg: &Registry,
+    step: &ExpandedStep,
+    id: StepId,
+    kind: StepKind,
+    args: &Args,
+) -> Result<(), StepError> {
+    match kind {
+        StepKind::Action => dispatch(world, id, args)
+            .await
+            .map_err(AttemptError::into_error),
+        StepKind::Assertion(source_kind) => {
+            let Some(layer) = world.take_options() else {
+                return dispatch(world, id, args)
+                    .await
+                    .map_err(AttemptError::into_error);
             };
-            let mut effective = match &layer {
-                Some(layer) => base.apply(layer).map_err(StepError::input)?,
-                None => base,
+            let base = match source_kind {
+                OptionsSource::Global => world.options.clone(),
             };
-            let source_dir =
-                crate::validate::source_dir(source.parent().unwrap_or(std::path::Path::new("")));
+            let effective = base.apply(&layer).map_err(StepError::input)?;
             let shown = reg.display_text(&step.text, &world.redactor);
-            let mut polling = layer
-                .as_ref()
-                .map(|_| Polling::new(&shown, &effective.polling));
-            // A `per_worker` instance belongs to this file, so this file
-            // both creates and drops it; a `shared` one is only borrowed.
-            let per_worker = plugins.is_per_worker(lib);
-
-            // Resolved once per plugin step rather than per attempt: the
-            // path is constant for the file, and `Workspace` caches the
-            // `create_dir_all` after the first call.
-            let workspace_dir = world
-                .workspace_dir()
-                .map_err(StepError::plugin)?
-                .display()
-                .to_string();
-
-            let wants_vars = reg
-                .plugin_step(lib, step_index)
-                .is_some_and(|spec| spec.wants_vars);
-
-            let mut attempts = 0;
+            let mut polling = Polling::new(&shown, &effective.polling);
+            let mut attempt = 0;
             loop {
-                let dispatch_dir = world.artifacts.next_dir();
-                let request = serde_json::to_string(&DispatchRequest {
-                    instance: &instance,
-                    args: &args.caps,
-                    docstring: args.docstring.as_ref(),
-                    table: args.table.as_ref(),
-                    artifacts_dir: dispatch_dir.display().to_string(),
-                    workspace_dir: workspace_dir.clone(),
-                    debug: world.debug,
-                    options: OptionsJson::from(&effective),
-                    evidence: world.trace.evidence_on(),
-                    vars: if wants_vars {
-                        crate::plugin::request_vars(&world.vars, &world.redactor)
-                    } else {
-                        BTreeMap::default()
-                    },
-                    attempt: attempts + 1,
-                    source_dir: source_dir.clone(),
-                })
-                .map_err(|error| {
-                    StepError::plugin(format!("failed to encode the plugin request: {error}"))
-                })?;
-
-                // The FFI call is synchronous and may block for seconds;
-                // spawn_blocking keeps it off the executor. Passing the
-                // host's tokio Handle across the boundary instead would
-                // pin plugin and host to one tokio version.
-                let plugins_for_call = Arc::clone(&plugins);
-                let (call_group, call_instance) = (group.clone(), instance.clone());
-                // The handle this file already holds, if any. Passing it in
-                // keeps the dispatch to one blocking hop: resolving it out
-                // here and then dispatching would cost two on the first
-                // plugin step of every file.
-                // Filtered by library, not just group: a handle is unique
-                // within one plugin, never across two. `Plugins::load`
-                // refuses two plugins claiming one group, so this cannot
-                // differ today — the filter keeps it true locally.
-                let cached = world
-                    .plugins
-                    .handle_for(&group, &instance)
-                    .filter(|(l, _)| *l == lib)
-                    .map(|(_, h)| h);
-                let (handle, result) = tokio::task::spawn_blocking(move || {
-                    plugins_for_call.call_step(
-                        &call_group,
-                        &call_instance,
-                        lib,
-                        step_index,
-                        &request,
-                        cached,
-                    )
-                })
-                .await
-                .map_err(|error| {
-                    StepError::plugin(format!("the plugin dispatch task failed: {error}"))
-                })?
-                .map_err(StepError::plugin)?;
-                world
-                    .plugins
-                    .record(&group, &instance, lib, handle, per_worker);
-                // Everything this reply reveals is registered before anything
-                // else is read from it, on any status and in a fixed order
-                // (`plugin::reply::absorb`): the error, a diagnostic or a
-                // `not_yet` message may quote it.
-                let mut result = result;
-                let blamed = Some((lib, handle));
-                let shown = crate::plugin::reply::absorb(&result, &world.redactor, &instance)
-                    .map_err(|why| StepError::plugin(why).with_handle(blamed))?;
-                // Read before anything is written, so a reply whose `output` is
-                // refused changes nothing and its diagnostics still show.
-                let output = crate::plugin::reply::outputs(&result).map_err(|why| {
-                    StepError::plugin(why)
-                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
-                        .with_handle(blamed)
-                })?;
-                if matches!(result.status, Status::Passed) {
-                    // Variables are published only on success: an
-                    // intermediate observation must not leak into the
-                    // scenario.
-                    crate::plugin::reply::publish_vars(world, &mut result);
-                }
-                // Printed once per reply, after everything it revealed is
-                // registered, its variables included: a passing reply may
-                // quote a value it just stored under a sensitive name. A
-                // polled step prints once per attempt.
-                crate::plugin::reply::print_output(&output, &world.redactor);
-                let class = if matches!(result.status, Status::Passed) {
-                    None
-                } else {
-                    let (class, note) = crate::plugin::reply::class(&result, &plugins);
-                    world.warnings.extend(note);
-                    class
-                };
-                // Whatever the status: the console shows diagnostics only of
-                // a failure, the stream of every reply.
-                for diagnostic in &shown {
-                    let notes = diagnostic.emit(&world.trace, &group, &instance, &dispatch_dir);
-                    world.warnings.extend(notes);
-                }
-                // The failing reply's diagnostics ride on the error, apart
-                // from its text.
-                let failure = |error: StepError| {
-                    error
-                        .with_diagnostics(crate::plugin::reply::dumps(&shown, &world.redactor))
-                        .with_handle(blamed)
-                };
-
-                match result.status {
-                    Status::Passed => return Ok(()),
-                    Status::Fatal => {
-                        return Err(failure(StepError::new(
-                            class.unwrap_or(FailureKind::Plugin),
-                            result.message(),
-                        )));
+                match dispatch(world, id, args).await {
+                    Ok(()) => return Ok(()),
+                    Err(AttemptError::Fatal(error)) => return Err(error),
+                    Err(AttemptError::NotYet(error)) => {
+                        world.trace.attempt(attempt + 1, &error.message);
+                        polling.after_not_yet(&error).await?;
+                        attempt += 1;
                     }
-                    Status::NotYet if !assertion => {
-                        return Err(failure(StepError::new(
-                            class.unwrap_or(FailureKind::Plugin),
-                            format!(
-                                "a plugin action answered not_yet, which only an assertion may do: {}",
-                                result.message()
-                            ),
-                        )));
-                    }
-                    Status::NotYet => match &mut polling {
-                        // Without an armed modifier there is no second
-                        // attempt, so not_yet is simply a failure.
-                        None => {
-                            return Err(failure(StepError::new(
-                                class.unwrap_or(FailureKind::Assertion),
-                                result.message(),
-                            )));
-                        }
-                        Some(polling) => {
-                            let error = failure(StepError::new(
-                                class.unwrap_or(FailureKind::Assertion),
-                                result.message(),
-                            ));
-                            // `options_instance` is read from the first `not_yet` only.
-                            if attempts == 0
-                                && let Some(name) = &result.options_instance
-                            {
-                                // Before the first wait, so it already sleeps
-                                // this instance's interval.
-                                let base = plugins
-                                    .options_for(&group, name)
-                                    .map_err(|e| failure(StepError::plugin(e)))?;
-                                effective = match &layer {
-                                    Some(layer) => base.apply(layer),
-                                    None => Ok(base.clone()),
-                                }
-                                .map_err(|e| failure(StepError::plugin(e)))?;
-                                polling.retarget(&effective.polling);
-                            }
-                            attempts += 1;
-                            world.trace.attempt(attempts, &error.message);
-                            polling.after_not_yet(&error).await?;
-                        }
-                    },
                 }
             }
         }
     }
+}
+
+/// A macro call: its body runs in a pushed variable frame that holds the
+/// parameters, and only the declared exports leave it.
+async fn run_macro(
+    world: &mut World,
+    reg: &Registry,
+    step: &ExpandedStep,
+    generator: &Generator,
+    depth: usize,
+    index: usize,
+    args: Args,
+) -> Result<(), StepError> {
+    let definition = reg.macro_def(index);
+    world.vars.push_frame();
+    for (param, value) in definition.compiled.params.iter().zip(args.caps) {
+        world.vars.set(&param.name, value);
+        if param.ty.secret {
+            world.vars.mark_secret(&param.name);
+        }
+    }
+    if world.debug {
+        debug_eprintln!(
+            world,
+            "macro {:?}",
+            reg.display_text(&step.text, &world.redactor)
+        );
+    }
+
+    // A macro body resolves ITS OWN includes relative to the
+    // macro's own source file, never the caller's — the same
+    // rule the spec states for `I include`.
+    let macro_source = definition.source.clone();
+    for (index, body_step) in definition.body.iter().enumerate() {
+        let expanded = ExpandedStep {
+            keyword: String::new(),
+            text: body_step.text.clone(),
+            line: step.line,
+            docstring: body_step.docstring.clone(),
+            table: None,
+        };
+        // The definition's line and the step's position in the body:
+        // `MacroStep` has no line of its own.
+        let origin = Origin {
+            line: definition.line,
+            index: Some(index),
+            comment: None,
+        };
+        if let Err(error) = execute_step(
+            world,
+            reg,
+            &expanded,
+            &macro_source,
+            generator,
+            depth + 1,
+            origin,
+        )
+        .await
+        {
+            world.vars.pop_frame(&[]).map_err(StepError::input)?;
+            // The inner step's class stands; the macro adds context.
+            return Err(error.wrap(|message| {
+                format!(
+                    "  {}\n{message}",
+                    reg.display_text(&body_step.text, &world.redactor)
+                )
+            }));
+        }
+    }
+    let exported = world
+        .vars
+        .pop_frame(&definition.exports)
+        .map_err(StepError::input)?;
+    debug_exports(world, exported.iter().map(|(k, v)| (k, v.as_str())));
+    Ok(())
 }
 
 /// Runs `I include "<file>"` / `I include "<file>" scenario "<name>"`. The
@@ -610,8 +422,6 @@ async fn run_step(
 /// `globals` from any frame, so isolation needs the whole stack replaced,
 /// not just a new top frame.
 #[allow(clippy::too_many_arguments)]
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 fn run_include<'a>(
     world: &'a mut World,
     reg: &'a Registry,
@@ -666,21 +476,7 @@ fn run_include<'a>(
 
         // `with:` cells are interpolated in the CALLER's scope, before the swap.
         // The shape (exactly one data row) is already guaranteed by build_scenario above.
-        let with_values: Vec<(String, String)> = match &caller_step.table {
-            Some(table) => {
-                let [header, row] = table.as_slice() else {
-                    unreachable!("build_scenario already validated exactly one data row")
-                };
-                let mut out = Vec::with_capacity(header.len());
-                for (name, raw) in header.iter().zip(row.iter()) {
-                    let value =
-                        interpolate(raw, &world.vars, generator).map_err(StepError::input)?;
-                    out.push((name.clone(), value));
-                }
-                out
-            }
-            None => Vec::new(),
-        };
+        let with_values = include_with_values(world, caller_step, generator)?;
 
         if world.debug {
             debug_eprintln!(
@@ -709,91 +505,28 @@ fn run_include<'a>(
 
         let annotations =
             crate::annotate::scenario(&included, ScenarioRef { scenario, rule }, &expanded, reg);
-        let mut run_result: Result<(), StepError> = Ok(());
-        for item in annotations.execution(background.iter().chain(expanded.steps.iter())) {
-            let (step, comment) = match item {
-                crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
-                crate::annotate::ExecutionItem::Annotation(item) => {
-                    world.trace.annotation(item, &resolved, reg);
-                    continue;
-                }
-            };
-            if run_result.is_err() {
-                world.trace.step_skipped(
-                    &step.keyword,
-                    &reg.display_text(&step.text, &world.redactor),
-                    step.line,
-                    &resolved,
-                    comment,
-                );
-                continue;
-            }
-            let origin = Origin {
-                line: step.line,
-                index: None,
-                comment,
-            };
-            if let Err(e) =
-                execute_step(world, reg, step, &resolved, generator, depth + 1, origin).await
-            {
-                run_result = Err(e.wrap(|message| {
-                    format!(
-                        "{}:{} → {}:{}\n  {}\n{message}",
-                        crate::feature::display_path(source),
-                        caller_step.line,
-                        crate::feature::display_path(&resolved),
-                        step.line,
-                        reg.display_text(&step.text, &world.redactor)
-                    )
-                }));
-            }
-        }
+        let run_result = run_included_steps(
+            world,
+            reg,
+            IncludeSite {
+                caller: caller_step,
+                caller_source: source,
+                resolved: &resolved,
+            },
+            annotations.execution(background.iter().chain(expanded.steps.iter())),
+            generator,
+            depth,
+        )
+        .await;
 
-        // The call-site `with prefix "<p>"` renames every exported variable to
-        // `<p>_<name>` as it crosses back into the caller's scope — this is
-        // what lets two includes of the same flow (e.g. registering a buyer
-        // and a seller) coexist without the second overwriting the first.
-        let apply_prefix = |name: String| match prefix {
-            Some(p) => format!("{p}_{name}"),
-            None => name,
-        };
         let export_result = if run_result.is_ok() {
-            let mut resolved_exports = Vec::new();
-            let mut missing = None;
-            for name in &exports {
-                if let Some(glob_prefix) = name.strip_suffix('*') {
-                    for (k, v) in world.vars.all_vars() {
-                        if k.starts_with(glob_prefix) {
-                            resolved_exports.push((apply_prefix(k), v));
-                        }
-                    }
-                } else if let Some(v) = world.vars.get(name) {
-                    resolved_exports.push((apply_prefix(name.clone()), v.to_string()));
-                } else {
-                    missing = Some(StepError::input(format!(
-                        "I include {path_literal:?}: declared export {name:?}, but the variable is not set"
-                    )));
-                    break;
-                }
-            }
-            match missing {
-                Some(e) => Err(e),
-                None => Ok(resolved_exports),
-            }
+            include_exports(world, &exports, prefix, path_literal)
         } else {
             Ok(Vec::new())
         };
 
-        if world.debug
-            && let Ok(exported) = &export_result
-        {
-            for (k, v) in exported {
-                debug_eprintln!(
-                    world,
-                    "  export {k} = {}",
-                    world.redactor.shown(k, debug_display(v))
-                );
-            }
+        if let Ok(exported) = &export_result {
+            debug_exports(world, exported.iter().map(|(k, v)| (k, v.as_str())));
         }
 
         world.vars = saved;
@@ -805,6 +538,145 @@ fn run_include<'a>(
         }
         Ok(())
     })
+}
+
+/// Where an include sits: the step that asked for it, the file that step is
+/// in and the file it resolved to.
+struct IncludeSite<'a> {
+    caller: &'a ExpandedStep,
+    caller_source: &'a std::path::Path,
+    resolved: &'a std::path::Path,
+}
+
+/// The `with:` table of an include as `(name, value)` pairs, interpolated in
+/// the CALLER's scope, before the variables are swapped. The shape (exactly
+/// one data row) is already guaranteed by `include::build_scenario`.
+fn include_with_values(
+    world: &World,
+    caller_step: &ExpandedStep,
+    generator: &Generator,
+) -> Result<Vec<(String, String)>, StepError> {
+    let Some(table) = &caller_step.table else {
+        return Ok(Vec::new());
+    };
+    let [header, row] = table.as_slice() else {
+        unreachable!("build_scenario already validated exactly one data row")
+    };
+    let mut out = Vec::with_capacity(header.len());
+    for (name, raw) in header.iter().zip(row.iter()) {
+        let value = interpolate(raw, &world.vars, generator).map_err(StepError::input)?;
+        out.push((name.clone(), value));
+    }
+    Ok(out)
+}
+
+/// Prints the variables an include or a macro hands back, in debug mode.
+fn debug_exports<'a>(world: &World, exported: impl Iterator<Item = (&'a String, &'a str)>) {
+    if !world.debug {
+        return;
+    }
+    for (k, v) in exported {
+        debug_eprintln!(
+            world,
+            "  export {k} = {}",
+            world.redactor.shown(k, debug_display(v))
+        );
+    }
+}
+
+/// Runs the steps of an included scenario in the swapped-in scope. A failure
+/// skips the rest, which the trace still lists, and carries the include chain
+/// in its message.
+async fn run_included_steps(
+    world: &mut World,
+    reg: &Registry,
+    site: IncludeSite<'_>,
+    items: Vec<crate::annotate::ExecutionItem<'_>>,
+    generator: &Generator,
+    depth: usize,
+) -> Result<(), StepError> {
+    let mut run_result: Result<(), StepError> = Ok(());
+    for item in items {
+        let (step, comment) = match item {
+            crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
+            crate::annotate::ExecutionItem::Annotation(item) => {
+                world.trace.annotation(item, site.resolved, reg);
+                continue;
+            }
+        };
+        if run_result.is_err() {
+            world.trace.step_skipped(
+                &step.keyword,
+                &reg.display_text(&step.text, &world.redactor),
+                step.line,
+                site.resolved,
+                comment,
+            );
+            continue;
+        }
+        let origin = Origin {
+            line: step.line,
+            index: None,
+            comment,
+        };
+        if let Err(e) = execute_step(
+            world,
+            reg,
+            step,
+            site.resolved,
+            generator,
+            depth + 1,
+            origin,
+        )
+        .await
+        {
+            run_result = Err(e.wrap(|message| {
+                format!(
+                    "{}:{} → {}:{}\n  {}\n{message}",
+                    crate::feature::display_path(site.caller_source),
+                    site.caller.line,
+                    crate::feature::display_path(site.resolved),
+                    step.line,
+                    reg.display_text(&step.text, &world.redactor)
+                )
+            }));
+        }
+    }
+    run_result
+}
+
+/// The variables an include exports, renamed with the call-site prefix: it
+/// renames every exported variable to `<p>_<name>` as it crosses back into the
+/// caller's scope — this is what lets two includes of the same flow (e.g.
+/// registering a buyer and a seller) coexist without the second overwriting
+/// the first.
+fn include_exports(
+    world: &World,
+    exports: &[String],
+    prefix: Option<&str>,
+    path_literal: &str,
+) -> Result<Vec<(String, String)>, StepError> {
+    let apply_prefix = |name: String| match prefix {
+        Some(p) => format!("{p}_{name}"),
+        None => name,
+    };
+    let mut resolved_exports = Vec::new();
+    for name in exports {
+        if let Some(glob_prefix) = name.strip_suffix('*') {
+            for (k, v) in world.vars.all_vars() {
+                if k.starts_with(glob_prefix) {
+                    resolved_exports.push((apply_prefix(k), v));
+                }
+            }
+        } else if let Some(v) = world.vars.get(name) {
+            resolved_exports.push((apply_prefix(name.clone()), v.to_string()));
+        } else {
+            return Err(StepError::input(format!(
+                "I include {path_literal:?}: declared export {name:?}, but the variable is not set"
+            )));
+        }
+    }
+    Ok(resolved_exports)
 }
 
 /// The SQL-NULL sentinel prints as `<<null>>` in debug output, never the raw
@@ -950,8 +822,6 @@ async fn failure_contexts(world: &World, ctx: &RunContext, error: &StepError) ->
 /// state is recreated for each scenario; the Background reruns before each
 /// one. Arguments are owned (`Arc`), not borrowed: a file is one `tokio`
 /// task, and `tokio::spawn` requires `'static`.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResult {
     let mut world = World::new(
         Arc::clone(&ctx.generator),
@@ -966,10 +836,6 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     world.counters = Some(Arc::clone(&ctx.counters));
     let mut scenarios = Vec::new();
 
-    // The generator handle is cloned once: inside the loop `&world.generator`
-    // would conflict with the later `&mut world` in the dispatch call.
-    let generator = Arc::clone(&world.generator);
-
     for scenario_ref in lf.scenarios() {
         let ScenarioRef { scenario: sc, rule } = scenario_ref;
         let background = lf.background_steps(rule);
@@ -980,131 +846,8 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
             if ex.example.is_some() {
                 ctx.counters.example();
             }
-            world.reset_scenario();
-            // The FFI half of the scenario reset. It is here rather than in
-            // World::reset_scenario because the call is blocking and this is
-            // the async context that can hand it to spawn_blocking; runs with
-            // no plugin loaded pay nothing.
-            //
-            // A reset that fails is this scenario's failure, exactly as a
-            // failing Background step would be: running its steps against
-            // state the plugin could not clear is how a suite goes green for
-            // the wrong reason.
-            let mut failure: Option<(String, FailureKind)> = match ctx.plugins.clone() {
-                None => None,
-                Some(plugins) => {
-                    // Only what THIS file has touched. A file with no plugin
-                    // steps has an empty list and does no work here at all.
-                    let handles = world.plugins.to_reset();
-                    if handles.is_empty() {
-                        None
-                    } else {
-                        match tokio::task::spawn_blocking(move || plugins.reset_instances(&handles))
-                            .await
-                        {
-                            Ok(result) => result.err().map(|error| {
-                                let text = format!("  scenario reset\n{error}");
-                                (world.redactor.mask(&text), FailureKind::Reset)
-                            }),
-                            Err(error) => {
-                                let text = format!(
-                                    "  scenario reset\nthe plugin reset task failed: {error}"
-                                );
-                                Some((world.redactor.mask(&text), FailureKind::Reset))
-                            }
-                        }
-                    }
-                }
-            };
-
-            world.trace.scenario_started(&lf, scenario_ref, &ex);
-            let started = Instant::now();
-            let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
-            let annotations = crate::annotate::scenario(&lf, scenario_ref, &ex, &ctx.reg);
-            for item in annotations.execution(background.iter().chain(ex.steps.iter())) {
-                let (step, comment) = match item {
-                    crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
-                    crate::annotate::ExecutionItem::Annotation(item) => {
-                        world.trace.annotation(item, &lf.path, &ctx.reg);
-                        continue;
-                    }
-                };
-                let step_started = Instant::now();
-                // Everything after a failure is skipped, not run: the report
-                // lists every step of the scenario either way.
-                let origin = Origin {
-                    line: step.line,
-                    index: None,
-                    comment,
-                };
-                let status = if failure.is_some() {
-                    world.trace.step_skipped(
-                        &step.keyword,
-                        &ctx.reg.display_text(&step.text, &world.redactor),
-                        step.line,
-                        &lf.path,
-                        comment,
-                    );
-                    StepStatus::Skipped
-                } else if let Err(e) =
-                    execute_step(&mut world, &ctx.reg, step, &lf.path, &generator, 0, origin).await
-                {
-                    let mut msg = world.redactor.mask(&format!(
-                        "  {}\n{}",
-                        ctx.reg.display_text(&step.text, &world.redactor),
-                        e.message
-                    ));
-                    for dump in &e.diagnostics {
-                        msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
-                    }
-                    // Before the next scenario's reset: the plugins' state is
-                    // still the failing one's.
-                    for dump in failure_contexts(&world, &ctx, &e).await {
-                        msg.push_str(&format!("\n\n{}", world.redactor.mask(&dump)));
-                    }
-                    failure = Some((msg, e.kind));
-                    StepStatus::Failed
-                } else {
-                    StepStatus::Passed
-                };
-                steps.push(StepResult {
-                    keyword: step.keyword.clone(),
-                    text: ctx
-                        .reg
-                        .display_text(&step.text, &world.redactor)
-                        .into_owned(),
-                    line: step.line,
-                    status,
-                    duration: step_started.elapsed(),
-                    warnings: std::mem::take(&mut world.warnings)
-                        .iter()
-                        .map(|warning| world.redactor.mask(warning))
-                        .collect(),
-                });
-            }
-            let duration = started.elapsed();
-            world.trace.scenario_finished(
-                failure.as_ref().map(|(text, kind)| (text.as_str(), *kind)),
-                duration,
-                ctx.interrupted(),
-            );
-            let (failure, failure_kind) = match failure {
-                Some((text, kind)) => (Some(text), Some(kind)),
-                None => (None, None),
-            };
-            scenarios.push(ScenarioResult {
-                name: world.redactor.mask(&ex.name),
-                line: ex.line,
-                description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
-                tags: report_tags(
-                    &world.redactor,
-                    lf.effective_tags(scenario_ref, ex.examples_line),
-                ),
-                failure,
-                failure_kind,
-                steps,
-                duration,
-            });
+            scenarios
+                .push(run_scenario(&mut world, &lf, &ctx, scenario_ref, &ex, &background).await);
         }
     }
     // Every exit path of this function, including a file whose scenarios all
@@ -1141,6 +884,160 @@ pub async fn run_file(lf: Arc<LoadedFeature>, ctx: Arc<RunContext>) -> FileResul
     }
 
     file_result(&lf, &world.redactor, scenarios)
+}
+
+/// The FFI half of the scenario reset. It is here rather than in
+/// `World::reset_scenario` because the call is blocking and this is the async
+/// context that can hand it to `spawn_blocking`; runs with no plugin loaded
+/// pay nothing.
+///
+/// A reset that fails is this scenario's failure, exactly as a failing
+/// Background step would be: running its steps against state the plugin could
+/// not clear is how a suite goes green for the wrong reason.
+async fn reset_failure(world: &World, ctx: &RunContext) -> Option<(String, FailureKind)> {
+    let plugins = ctx.plugins.clone()?;
+    // Only what THIS file has touched. A file with no plugin steps has an
+    // empty list and does no work here at all.
+    let handles = world.plugins.to_reset();
+    if handles.is_empty() {
+        return None;
+    }
+    let text = match tokio::task::spawn_blocking(move || plugins.reset_instances(&handles)).await {
+        Ok(result) => format!("  scenario reset\n{}", result.err()?),
+        Err(error) => format!("  scenario reset\nthe plugin reset task failed: {error}"),
+    };
+    Some((world.redactor.mask(&text), FailureKind::Reset))
+}
+
+/// Runs one scenario (or one outline row) of `lf`: the reset, the Background
+/// and the steps, and the trace around them.
+async fn run_scenario(
+    world: &mut World,
+    lf: &LoadedFeature,
+    ctx: &RunContext,
+    scenario_ref: ScenarioRef<'_>,
+    ex: &crate::feature::ExpandedScenario,
+    background: &[ExpandedStep],
+) -> ScenarioResult {
+    world.reset_scenario();
+    let mut failure = reset_failure(world, ctx).await;
+
+    world.trace.scenario_started(lf, scenario_ref, ex);
+    let started = Instant::now();
+    let steps =
+        run_scenario_steps(world, lf, ctx, scenario_ref, ex, background, &mut failure).await;
+    let duration = started.elapsed();
+    world.trace.scenario_finished(
+        failure.as_ref().map(|(text, kind)| (text.as_str(), *kind)),
+        duration,
+        ctx.interrupted(),
+    );
+    let (failure, failure_kind) = match failure {
+        Some((text, kind)) => (Some(text), Some(kind)),
+        None => (None, None),
+    };
+    ScenarioResult {
+        name: world.redactor.mask(&ex.name),
+        line: ex.line,
+        description: world.redactor.mask(lf.description(ex.line).unwrap_or("")),
+        tags: report_tags(
+            &world.redactor,
+            lf.effective_tags(scenario_ref, ex.examples_line),
+        ),
+        failure,
+        failure_kind,
+        steps,
+        duration,
+    }
+}
+
+/// The steps of one scenario, Background first. Everything after a failure is
+/// skipped, not run: the report lists every step of the scenario either way.
+async fn run_scenario_steps(
+    world: &mut World,
+    lf: &LoadedFeature,
+    ctx: &RunContext,
+    scenario_ref: ScenarioRef<'_>,
+    ex: &crate::feature::ExpandedScenario,
+    background: &[ExpandedStep],
+    failure: &mut Option<(String, FailureKind)>,
+) -> Vec<StepResult> {
+    // The generator handle is cloned once: `&world.generator` would conflict
+    // with the `&mut world` in the dispatch call.
+    let generator = Arc::clone(&world.generator);
+    let mut steps = Vec::with_capacity(background.len() + ex.steps.len());
+    let annotations = crate::annotate::scenario(lf, scenario_ref, ex, &ctx.reg);
+    for item in annotations.execution(background.iter().chain(ex.steps.iter())) {
+        let (step, comment) = match item {
+            crate::annotate::ExecutionItem::Step { step, comment } => (step, comment),
+            crate::annotate::ExecutionItem::Annotation(item) => {
+                world.trace.annotation(item, &lf.path, &ctx.reg);
+                continue;
+            }
+        };
+        let step_started = Instant::now();
+        let origin = Origin {
+            line: step.line,
+            index: None,
+            comment,
+        };
+        let status = if failure.is_some() {
+            world.trace.step_skipped(
+                &step.keyword,
+                &ctx.reg.display_text(&step.text, &world.redactor),
+                step.line,
+                &lf.path,
+                comment,
+            );
+            StepStatus::Skipped
+        } else if let Err(e) =
+            execute_step(world, &ctx.reg, step, &lf.path, &generator, 0, origin).await
+        {
+            *failure = Some((step_failure_text(world, ctx, step, &e).await, e.kind));
+            StepStatus::Failed
+        } else {
+            StepStatus::Passed
+        };
+        steps.push(StepResult {
+            keyword: step.keyword.clone(),
+            text: ctx
+                .reg
+                .display_text(&step.text, &world.redactor)
+                .into_owned(),
+            line: step.line,
+            status,
+            duration: step_started.elapsed(),
+            warnings: std::mem::take(&mut world.warnings)
+                .iter()
+                .map(|warning| world.redactor.mask(warning))
+                .collect(),
+        });
+    }
+    steps
+}
+
+/// The failure text of a step: its error, the diagnostics the reply carried
+/// and the plugins' own context, all masked.
+async fn step_failure_text(
+    world: &World,
+    ctx: &RunContext,
+    step: &ExpandedStep,
+    e: &StepError,
+) -> String {
+    let mut msg = world.redactor.mask(&format!(
+        "  {}\n{}",
+        ctx.reg.display_text(&step.text, &world.redactor),
+        e.message
+    ));
+    for dump in &e.diagnostics {
+        msg.push_str(&format!("\n\n{}", world.redactor.mask(dump)));
+    }
+    // Before the next scenario's reset: the plugins' state is still the
+    // failing one's.
+    for dump in failure_contexts(world, ctx, e).await {
+        msg.push_str(&format!("\n\n{}", world.redactor.mask(&dump)));
+    }
+    msg
 }
 
 /// `(name, line)` pairs as a report shows them: with the `@`, and masked.
@@ -1275,7 +1172,6 @@ pub fn build_chains(files: Vec<Arc<LoadedFeature>>) -> Result<Vec<Chain>, String
 /// The nested `tokio::spawn` per file exists for exactly two properties: it
 /// isolates panics (a worker survives a bad file and picks up the next one),
 /// and the immediate `await` keeps tasks from outrunning the pool size.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub async fn run_all(
     chains: Vec<Chain>,
     ctx: Arc<RunContext>,
@@ -1289,62 +1185,16 @@ pub async fn run_all(
 
     let mut handles = Vec::with_capacity(workers);
     for _ in 0..workers {
-        let (chains, cursor, results, ctx) = (
+        handles.push(tokio::spawn(worker(
             Arc::clone(&chains),
             Arc::clone(&cursor),
             Arc::clone(&results),
             Arc::clone(&ctx),
-        );
-        handles.push(tokio::spawn(async move {
-            loop {
-                if ctx.stopped() {
-                    break;
-                }
-                let index = cursor.fetch_add(1, Ordering::Relaxed);
-                let Some(chain) = chains.get(index) else {
-                    break;
-                };
-                for lf in &chain.files {
-                    if ctx.stopped() {
-                        break;
-                    }
-                    let task = tokio::spawn(run_file(Arc::clone(lf), Arc::clone(&ctx)));
-                    let (result, panicked) = match task.await {
-                        Ok(r) => (r, false),
-                        Err(error) => (panicked_file(lf, &error, &ctx.redactor), true),
-                    };
-                    // Here, not in `run_file`, so a file that panicked is closed
-                    // in the stream too — and any scenario or step it left open
-                    // with it.
-                    if let Some(events) = &ctx.events {
-                        events.emit(
-                            "file_finished",
-                            serde_json::json!({
-                                "file": crate::feature::display_path(&result.path),
-                                "scenarios": result.scenarios.len(),
-                                "failed": result.failed(),
-                                "panicked": panicked,
-                            }),
-                        );
-                    }
-                    if result.failed() > 0 {
-                        ctx.request_stop();
-                    }
-                    // Printing and collecting under one lock: a file's output
-                    // lands in stdout as a whole, not interleaved with another
-                    // worker's dump.
-                    let mut collected = results
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    print!("{}", render_file(&result));
-                    collected.push(result);
-                }
-            }
-        }));
+        )));
     }
     for handle in handles {
         // The worker itself cannot panic — a file's failure is already caught
-        // above; but it still must not bring down the rest of the run.
+        // in `run_isolated`; but it still must not bring down the rest of the run.
         let _ = handle.await;
     }
     std::mem::take(
@@ -1352,6 +1202,68 @@ pub async fn run_all(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     )
+}
+
+/// One worker: claims chains off the shared cursor until none is left or the
+/// run is stopped, and runs each chain's files in order.
+async fn worker(
+    chains: Arc<Vec<Chain>>,
+    cursor: Arc<AtomicUsize>,
+    results: Arc<Mutex<Vec<FileResult>>>,
+    ctx: Arc<RunContext>,
+) {
+    loop {
+        if ctx.stopped() {
+            break;
+        }
+        let index = cursor.fetch_add(1, Ordering::Relaxed);
+        let Some(chain) = chains.get(index) else {
+            break;
+        };
+        for lf in &chain.files {
+            if ctx.stopped() {
+                break;
+            }
+            let result = run_isolated(lf, &ctx).await;
+            // Printing and collecting under one lock: a file's output
+            // lands in stdout as a whole, not interleaved with another
+            // worker's dump.
+            let mut collected = results
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            print!("{}", render_file(&result));
+            collected.push(result);
+        }
+    }
+}
+
+/// Runs one file in its own task, so a panic costs that file and not the
+/// worker, closes the file in the event stream and arms `--fail-fast` when it
+/// failed.
+async fn run_isolated(lf: &Arc<LoadedFeature>, ctx: &Arc<RunContext>) -> FileResult {
+    let task = tokio::spawn(run_file(Arc::clone(lf), Arc::clone(ctx)));
+    let (result, panicked) = match task.await {
+        Ok(r) => (r, false),
+        Err(error) => (panicked_file(lf, &error, &ctx.redactor), true),
+    };
+    // Here, not in `run_file`, so a file that panicked is closed
+    // in the stream too — and any scenario or step it left open
+    // with it.
+    if let Some(events) = &ctx.events {
+        events.emit(
+            "file_finished",
+            serde_json::json!({
+                "file": crate::feature::display_path(&result.path),
+                "scenarios": result.scenarios.len(),
+                "failed": result.failed(),
+                "panicked": panicked,
+            }),
+        );
+    }
+    if result.failed() > 0 {
+        ctx.request_stop();
+    }
+    result
 }
 
 #[cfg(test)]
