@@ -104,7 +104,6 @@ impl VarStack {
     /// Pops the top frame, copying into the parent only what `exports` lists.
     /// Supports a glob of the form `last_insert_id_*`. Returns the exported
     /// pairs so a caller in debug mode can log them.
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub fn pop_frame(&mut self, exports: &[String]) -> Result<Vec<(String, String)>, String> {
         // Check BEFORE popping: `Vec::pop` is irreversible, and the root frame must not be popped.
         if self.frames.len() <= 1 {
@@ -117,11 +116,8 @@ impl VarStack {
         let mut exported: Vec<(String, String)> = Vec::new();
         for pattern in exports {
             if let Some(prefix) = pattern.strip_suffix('*') {
-                for (k, v) in &top {
-                    if k.starts_with(prefix) {
-                        exported.push((k.clone(), v.clone()));
-                    }
-                }
+                let matched = top.iter().filter(|(k, _)| k.starts_with(prefix));
+                exported.extend(matched.map(|(k, v)| (k.clone(), v.clone())));
             } else {
                 let v = top.get(pattern).ok_or_else(|| {
                     format!("macro declared export {pattern:?}, but the variable is not set")
