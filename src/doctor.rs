@@ -3,9 +3,14 @@
 //! does not have: whether the resources the config names actually answer.
 
 use crate::steps::StepTarget;
-use crate::{config, dirs, feature, validate};
+use crate::{config, dirs, feature};
 use serde::Serialize;
 use std::path::Path;
+
+mod features;
+mod stages;
+
+use features::check_features;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -178,7 +183,6 @@ impl Report {
 // Every input is a flag of the command, and `doctor` is the one place they meet:
 // a struct of them would be a second spelling of `DoctorArgs`.
 #[allow(clippy::too_many_arguments)]
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 pub fn check(
     explicit_config: Option<&Path>,
     env: Option<&str>,
@@ -208,38 +212,7 @@ pub fn check(
             config::app_env_for(&resolved.path, env).unwrap_or_else(|_| "unknown".to_string());
     }
 
-    // First, as in `run`: the same `--junit`/`--cucumber-json` a run takes,
-    // and the same create-or-truncate it does before resolving or reading the
-    // config — so even a config that cannot be found leaves the same empty
-    // report files behind in both commands. Without them nothing is touched.
-    for (path, stream) in report_paths
-        .iter()
-        .map(|path| (*path, false))
-        .chain(events_path.map(|path| (path, true)))
-    {
-        let target = path.display().to_string();
-        // Opening a FIFO would hand its reader an end-of-file, and `run` opens
-        // it exactly once; `metadata` follows the symlink a /dev/fd/N is. A
-        // directory is not a stream either: `run` refuses it, so it falls through.
-        if stream && std::fs::metadata(path).is_ok_and(|meta| !meta.is_file() && !meta.is_dir()) {
-            report.push(
-                "reports",
-                Some(&target),
-                Status::Ok,
-                "exists and is not a regular file, left unopened",
-            );
-            continue;
-        }
-        match crate::report::prepare(path) {
-            Ok(()) => report.push("reports", Some(&target), Status::Ok, "created, empty"),
-            Err(error) => report.push(
-                "reports",
-                Some(&target),
-                Status::Failed,
-                &format!("{error:#}"),
-            ),
-        }
-    }
+    stages::touch_reports(&mut report, report_paths, events_path);
 
     let config_path = match resolved {
         Ok(Some(resolved)) => resolved.path,
@@ -261,45 +234,16 @@ pub fn check(
     };
     let config_path = config_path.as_path();
 
-    let cfg = match config::load(config_path, env) {
-        Ok(cfg) => cfg,
-        Err(error) => {
-            report.push("config", None, Status::Failed, &format!("{error:#}"));
-            report.note_telemetry(
-                telemetry_flag,
-                crate::telemetry::ConfigKey::Broken,
-                dir_env,
-                crate::config_dir(config_path),
-            );
-            return report;
-        }
-    };
-    // The flags and the environment on top of the file, as `run` lays them. A
-    // bad one is a failed row, but the file itself was readable, so its own
-    // telemetry key still decides.
-    let mut cfg = cfg;
-    let applied = crate::settings::resolve(
+    let Some(cfg) = stages::load_config(
+        &mut report,
+        config_path,
+        env,
         settings,
-        &cfg.all_group_names(),
-        &crate::privacy::process_env,
-    )
-    .and_then(|overrides| cfg.apply(&overrides));
-    if let Err(error) = applied {
-        report.push("config", None, Status::Failed, &format!("{error:#}"));
-        report.note_telemetry(
-            telemetry_flag,
-            (&cfg.telemetry).into(),
-            dir_env,
-            crate::config_dir(config_path),
-        );
+        telemetry_flag,
+        dir_env,
+    ) else {
         return report;
-    }
-    report.push(
-        "config",
-        None,
-        Status::Ok,
-        "parsed, ${VAR} expanded, defaults resolved",
-    );
+    };
 
     // The same resolution `run` makes, so a bad `BDDKIT_PRIVACY_*` value or a
     // list given in both forms is a failed row here and exit 2 there. The row
@@ -315,82 +259,8 @@ pub fn check(
         eprintln!("{}", privacy.reveal_notice());
     }
 
-    // This walks the layered `.bddkit` directory chain and reads
-    // `plugins.yaml` a second time — `load_plugins` below reads the same
-    // chain again for real. That duplication is deliberate: this half is
-    // pure listing (no `dlopen`, nothing loaded, nothing run), so it is safe
-    // and cheap to redo, and `doctor` is never in a hot loop. It exists to
-    // answer a different question than the plugins stage below — what does
-    // the chain look like, layer by layer, not did loading actually work —
-    // and the two answers must stay legible as two rows, not merged into
-    // one.
-    //
-    // The trade-off: a bad `--bddkit-dir` or a missing `.so` shows up TWICE —
-    // once here (`directories`/`plugin_lock`) and once in the real `plugins`
-    // summary below, both naming the same root cause. That is accepted, not
-    // a bug. Suppressing the second row would mean threading this listing's
-    // result into `load_plugins`, entangling the pure-listing path with the
-    // real dlopen path for a cosmetic win only.
-    match dirs::layers(dirs::Os::current(), dir_env, crate::config_dir(config_path)) {
-        Ok(layers) => {
-            let candidates = dirs::candidates(&layers, "plugins");
-            for c in &candidates {
-                let status = if c.path.is_file() {
-                    Status::Ok
-                } else {
-                    Status::Skipped
-                };
-                report.push(
-                    "directories",
-                    Some(&c.layer),
-                    status,
-                    &c.path.display().to_string(),
-                );
-            }
-            if let Ok(entries) = crate::plugin::lock::load(&candidates) {
-                for entry in &entries {
-                    let status = if entry.path.is_file() {
-                        Status::Ok
-                    } else {
-                        Status::Failed
-                    };
-                    let detail = format!("{} — {}", entry.layer, entry.path.display());
-                    report.push("plugin_lock", Some(&entry.name), status, &detail);
-                }
-            }
-        }
-        Err(error) => {
-            report.push("directories", None, Status::Failed, &format!("{error:#}"));
-        }
-    }
-
-    let mut plugins_failed = false;
-    let plugins = match crate::load_plugins_collecting(config_path, &cfg, dir_env, false) {
-        Ok(Some(plugins)) => {
-            let detail = format!(
-                "{} step(s) over {} group(s)",
-                plugins.steps().len(),
-                plugins.group_names().len()
-            );
-            report.push(
-                "plugins",
-                None,
-                Status::Ok,
-                &with_empty_group_hints(detail, &cfg, Some(&plugins)),
-            );
-            Some(plugins)
-        }
-        Ok(None) => {
-            let detail = with_empty_group_hints("none installed".into(), &cfg, None);
-            report.push("plugins", None, Status::Ok, &detail);
-            None
-        }
-        Err(error) => {
-            report.push("plugins", None, Status::Failed, &format!("{error:#}"));
-            plugins_failed = true;
-            None
-        }
-    };
+    stages::list_plugin_layers(&mut report, dir_env, config_path);
+    let (plugins, plugins_failed) = stages::load_plugins(&mut report, config_path, &cfg, dir_env);
 
     let registry = match crate::build_registry(&cfg, plugins.as_ref()) {
         Ok(registry) => {
@@ -433,18 +303,28 @@ pub fn check(
     if let Some(plugins) = plugins.as_ref() {
         check_plugin_instances(&mut report, plugins, live);
     }
-    if let Some(note) = &mut report.telemetry {
-        note.privacy = privacy
-            .as_ref()
-            .ok()
-            .map(crate::telemetry::payload::PrivacyFlags::of);
-        let mut resources = crate::telemetry::payload::Resources::default();
-        if let Some(plugins) = &plugins {
-            (resources.plugins, resources.plugins_other) = plugins.instance_counts();
-        }
-        note.resources = Some(resources);
-    }
+    note_resources(&mut report, &privacy, plugins.as_deref());
     report
+}
+
+/// What the telemetry payload of this command carries beyond the checks.
+fn note_resources<E>(
+    report: &mut Report,
+    privacy: &Result<crate::privacy::Privacy, E>,
+    plugins: Option<&crate::plugin::Plugins>,
+) {
+    let Some(note) = &mut report.telemetry else {
+        return;
+    };
+    note.privacy = privacy
+        .as_ref()
+        .ok()
+        .map(crate::telemetry::payload::PrivacyFlags::of);
+    let mut resources = crate::telemetry::payload::Resources::default();
+    if let Some(plugins) = plugins {
+        (resources.plugins, resources.plugins_other) = plugins.instance_counts();
+    }
+    note.resources = Some(resources);
 }
 
 /// One static row and one live row per declared instance, stage the group and
@@ -524,263 +404,6 @@ fn with_empty_group_hints(
 
 /// Hint names and the `file:line` places they were found (spec §7.10).
 type Unmarked = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
-
-/// The two stages that read the feature files: every step matched against the
-/// registry, and the scheduling tags `run` parses after it. The files are
-/// discovered and loaded once for both.
-///
-/// A `.feature` that will not parse is one finding, not the end of the stage:
-/// a suite of forty files must not hide thirty-nine behind the first bad one.
-///
-/// `registry` is `Err(reason)` when the step vocabulary is not trustworthy —
-/// the registry failed to build, or a plugin owning some of the steps did not
-/// load. The reason comes from the caller because only the caller knows which
-/// stage to send the reader to. Only the step MATCHING is skipped then: a
-/// parse error and a scheduling tag are answers this stage still owes.
-///
-/// The one finding here that `run` never makes: a step of a resource group
-/// with nothing declared — `resources.api: {}` under an HTTP step, a DB step
-/// with no `resources.db`, a plugin group emptied to switch its implicit
-/// instance off. `run` accepts that config and fails in the scenario, because
-/// a `--tag` may keep the scenario out; `doctor` applies no filter, so here
-/// the failure is certain and is reported as one.
-/// Returns the `<<…>>` slots that look sensitive and carry no privacy word,
-/// each with the places it was found, for the `privacy` row.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
-fn check_features(
-    report: &mut Report,
-    cfg: &config::Config,
-    registry: Result<&crate::steps::Registry, &'static str>,
-    plugins: Option<&crate::plugin::Plugins>,
-    words: &[String],
-) -> Unmarked {
-    let paths = match feature::discover(&cfg.paths) {
-        Ok(paths) => paths,
-        Err(error) => {
-            report.push("steps", None, Status::Failed, &format!("{error:#}"));
-            // Nothing was loaded, so scheduling has nothing to say — but a
-            // consumer reading the JSON should not have to guess why a stage
-            // it expects is simply absent.
-            report.push(
-                "scheduling",
-                None,
-                Status::Skipped,
-                "no feature file was discovered",
-            );
-            return std::collections::BTreeMap::default();
-        }
-    };
-    let mut loaded = Vec::new();
-    let mut problems = Vec::new();
-    for path in paths {
-        match feature::load(&path) {
-            Ok(lf) => loaded.push(std::sync::Arc::new(lf)),
-            Err(error) => problems.push((feature::display_path(&path), format!("{error:#}"))),
-        }
-    }
-    // No tag filter on the steps: `doctor` answers "is this suite whole", not
-    // "is this tag green", so every scenario of every file is checked whatever
-    // a run would select. The config's `tags` only decide whether a run would
-    // have anything to do at all.
-    let filter = feature::TagFilter::new(&[]);
-    loaded.retain(|lf| lf.has_selected_scenario(&filter));
-    let selection = feature::TagFilter::new(&cfg.tags);
-    let selects_nothing = !loaded.iter().any(|lf| lf.has_selected_scenario(&selection));
-    let unmarked = unmarked_names(&loaded, registry.ok(), words);
-
-    let skipped = match registry {
-        Ok(registry) => {
-            let borrowed: Vec<&feature::LoadedFeature> =
-                loaded.iter().map(std::sync::Arc::as_ref).collect();
-            let mut found = validate::check(&borrowed, registry, &filter);
-            found.extend(validate::unserved_resources(
-                &borrowed,
-                registry,
-                &filter,
-                |target| unserved_group(plugins, target),
-            ));
-            problems.extend(found.into_iter().map(|p| {
-                (
-                    format!("{}:{}", feature::display_path(&p.file), p.line),
-                    p.message,
-                )
-            }));
-            None
-        }
-        Err(reason) => Some(reason),
-    };
-
-    // Parse errors and an empty selection are reported whether or not the
-    // vocabulary was usable — neither has anything to do with it, and a
-    // finding this stage already computed must not be thrown away.
-    if !problems.is_empty() {
-        // An Outline row repeats the same line once per Examples row.
-        let mut seen = std::collections::HashSet::new();
-        problems.retain(|problem| seen.insert(problem.clone()));
-        for (target, detail) in &problems {
-            report.push("steps", Some(target), Status::Failed, detail);
-        }
-    } else if selects_nothing {
-        // `run` exits 2 here. A green "0 file(s), every step matched" would be
-        // the most misleading line the command can print: a tick on a suite
-        // that cannot run.
-        report.push(
-            "steps",
-            None,
-            Status::Failed,
-            "no scenario to run: the config's `paths` and `tags` select no scenario",
-        );
-    } else if let Some(reason) = skipped {
-        report.push("steps", None, Status::Skipped, reason);
-    } else {
-        let mut detail = format!("{} file(s), every step matched", loaded.len());
-        if let Ok(registry) = registry {
-            let mut disabled = std::collections::BTreeSet::new();
-            let mut disabled_files = std::collections::BTreeSet::new();
-            let mut unmatched = std::collections::BTreeSet::new();
-            for lf in &loaded {
-                for sc in lf.scenarios() {
-                    for expanded in feature::expand_outlines(sc.scenario) {
-                        let annotations = crate::annotate::scenario(lf, sc, &expanded, registry);
-                        for item in annotations.items {
-                            if let crate::annotate::Item::Disabled { line, .. } = item {
-                                disabled.insert((&lf.path, line));
-                                disabled_files.insert(&lf.path);
-                            }
-                        }
-                        unmatched.extend(
-                            annotations
-                                .unmatched
-                                .into_iter()
-                                .map(|line| (&lf.path, line)),
-                        );
-                    }
-                }
-            }
-            detail.push_str(&format!(
-                "; {} disabled step(s) in {} file(s)",
-                disabled.len(),
-                disabled_files.len()
-            ));
-            if !unmatched.is_empty() {
-                detail.push_str("\ncommented lines that look like steps but match none:");
-                for (path, line) in unmatched {
-                    detail.push_str(&format!("\n{}:{line}", feature::display_path(path)));
-                }
-            }
-            let hints = include_hints(&loaded, registry);
-            if !hints.is_empty() {
-                detail.push_str(&format!("\ninclude hints:\n{}", hints.join("\n")));
-            }
-            let deprecated = deprecated_hints(&loaded, registry);
-            if !deprecated.is_empty() {
-                detail.push_str(&format!("\ndeprecated:\n{}", deprecated.join("\n")));
-            }
-        }
-        report.push("steps", None, Status::Ok, &detail);
-    }
-
-    // The one pre-run check that lives past `validate::check`. `run` calls
-    // `build_chains` and exits 2 on a malformed `@priority`/`@serial`, so a
-    // `doctor` that stops at the steps would certify a suite that cannot start.
-    match crate::runner::build_chains(loaded) {
-        Ok(chains) => {
-            let detail = format!("{} chain(s)", chains.len());
-            report.push("scheduling", None, Status::Ok, &detail);
-        }
-        Err(error) => report.push("scheduling", None, Status::Failed, &error),
-    }
-    unmarked
-}
-
-/// Hints on `I include`, shown under the `steps` row and never failing it (the
-/// privacy row's footing): `doctor` only reads, and a plugin step can publish
-/// variables the host cannot see, so neither finding is certain enough for
-/// `validate::check`.
-///
-/// 1. A plugin step that `reads` some state and `sets_vars`, straight after an
-///    include, reads what the helper left behind; it breaks the day the helper
-///    sends one more request. Quiet when the helper exports that name.
-/// 2. An `@exports` name no step of the helper (or the nested include it
-///    exports) writes: `run` finds it out only at the include.
-///
-/// Anything `validate::check` already refuses is skipped, not repeated.
-// ponytail: callers are the loaded feature files only; a macro body that
-// includes, or a helper outside `paths`, is not scanned. Walk those too if a
-// suite needs it.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-fn include_hints(
-    loaded: &[std::sync::Arc<feature::LoadedFeature>],
-    registry: &crate::steps::Registry,
-) -> Vec<String> {
-    use crate::steps::StepTarget;
-    let mut extracts = std::collections::BTreeSet::new();
-    let mut unset = std::collections::BTreeSet::new();
-    for lf in loaded {
-        let base = lf.path.parent().unwrap_or(std::path::Path::new("."));
-        for sc in lf.scenarios() {
-            for expanded in feature::expand_outlines(sc.scenario) {
-                let steps: Vec<_> = lf
-                    .background_steps(sc.rule)
-                    .into_iter()
-                    .chain(expanded.steps)
-                    .collect();
-                for (i, step) in steps.iter().enumerate() {
-                    let Ok(Some((StepTarget::Builtin { id, .. }, caps))) =
-                        registry.find(&step.text)
-                    else {
-                        continue;
-                    };
-                    let Some((name, prefix)) = include_call(id, &caps) else {
-                        continue;
-                    };
-                    let Some(included) = load_included(&caps[0], base) else {
-                        continue;
-                    };
-                    let Ok(chosen) = crate::include::select_scenario(&included, name) else {
-                        continue;
-                    };
-                    let Ok(exports) = feature::exports_of(&included, chosen.scenario) else {
-                        continue;
-                    };
-                    if let Some(next) = steps.get(i + 1)
-                        && let Ok(Some((target, caps))) = registry.find(&next.text)
-                    {
-                        for (name, state) in left_behind(target, &caps, registry) {
-                            if !exported(&exports, prefix, &name) {
-                                extracts.insert(format!(
-                                    "{}:{}: extract {name:?} reads the {state} the include left behind; \
-                                     export the value from the helper instead",
-                                    feature::display_path(&lf.path),
-                                    next.line,
-                                ));
-                            }
-                        }
-                    }
-                    let Some(written) = written_names(&included, chosen, registry) else {
-                        continue;
-                    };
-                    for export in &exports {
-                        if !export.ends_with('*')
-                            && !["last_insert_", "updated_", "deleted_"]
-                                .iter()
-                                .any(|p| export.starts_with(p))
-                            && !exported(&written, "", export)
-                        {
-                            unset.insert(format!(
-                                "{}:{}: @exports names {export:?}, but no step of the scenario sets it",
-                                feature::display_path(&included.path),
-                                chosen.scenario.position.line
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    extracts.into_iter().chain(unset).collect()
-}
 
 /// Every use of a plugin's deprecated switch word, in the feature files, the
 /// scenarios they include (followed through nested includes) and the macro
