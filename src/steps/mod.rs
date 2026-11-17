@@ -1,6 +1,7 @@
 pub mod debug;
 pub mod expression;
 pub mod help;
+mod macro_check;
 pub mod plugin;
 mod suggest;
 pub mod vars;
@@ -726,137 +727,6 @@ impl Registry {
         }
         Ok(())
     }
-
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
-    fn validate_macros(&self) -> Result<(), String> {
-        for (left_index, left) in self.macros.iter().enumerate() {
-            for (def, builtin) in BUILTIN_STEPS.iter().zip(COMPILED_BUILTINS.iter()) {
-                if expression::conflicts(&left.compiled.variants, &builtin.variants) {
-                    return Err(format!(
-                        "macro step {:?} from {}:{} conflicts with builtin step {:?}",
-                        left.step,
-                        left.source.display(),
-                        left.line,
-                        def.expression
-                    ));
-                }
-            }
-            for right in self.macros.iter().skip(left_index + 1) {
-                if expression::conflicts(&left.compiled.variants, &right.compiled.variants) {
-                    return Err(format!(
-                        "macro step {:?} from {}:{} conflicts with {:?} from {}:{}",
-                        left.step,
-                        left.source.display(),
-                        left.line,
-                        right.step,
-                        right.source.display(),
-                        right.line,
-                    ));
-                }
-            }
-        }
-
-        let mut graph = vec![Vec::new(); self.macros.len()];
-        for (index, definition) in self.macros.iter().enumerate() {
-            for step in &definition.body {
-                match self.find(&step.text)? {
-                    Some((StepTarget::Builtin { .. }, _)) => {}
-                    Some((target @ StepTarget::Plugin { .. }, caps)) => {
-                        // ponytail: a file included from a macro body is not
-                        // walked, so its plugin steps are checked only at run time.
-                        crate::validate::check_plugin_step(
-                            self,
-                            &target,
-                            &caps,
-                            step.docstring.as_deref(),
-                            // A macro body step has no table.
-                            None,
-                            definition
-                                .source
-                                .parent()
-                                .unwrap_or(std::path::Path::new(".")),
-                        )
-                        .map_err(|e| {
-                            format!(
-                                "{e}, in macro {:?} from {}:{}",
-                                definition.step,
-                                definition.source.display(),
-                                definition.line,
-                            )
-                        })?;
-                    }
-                    Some((StepTarget::Macro(_), _)) if step.docstring.is_some() => {
-                        return Err(format!(
-                            "macro call {:?} with a doc string inside macro {:?} from {}:{} is not supported",
-                            step.text,
-                            definition.step,
-                            definition.source.display(),
-                            definition.line,
-                        ));
-                    }
-                    Some((StepTarget::Macro(target), _)) => graph[index].push(target),
-                    None => {
-                        return Err(format!(
-                            "unknown step {:?} in macro {:?} from {}:{}{}",
-                            step.text,
-                            definition.step,
-                            definition.source.display(),
-                            definition.line,
-                            self.unknown_step_detail(&step.text),
-                        ));
-                    }
-                }
-            }
-        }
-
-        let mut visited = vec![false; self.macros.len()];
-        let mut visiting = vec![false; self.macros.len()];
-        let mut path = Vec::new();
-        for index in 0..self.macros.len() {
-            self.visit(index, &graph, &mut visited, &mut visiting, &mut path)?;
-        }
-        let mut depths = vec![None; self.macros.len()];
-        for index in 0..self.macros.len() {
-            if macro_depth(index, &graph, &mut depths) > 16 {
-                return Err(format!(
-                    "macro nesting exceeds 16 starting from step {:?}",
-                    self.macros[index].step
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn visit(
-        &self,
-        index: usize,
-        graph: &[Vec<usize>],
-        visited: &mut [bool],
-        visiting: &mut [bool],
-        path: &mut Vec<usize>,
-    ) -> Result<(), String> {
-        if visiting[index] {
-            let start = path.iter().position(|item| *item == index).unwrap_or(0);
-            let mut cycle: Vec<&str> = path[start..]
-                .iter()
-                .map(|item| self.macros[*item].step.as_str())
-                .collect();
-            cycle.push(self.macros[index].step.as_str());
-            return Err(format!("cycle in macros: {}", cycle.join(" → ")));
-        }
-        if visited[index] {
-            return Ok(());
-        }
-        visiting[index] = true;
-        path.push(index);
-        for child in &graph[index] {
-            self.visit(*child, graph, visited, visiting, path)?;
-        }
-        path.pop();
-        visiting[index] = false;
-        visited[index] = true;
-        Ok(())
-    }
 }
 
 /// A message about to quote a step that no single entry matched cannot hide a
@@ -872,19 +742,6 @@ fn record_literal_secrets(params: &[expression::Param], values: &[String]) {
     {
         crate::privacy::record_value(value);
     }
-}
-
-fn macro_depth(index: usize, graph: &[Vec<usize>], memo: &mut [Option<usize>]) -> usize {
-    if let Some(depth) = memo[index] {
-        return depth;
-    }
-    let depth = 1 + graph[index]
-        .iter()
-        .map(|child| macro_depth(*child, graph, memo))
-        .max()
-        .unwrap_or(0);
-    memo[index] = Some(depth);
-    depth
 }
 
 /// Step arguments after interpolation.
