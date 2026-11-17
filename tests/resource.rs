@@ -1,6 +1,6 @@
 //! `bddkit resource fields` — what a `resources.<kind>.<name>` body takes,
 //! for the two kinds the host serves. The plugin half needs a loaded
-//! `cdylib` and lives in `tests/plugin.rs`.
+//! `cdylib` and lives in `tests/plugin/`.
 
 #![allow(
     clippy::expect_used,

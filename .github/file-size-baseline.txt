@@ -10,6 +10,3 @@ src/report/markdown.rs 1320
 src/resource.rs 1306
 src/runner.rs 2315
 src/steps/mod.rs 1614
-tests/acceptance.rs 6545
-tests/plugin.rs 3828
-tests/plugin_cli.rs 2661

@@ -193,7 +193,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A fresh, uniquely named directory under the OS temp dir — this
-    /// codebase's own convention (`tests/acceptance.rs`), not `tempfile`.
+    /// codebase's own convention (`tests/acceptance/`), not `tempfile`.
     /// Tests in this module run in parallel within one process, so the pid
     /// alone (the convention's usual suffix) is not enough when a helper
     /// like `parse_scenario` is called from several tests at once — hence

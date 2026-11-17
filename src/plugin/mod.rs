@@ -1398,7 +1398,7 @@ pub(crate) mod tests {
     }
 
     /// The fixture refuses its reset when its config says so — the same switch
-    /// `tests/plugin.rs` uses to reach the reset-failure path.
+    /// `tests/plugin/` uses to reach the reset-failure path.
     fn instance_failing_reset(name: &str) -> InstanceSpec {
         InstanceSpec {
             group: "echo".to_string(),
@@ -1576,7 +1576,7 @@ pub(crate) mod tests {
         // Partial: the echo fixture is `shared`, so a `call_step` that ignored
         // `existing` entirely would still find the one shared handle and pass
         // this. What closes it is the `per_worker` fixture, out of process, in
-        // `tests/plugin.rs::two_files_get_different_per_worker_instances`.
+        // `tests/plugin/groups.rs::two_files_get_different_per_worker_instances`.
         let plugins = Plugins::load(
             vec![entry()],
             &[instance("a", Some("p-"))],
