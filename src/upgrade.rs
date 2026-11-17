@@ -23,6 +23,8 @@ use std::process::Command;
 
 use crate::telemetry::payload::UpgradeInfo;
 
+mod stage;
+
 const REPO: &str = "bddkit/bddkit";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const BINARY: &str = if cfg!(windows) {
@@ -202,7 +204,6 @@ pub async fn run(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Resul
     outcome
 }
 
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Result<i32> {
     let data = dirs::user_data(ctx.os, &ctx.env)
         .context("no user data directory (HOME / LOCALAPPDATA unset)")?;
@@ -232,52 +233,14 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
         bail!("there is no terminal to confirm on: pass --yes, or --check to see the plan only");
     }
 
-    let github = &ctx.sources.github;
-    let version = match &opts.version {
-        Some(version) => {
-            let version = version.strip_prefix('v').unwrap_or(version);
-            install::check_segment("version", version)?;
-            version.to_string()
-        }
-        None => install::latest_version(&ctx.client, github, REPO).await?,
+    let Some(version) = stage::target_version(ctx, opts).await? else {
+        return Ok(0);
     };
-    if version == CURRENT {
-        println!("bddkit {CURRENT} is already the version installed");
-        return Ok(0);
-    }
-    if opts.version.is_none() && older(&version, CURRENT) {
-        println!(
-            "the latest release ({version}) is older than the installed {CURRENT}: --version {version} downgrades"
-        );
-        return Ok(0);
-    }
 
-    // Beside the binary rather than in the temp directory: the final rename
-    // cannot cross filesystems, and a directory we cannot create here is the
-    // "cannot write where bddkit lives" answer, before anything is downloaded.
     let bin_dir = managed
         .parent()
         .context("the installed binary has no directory")?;
-    // The staged binary is run, so it is staged where the real run would stage
-    // it. `--check` switches nothing and may fall back to the temp directory
-    // when this one is not writable, but then says so: a plan the real run
-    // would refuse must not look fine.
-    let mut staging = bin_dir.join(format!(".bddkit-upgrade-{}", std::process::id()));
-    let mut not_writable = None;
-    if let Err(error) = std::fs::create_dir_all(&staging) {
-        if !opts.check {
-            return Err(error).with_context(|| {
-                format!(
-                    "cannot write to {}, where bddkit is installed; upgrade it as the user who installed it",
-                    bin_dir.display()
-                )
-            });
-        }
-        staging = std::env::temp_dir().join(format!(".bddkit-upgrade-{}", std::process::id()));
-        std::fs::create_dir_all(&staging)
-            .with_context(|| format!("cannot write to {}", staging.display()))?;
-        not_writable = Some(bin_dir);
-    }
+    let (staging, not_writable) = stage::staging_dir(opts, bin_dir)?;
     let mut cleanup = Cleanup {
         staging: staging.clone(),
         created: Vec::new(),
@@ -285,21 +248,11 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     };
 
     let host = install::host_target()?;
-    let download = install::download(&ctx.client, github, REPO, &version, host).await?;
+    let download =
+        install::download(&ctx.client, &ctx.sources.github, REPO, &version, host).await?;
     let staged = install::extract_binary(&download.bytes, &download.asset, &staging)?;
     let info = staged_info(&staged)?;
-    if info.version != version {
-        bail!(
-            "the release v{version} holds a bddkit that reports itself as {}",
-            info.version
-        );
-    }
-    if info.target != host {
-        bail!(
-            "the release holds a bddkit for {}, this machine is {host}",
-            info.target
-        );
-    }
+    stage::verify_release(&info, &version, host)?;
 
     // A version is named only once the release holding it has been downloaded
     // and has said so itself: what was typed after `--version` is text.
@@ -317,11 +270,7 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     print_plan(&version, &info, abi_changes, &plan);
     if !plan.blocked.is_empty() && !opts.force {
         note.result = "refused";
-        bail!(
-            "nothing was changed: {} plugin(s) have no release for plugin ABI {}; --force upgrades anyway and leaves them",
-            plan.blocked.len(),
-            install::abi_label(&info.abis())
-        );
+        return Err(blocked_refusal(&plan, &info));
     }
     if let Some(dir) = not_writable {
         println!(
@@ -340,57 +289,9 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
 
     preflight(ctx, &plan, &previous, &receipt_path)?;
 
-    // New plugin versions land beside the old ones, and the staged binary
-    // must accept each before anything is replaced. Two lock files moving the
-    // same release share one directory: it is fetched and checked once.
-    let mut fetched: Vec<(&Move, Fetched)> = Vec::new();
-    let mut refused: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashMap<PathBuf, Option<Fetched>> =
-        std::collections::HashMap::default();
-    for planned in &plan.moves {
-        let dir = manage::version_dir(&planned.target, &planned.repo, &planned.to);
-        if let Some(known) = seen.get(&dir) {
-            match known {
-                Some(got) => fetched.push((planned, got.clone())),
-                None => refused.push(format!(
-                    "{} ({}): refused above",
-                    planned.name, planned.target.label
-                )),
-            }
-            continue;
-        }
-        let got = ctx
-            .fetch_into(&planned.target, &planned.repo, &planned.to)
-            .await
-            .with_context(|| format!("{} {}", planned.name, planned.to))?;
-        // `upgrade` never kept a copy of the version it is about to replace.
-        got.commit();
-        cleanup.created.push(got.lib_path.clone());
-        if let Err(error) = check_with_staged(&staged, &planned.name, &got.lib_path) {
-            // The same condition as a missing release, found later: --force
-            // leaves the plugin as it is, otherwise nothing changes.
-            if !opts.force {
-                return Err(error.context(format!("{} {}", planned.name, planned.to)));
-            }
-            cleanup.created.pop();
-            let _ = manage::remove_version_dir(&got.lib_path);
-            refused.push(format!(
-                "{} ({}): {error:#}",
-                planned.name, planned.target.label
-            ));
-            seen.insert(dir, None);
-            continue;
-        }
-        seen.insert(dir, Some(got.clone()));
-        fetched.push((planned, got));
-    }
+    let (fetched, refused) = stage::fetch_moves(ctx, opts, &plan, &staged, &mut cleanup).await?;
 
-    let mut locks: Vec<PathBuf> = Vec::new();
-    for (planned, _) in &fetched {
-        if !locks.contains(&planned.target.lock) {
-            locks.push(planned.target.lock.clone());
-        }
-    }
+    let locks = distinct_locks(&fetched);
     note.plugins_refused += refused.len() as u64;
     backup(&exe, &previous, &locks, &version)?;
     cleanup.keep_created = true;
@@ -410,11 +311,37 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
     }
 
     note.plugins_switched = fetched.len() as u64;
+    report_switch(ctx, &version, &fetched, &refused);
+    Ok(0)
+}
+
+/// The refusal for plugins with no release for the new plugin ABI.
+fn blocked_refusal(plan: &Plan, info: &Info) -> anyhow::Error {
+    anyhow::anyhow!(
+        "nothing was changed: {} plugin(s) have no release for plugin ABI {}; --force upgrades anyway and leaves them",
+        plan.blocked.len(),
+        install::abi_label(&info.abis())
+    )
+}
+
+/// Each lock file a fetched move touches, once, in order.
+fn distinct_locks(fetched: &[(&Move, Fetched)]) -> Vec<PathBuf> {
+    let mut locks: Vec<PathBuf> = Vec::new();
+    for (planned, _) in fetched {
+        if !locks.contains(&planned.target.lock) {
+            locks.push(planned.target.lock.clone());
+        }
+    }
+    locks
+}
+
+/// What the switch did: the binary, what `--force` left, each plugin moved.
+fn report_switch(ctx: &Context, version: &str, fetched: &[(&Move, Fetched)], refused: &[String]) {
     println!("bddkit {CURRENT} → {version}");
-    for row in &refused {
+    for row in refused {
         println!("left as it is: {row}");
     }
-    for (planned, _) in &fetched {
+    for (planned, _) in fetched {
         println!(
             "{} {} → {} ({})",
             planned.name, planned.from, planned.to, planned.target.label
@@ -427,7 +354,6 @@ async fn run_inner(ctx: &Context, opts: &Options, note: &mut UpgradeInfo) -> Res
             "plugin versions from earlier upgrades remain on disk; `bddkit plugin prune` removes them"
         );
     }
-    Ok(0)
 }
 
 /// Everything the switch will write, refused now rather than halfway (the bin
