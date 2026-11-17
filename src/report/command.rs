@@ -97,27 +97,17 @@ pub fn format_names(outputs: &[PathBuf]) -> Vec<&'static str> {
     names
 }
 
-/// Renders `events` to every output, or to none: each is written beside its
-/// target under a temporary name and renamed only once all are complete.
-/// Returns the exit code (0), every failure being an error for `main` to turn
-/// into exit 2.
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
-pub fn run(
+/// Everything that can be refused before the stream is read, so a refusal
+/// writes nothing. Returns the format of each output.
+fn check_outputs(
     events: &Path,
     outputs: &[PathBuf],
-    artifacts: Option<&Path>,
-    embed: Option<&embed::Options>,
     detail: Option<Detail>,
-    progress: &Progress,
-    info: &mut ReportInfo,
-) -> Result<i32> {
-    let defaulted = outputs.is_empty();
-    let outputs = outputs_for(events, outputs);
-
-    // All of this before the stream is read, so a refusal writes nothing.
+    embedding: bool,
+) -> Result<Vec<Format>> {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut formats = Vec::new();
-    for output in &outputs {
+    for output in outputs {
         formats.push(format_of(output)?);
         let id = identity(output);
         if id == identity(events) {
@@ -135,9 +125,72 @@ pub fn run(
     if detail.is_some() && !formats.contains(&Format::Markdown) {
         bail!("--detail applies to a Markdown output: name one with -o report.md");
     }
-    if embed.is_some() && !formats.contains(&Format::Html) {
+    if embedding && !formats.contains(&Format::Html) {
         bail!("--embed-artifacts applies to an HTML output: name one with -o report.html");
     }
+    Ok(formats)
+}
+
+/// Writes every page under a temporary name, then renames them all; any
+/// failure removes what was written. Returns `(temporary, target, size)`.
+fn write_pages(
+    outputs: &[PathBuf],
+    formats: &[Format],
+    defaulted: bool,
+    render: &dyn Fn(&Path, &Format) -> Result<String>,
+) -> Result<Vec<(PathBuf, PathBuf, usize)>> {
+    let mut written: Vec<(PathBuf, PathBuf, usize)> = Vec::new();
+    let result = outputs
+        .iter()
+        .zip(formats)
+        .try_for_each(|(output, format)| {
+            let page = render(output, format)?;
+            let temp = temporary_name(output);
+            written.push((temp.clone(), output.clone(), page.len()));
+            std::fs::write(&temp, page).map_err(|error| {
+                let hint = if defaulted {
+                    format!(
+                        "; the report goes beside the stream unless -o names a place, e.g. -o ./{}",
+                        output.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                } else {
+                    String::new()
+                };
+                anyhow::anyhow!("cannot write {}: {error}{hint}", output.display())
+            })
+        });
+    let result = result.and_then(|()| {
+        written.iter().try_for_each(|(temp, target, _)| {
+            check_cancelled()?;
+            std::fs::rename(temp, target)
+                .with_context(|| format!("cannot write {}", target.display()))
+        })
+    });
+    if result.is_err() {
+        for (temp, ..) in &written {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+    result.map(|()| written)
+}
+
+/// Renders `events` to every output, or to none: each is written beside its
+/// target under a temporary name and renamed only once all are complete.
+/// Returns the exit code (0), every failure being an error for `main` to turn
+/// into exit 2.
+pub fn run(
+    events: &Path,
+    outputs: &[PathBuf],
+    artifacts: Option<&Path>,
+    embed: Option<&embed::Options>,
+    detail: Option<Detail>,
+    progress: &Progress,
+    info: &mut ReportInfo,
+) -> Result<i32> {
+    let defaulted = outputs.is_empty();
+    let outputs = outputs_for(events, outputs);
+
+    let formats = check_outputs(events, &outputs, detail, embed.is_some())?;
 
     let file =
         std::fs::File::open(events).with_context(|| format!("cannot read {}", events.display()))?;
@@ -177,56 +230,26 @@ pub fn run(
         None => embed::Embeds::default(),
     };
 
-    let mut written: Vec<(PathBuf, PathBuf, usize)> = Vec::new();
-    let result = outputs
-        .iter()
-        .zip(&formats)
-        .try_for_each(|(output, format)| {
-            let dir = output
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            let base = root
-                .as_deref()
-                .map_or_else(String::new, |root| html::artifacts_base(root, dir));
-            check_cancelled()?;
-            let page = match format {
-                Format::Html => html::render(&run, &base, temporary, &embeds),
-                Format::Markdown => markdown::render(
-                    &run,
-                    &output.file_name().unwrap_or_default().to_string_lossy(),
-                    &base,
-                    temporary,
-                    detail.unwrap_or(Detail::Failed),
-                ),
-            };
-            let temp = temporary_name(output);
-            written.push((temp.clone(), output.clone(), page.len()));
-            std::fs::write(&temp, page).map_err(|error| {
-                let hint = if defaulted {
-                    format!(
-                        "; the report goes beside the stream unless -o names a place, e.g. -o ./{}",
-                        output.file_name().unwrap_or_default().to_string_lossy()
-                    )
-                } else {
-                    String::new()
-                };
-                anyhow::anyhow!("cannot write {}: {error}{hint}", output.display())
-            })
-        });
-    let result = result.and_then(|()| {
-        written.iter().try_for_each(|(temp, target, _)| {
-            check_cancelled()?;
-            std::fs::rename(temp, target)
-                .with_context(|| format!("cannot write {}", target.display()))
+    let written = write_pages(&outputs, &formats, defaulted, &|output, format| {
+        let dir = output
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let base = root
+            .as_deref()
+            .map_or_else(String::new, |root| html::artifacts_base(root, dir));
+        check_cancelled()?;
+        Ok(match format {
+            Format::Html => html::render(&run, &base, temporary, &embeds),
+            Format::Markdown => markdown::render(
+                &run,
+                &output.file_name().unwrap_or_default().to_string_lossy(),
+                &base,
+                temporary,
+                detail.unwrap_or(Detail::Failed),
+            ),
         })
-    });
-    if result.is_err() {
-        for (temp, ..) in &written {
-            let _ = std::fs::remove_file(temp);
-        }
-    }
-    result?;
+    })?;
 
     progress.clear();
     let scenarios: usize = run.files.iter().map(|f| f.scenarios.len()).sum();
