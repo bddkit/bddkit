@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/doctor.rs"
+  - "src/doctor/*.rs"
   - "src/resource.rs"
   - "src/config.rs"
   - "src/dirs.rs"
