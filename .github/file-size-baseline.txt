@@ -4,7 +4,7 @@ src/events.rs 1212
 src/feature.rs 1666
 src/main.rs 1678
 src/plugin/library.rs 1110
-src/plugin/manage.rs 1068
+src/plugin/manage.rs 1003
 src/plugin/mod.rs 1897
 src/privacy.rs 1419
 src/report/markdown.rs 1320
