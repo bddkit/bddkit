@@ -214,8 +214,59 @@ fn text(term: &Term, prompt: &str, initial: &str, allow_empty: bool) -> Result<O
     )
 }
 
+/// The engine and its DSN. `--db` answers the engine only; the DSN
+/// is asked unless `--dsn` gave it. `None`: Esc or Ctrl-C.
+fn ask_db(term: &Term, args: &InitArgs) -> Result<Option<(Db, Option<String>)>> {
+    let db = if let Some(db) = args.db {
+        db
+    } else {
+        let items = ["none", "PostgreSQL", "MySQL", "MariaDB"];
+        let Some(engine) = select(term, "A database?", &items)? else {
+            return Ok(None);
+        };
+        [Db::None, Db::Postgres, Db::Mysql, Db::Mariadb][engine]
+    };
+    let dsn = match (db, &args.dsn) {
+        (Db::None, _) => None,
+        (_, Some(dsn)) => Some(dsn.clone()),
+        (_, None) => {
+            let prompt = "DSN (an environment reference keeps the password out of the file)";
+            let Some(dsn) = text(term, prompt, "${BDDKIT_DB_DSN}", false)? else {
+                return Ok(None);
+            };
+            Some(dsn)
+        }
+    };
+    Ok(Some((db, dsn)))
+}
+
+/// The layer the plugins go to. `None`: Esc or Ctrl-C.
+fn ask_layer(term: &Term, args: &InitArgs, plugins: &[String]) -> Result<Option<Layer>> {
+    if let Some(layer) = args.layer {
+        return Ok(Some(layer));
+    }
+    // Under `--bddkit-dir` there is one directory and nothing to choose.
+    if plugins.is_empty()
+        || dirs::Env::from_process(args.dir.bddkit_dir.clone())
+            .override_dir
+            .is_some()
+    {
+        return Ok(Some(Layer::User));
+    }
+    let items = [
+        "for me on this machine (the user layer)",
+        "for everyone with this repository (.bddkit/ in the project)",
+    ];
+    Ok(
+        match select(term, "Where should the plugins go?", &items)? {
+            Some(0) => Some(Layer::User),
+            Some(_) => Some(Layer::Project),
+            None => None,
+        },
+    )
+}
+
 /// The questions the flags did not answer. `None`: Esc or Ctrl-C.
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
     check_flags(args)?;
     let term = Term::stderr();
@@ -234,27 +285,8 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
         };
         Some(url.trim().to_string()).filter(|url| !url.is_empty())
     };
-
-    // `--db` answers the engine only; the DSN is asked unless `--dsn` gave it.
-    let db = if let Some(db) = args.db {
-        db
-    } else {
-        let items = ["none", "PostgreSQL", "MySQL", "MariaDB"];
-        let Some(engine) = select(&term, "A database?", &items)? else {
-            return Ok(None);
-        };
-        [Db::None, Db::Postgres, Db::Mysql, Db::Mariadb][engine]
-    };
-    let dsn = match (db, &args.dsn) {
-        (Db::None, _) => None,
-        (_, Some(dsn)) => Some(dsn.clone()),
-        (_, None) => {
-            let prompt = "DSN (an environment reference keeps the password out of the file)";
-            let Some(dsn) = text(&term, prompt, "${BDDKIT_DB_DSN}", false)? else {
-                return Ok(None);
-            };
-            Some(dsn)
-        }
+    let Some((db, dsn)) = ask_db(&term, args)? else {
+        return Ok(None);
     };
 
     let plugins = if args.plugins.is_empty() {
@@ -269,27 +301,8 @@ async fn ask(args: &InitArgs) -> Result<Option<Answers>> {
         bail!("--layer needs at least one plugin");
     }
 
-    let layer = match args.layer {
-        Some(layer) => layer,
-        // Under `--bddkit-dir` there is one directory and nothing to choose.
-        None if plugins.is_empty()
-            || dirs::Env::from_process(args.dir.bddkit_dir.clone())
-                .override_dir
-                .is_some() =>
-        {
-            Layer::User
-        }
-        None => {
-            let items = [
-                "for me on this machine (the user layer)",
-                "for everyone with this repository (.bddkit/ in the project)",
-            ];
-            match select(&term, "Where should the plugins go?", &items)? {
-                Some(0) => Layer::User,
-                Some(_) => Layer::Project,
-                None => return Ok(None),
-            }
-        }
+    let Some(layer) = ask_layer(&term, args, &plugins)? else {
+        return Ok(None);
     };
 
     let parallel = if let Some(parallel) = args.parallel {
@@ -556,7 +569,6 @@ fn ignore_local_files() -> Result<()> {
 
 /// Writes, installs and checks. 0 when everything is in place and `doctor` is
 /// clean, 1 when a plugin failed to install or `doctor` found something.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub async fn apply(
     answers: &Answers,
     config_path: &Path,
@@ -588,7 +600,7 @@ pub async fn apply(
     // The plugin groups the config was just written with, from the answers:
     // reading them back would expand `${VAR}`, and an `--dsn '${BDDKIT_DB_DSN}'`
     // not exported yet would hide the `db` group behind a load error.
-    let mut groups: Vec<String> = answers
+    let groups: Vec<String> = answers
         .api_url
         .iter()
         .map(|_| "api")
@@ -596,60 +608,7 @@ pub async fn apply(
         .map(String::from)
         .collect();
     if !answers.plugins.is_empty() || !groups.is_empty() {
-        match plugin::manage::Context::new(env.clone(), crate::config_dir(config_path)) {
-            Ok(ctx) => {
-                // A group an installed plugin serves needs no index to name a
-                // plugin for it, so an unreachable index is no failure then.
-                let served = ctx.served_groups();
-                groups.retain(|group| !served.contains(group));
-                // The plugins the answers named, then the ones the config just
-                // written needs: `api` for an API and `db` for a database,
-                // unless an installed plugin serves the group.
-                let mut names = answers.plugins.clone();
-                match ctx.needs_groups(&groups).await {
-                    Ok((missing, _)) => {
-                        for entry in missing {
-                            // `--plugin` takes `name`, `owner/repo` and either with `@version`.
-                            let already_named = names.iter().any(|n| {
-                                let base = n.split('@').next().unwrap_or(n);
-                                base == entry.name || base == entry.repo
-                            });
-                            if !already_named {
-                                names.push(entry.name);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        report(error.context("could not work out which plugins the config needs"));
-                    }
-                }
-                // Never the auto-pick: with `/etc/bddkit` and no user directory
-                // it would install machine-wide. One `--bddkit-dir` has no layers.
-                let layer = match answers.layer {
-                    Layer::Project => Some("project"),
-                    Layer::User => env.override_dir.is_none().then_some("user"),
-                };
-                let mut installed = false;
-                for name in &names {
-                    let outcome = ctx.install(name, layer).await;
-                    acted.extend(ctx.take_acted());
-                    match outcome {
-                        Ok(_) => installed = true,
-                        Err(error) => report(error.context(name.clone())),
-                    }
-                }
-                if installed {
-                    match hints(config_path, &env) {
-                        Ok(lines) => lines.iter().for_each(|line| println!("next: {line}")),
-                        Err(error) => eprintln!(
-                            "note: plugin fields not listed: {}",
-                            crate::privacy::mask_text(&format!("{error:#}"))
-                        ),
-                    }
-                }
-            }
-            Err(error) => report(error),
-        }
+        install_needed(answers, config_path, &env, acted, groups, &mut report).await;
     }
 
     let checked = doctor::check(
@@ -666,6 +625,79 @@ pub async fn apply(
     println!();
     print!("{}", checked.render());
     Ok(code.max(checked.exit_code()))
+}
+
+/// Installs the plugins the answers named and the ones the new config needs,
+/// then prints the fields they add. Every failure goes to `report`.
+async fn install_needed(
+    answers: &Answers,
+    config_path: &Path,
+    env: &dirs::Env,
+    acted: &mut Vec<PluginInfo>,
+    mut groups: Vec<String>,
+    report: &mut dyn FnMut(anyhow::Error),
+) {
+    let ctx = match plugin::manage::Context::new(env.clone(), crate::config_dir(config_path)) {
+        Ok(ctx) => ctx,
+        Err(error) => return report(error),
+    };
+    // A group an installed plugin serves needs no index to name a
+    // plugin for it, so an unreachable index is no failure then.
+    let served = ctx.served_groups();
+    groups.retain(|group| !served.contains(group));
+    let names = plugin_names(&ctx, answers, &groups, report).await;
+    // Never the auto-pick: with `/etc/bddkit` and no user directory
+    // it would install machine-wide. One `--bddkit-dir` has no layers.
+    let layer = match answers.layer {
+        Layer::Project => Some("project"),
+        Layer::User => env.override_dir.is_none().then_some("user"),
+    };
+    let mut installed = false;
+    for name in &names {
+        let outcome = ctx.install(name, layer).await;
+        acted.extend(ctx.take_acted());
+        match outcome {
+            Ok(_) => installed = true,
+            Err(error) => report(error.context(name.clone())),
+        }
+    }
+    if installed {
+        match hints(config_path, env) {
+            Ok(lines) => lines.iter().for_each(|line| println!("next: {line}")),
+            Err(error) => eprintln!(
+                "note: plugin fields not listed: {}",
+                crate::privacy::mask_text(&format!("{error:#}"))
+            ),
+        }
+    }
+}
+
+/// The plugins the answers named, then the ones the config just written needs:
+/// `api` for an API and `db` for a database, unless an installed plugin serves
+/// the group.
+async fn plugin_names(
+    ctx: &plugin::manage::Context,
+    answers: &Answers,
+    groups: &[String],
+    report: &mut dyn FnMut(anyhow::Error),
+) -> Vec<String> {
+    let mut names = answers.plugins.clone();
+    match ctx.needs_groups(groups).await {
+        Ok((missing, _)) => {
+            for entry in missing {
+                // `--plugin` takes `name`, `owner/repo` and either with `@version`.
+                let already_named = names.iter().any(|n| {
+                    let base = n.split('@').next().unwrap_or(n);
+                    base == entry.name || base == entry.repo
+                });
+                if !already_named {
+                    names.push(entry.name);
+                }
+            }
+        }
+        Err(error) => report(error.context("could not work out which plugins the config needs")),
+    }
+    names
 }
 
 /// `init` never overwrites a suite's config, and never makes the pair
