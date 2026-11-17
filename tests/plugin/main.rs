@@ -35,7 +35,7 @@ use std::process::Command;
 
 /// A throwaway project: config, feature file, and the hand-written lock file
 /// the run-path loader reads — the hand-written form `plugin install` also
-/// writes, exercised by `tests/plugin_cli.rs` instead of here.
+/// writes, exercised by `tests/plugin_cli/` instead of here.
 fn project(name: &str, feature: &str, config_tail: &str) -> PathBuf {
     project_at(name, feature, config_tail, 1)
 }
