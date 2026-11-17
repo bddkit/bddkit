@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/upgrade.rs"
+  - "src/upgrade/*.rs"
   - "install.sh"
   - "install.ps1"
 ---
