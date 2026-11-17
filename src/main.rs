@@ -31,6 +31,7 @@ mod runner;
 mod select;
 mod settings;
 mod steps;
+mod suite;
 mod telemetry;
 mod unique;
 mod upgrade;
@@ -1364,72 +1365,18 @@ async fn run(cli: RunArgs) -> Result<i32> {
     outcome
 }
 
-#[expect(clippy::too_many_lines, reason = "refactoring tracked in #259")]
 async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32> {
     privacy::set_flags(cli.privacy.layer());
     cli.reports
         .paths()
         .into_iter()
         .try_for_each(report::prepare)?;
-    // Opened once, here, and held: see `events::open`. Nothing is written to
-    // it until the run has started, so every refusal below leaves it empty.
-    let events_path = cli
-        .events
-        .clone()
-        .or_else(|| env_var("BDDKIT_EVENTS").map(PathBuf::from));
-    let events_file = events_path
-        .as_ref()
-        .map(|path| events::open(path))
-        .transpose()?;
-    let evidence = match cli.evidence {
-        Some(sources) => Some(("--evidence", sources)),
-        None => events::sources_from_env()?.map(|sources| ("$BDDKIT_EVIDENCE", sources)),
-    };
-    // `$BDDKIT_EVENTS` counts, so this is not clap's `requires`.
-    if let (Some((source, _)), None) = (evidence, &events_file) {
-        anyhow::bail!("{source} requires --events (or $BDDKIT_EVENTS)");
-    }
-    let resolved = config::resolve_config_path(cli.config.as_deref())?
-        .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
-    let config_path = resolved.path;
-    let mut cfg = config::load(&config_path, cli.env.as_deref())?;
-    let mut overrides =
-        settings::resolve(&cli.settings, &cfg.all_group_names(), &privacy::process_env)?;
-    // `run`'s own two flags sit on top of the environment.
-    overrides.fail_fast = cli.fail_fast.or(overrides.fail_fast);
-    if !cli.tags.is_empty() {
-        overrides.tags = Some(cli.tags.clone());
-    }
-    cfg.apply(&overrides)?;
-    // The config key is the suite's default: a run without a stream ignores it.
-    let evidence = match evidence {
-        Some((_, sources)) => sources,
-        None if events_file.is_some() => cfg.evidence.unwrap_or_default(),
-        None => events::Sources::default(),
-    };
-    note_config(
-        probe,
-        &cli,
-        &cfg,
-        &config_path,
-        events_file.is_some(),
-        evidence,
-    );
-    // Only a run that defers anything has a use for it.
-    let evidence_buffer = if evidence.any() {
-        events::buffer_from_env()?
-    } else {
-        events::EVIDENCE_BUFFER
-    };
-    let privacy = privacy::Privacy::from_sources(
-        Some(&cfg.privacy),
-        &privacy::process_env,
-        cli.privacy.layer(),
-    )?;
-    probe.privacy = Some(telemetry::payload::PrivacyFlags::of(&privacy));
-    if privacy.reveal {
-        eprintln!("{}", privacy.reveal_notice());
-    }
+    let streams = suite::open_streams(&cli)?;
+    let (cfg, config_path, config_source) = suite::load_config(&cli)?;
+    let (evidence, evidence_buffer) =
+        suite::resolve_evidence(&cli, &cfg, &config_path, &streams, probe)?;
+    let events_file = streams.0;
+    let privacy = suite::resolve_privacy(&cli, &cfg, probe)?;
     let generator = Arc::new(unique::Generator::new());
     let artifacts = Arc::new(artifacts::Artifacts::new(
         cli.artifacts_dir
@@ -1437,60 +1384,15 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
             .or_else(|| env_var("BDDKIT_ARTIFACTS_DIR").map(PathBuf::from)),
         generator.run_id(),
     )?);
-    let env = dirs::Env::from_process(cli.dir.bddkit_dir.clone());
-    probe.stage = Some(telemetry::payload::Stage::Plugins);
-    // Non-strict, so the refusal of an instance is told apart from a plugin
-    // that never loaded: the first is a resource the host cannot build.
-    let plugins = load_plugins_collecting(&config_path, &cfg, &env, false)?;
-    probe.stage = Some(telemetry::payload::Stage::Resources);
-    if let Some(plugins) = &plugins {
-        plugins.ensure_valid()?;
-        (probe.resources.plugins, probe.resources.plugins_other) = plugins.instance_counts();
-    }
-
-    probe.stage = Some(telemetry::payload::Stage::Steps);
-    let reg = match build_registry(&cfg, plugins.as_ref()) {
-        Ok(registry) => registry,
-        Err(error) => {
-            eprintln!(
-                "error: 1 problem, run not started\n\n  {}",
-                privacy::mask_text(&error)
-            );
-            return Ok(2);
-        }
+    let plugins = suite::load_plugins(&cli, &cfg, &config_path, probe)?;
+    let Some(reg) = suite::registry_or_refusal(&cfg, plugins.as_ref(), probe) else {
+        return Ok(2);
     };
 
-    probe.stage = Some(telemetry::payload::Stage::Selection);
     let filter = feature::TagFilter::new(&cfg.tags);
-    let paths = if cli.paths.is_empty() {
-        cfg.paths.as_slice()
-    } else {
-        cli.paths.as_slice()
-    };
-
-    // Only a typed argument carries a line: the config's paths are plain.
-    let loaded = match select::select_features(paths, !cli.paths.is_empty(), &filter)? {
-        Ok(loaded) => loaded,
-        Err(message) => {
-            eprintln!("error: {message}, run not started");
-            return Ok(2);
-        }
-    };
-    if loaded.is_empty() {
-        eprintln!("error: no scenario selected, run not started");
+    let Some(loaded) = suite::select_and_validate(&cli, &cfg, &reg, &filter, probe)? else {
         return Ok(2);
-    }
-
-    probe.stage = Some(telemetry::payload::Stage::Validation);
-    let for_check: Vec<&feature::LoadedFeature> = loaded.iter().map(Arc::as_ref).collect();
-    let problems = validate::check(&for_check, &reg, &filter);
-    if !problems.is_empty() {
-        eprintln!("error: {} problem(s), run not started\n", problems.len());
-        for p in &problems {
-            eprintln!("{}", privacy::mask_text(&p.to_string()));
-        }
-        return Ok(2);
-    }
+    };
 
     probe.stage = Some(telemetry::payload::Stage::Scheduling);
     let chains = runner::build_chains(loaded).map_err(anyhow::Error::msg)?;
@@ -1500,20 +1402,8 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     probe.stage = Some(telemetry::payload::Stage::Resources);
 
     // After every fallible resolution above, so no later `?` can leave a handle
-    // that came up unswept. A plugin group that asked for `eager_init` is connected here too, so an
-    // unreachable resource is exit 2 before `run <id>`. Blocking FFI, off the
-    // executor; a handle that did come up is swept before the process leaves.
-    if let Some(plugins) = &plugins {
-        let eager = Arc::clone(plugins);
-        let outcome = tokio::task::spawn_blocking(move || eager.eager_init())
-            .await
-            .map_err(anyhow::Error::new)?;
-        if let Err(error) = outcome {
-            let sweep = Arc::clone(plugins);
-            let _ = tokio::task::spawn_blocking(move || sweep.shutdown()).await;
-            return Err(anyhow::Error::msg(error));
-        }
-    }
+    // that came up unswept.
+    suite::eager_init(plugins.as_ref()).await?;
     // Before anything is announced, and before the handler task is first
     // polled: see `Interrupts`.
     let interrupts = Interrupts::install();
@@ -1522,34 +1412,18 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     println!("run {}", generator.run_id());
     let events = events_file.map(events::Events::start);
     if let Some(events) = &events {
-        events.emit(
-            "run_started",
-            serde_json::json!({
-                "schema": 1,
-                "bddkit": env!("CARGO_PKG_VERSION"),
-                "run_id": generator.run_id(),
-                "started_at_unix_ms": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0)),
-                "artifacts_dir": artifacts.root().display().to_string(),
-                "config": feature::display_path(&config_path),
-                "config_source": resolved.source,
-                "selection": {
-                    "tags": cli.tags,
-                    "paths": cli.paths.iter().map(|p| feature::display_path(p)).collect::<Vec<_>>(),
-                },
-                "evidence": evidence.any(),
-                "evidence_sources": evidence.names(),
-                "concurrency": cfg.concurrency,
-                "privacy": {
-                    "masking": !privacy.reveal,
-                    "words": privacy.words,
-                    "fields": privacy.fields,
-                    "min_length": privacy.min_length,
-                },
-                "files": chains.iter().map(|chain| chain.files.len()).sum::<usize>(),
-            }),
-        );
+        let started = suite::Started {
+            cli: &cli,
+            cfg: &cfg,
+            config_path: &config_path,
+            source: config_source,
+            evidence,
+            privacy: &privacy,
+            run_id: generator.run_id(),
+            artifacts_dir: artifacts.root().display().to_string(),
+            files: chains.iter().map(|chain| chain.files.len()).sum::<usize>(),
+        };
+        events.emit("run_started", started.payload());
     }
     let mut ctx = runner::RunContext::new(
         reg,
@@ -1597,45 +1471,9 @@ async fn run_suite(cli: RunArgs, probe: &mut telemetry::RunProbe) -> Result<i32>
     }
 
     probe.tally(&results);
-    let mut code = report::print_summary(&results, generator.run_id());
-    // The one deliberate exception to "2 = before the first request": a
-    // report silently lost behind a green code is the worse outcome.
-    if let Err(error) = cli.reports.write(&results) {
-        eprintln!("error: {}", privacy::mask_text(&format!("{error:#}")));
-        code = 2;
-        probe.stage = Some(telemetry::payload::Stage::Reports);
-    }
-    // After the reports, so `exit` is the code the process really returns —
-    // and the same exception covers a stream that could not be written.
-    if let Some(events) = ctx.events.clone() {
-        let mut flush =
-            tokio::task::spawn_blocking(move || events.finish(serde_json::json!({"exit": code})));
-        // The same two-signal rule as the handler's: the run is over and its
-        // code is settled, so a first signal only says «still writing» and the
-        // queued lines are not thrown away; a second one exits at once, with
-        // the first one's code and the stream cut short. Without the second
-        // way out a reader that stopped reading would make the process
-        // unkillable but for SIGKILL.
-        let stream = tokio::select! {
-            stream = &mut flush => stream,
-            (name, first) = tail_interrupts.wait() => {
-                eprintln!("\n{name}: still writing the event stream; signal again to exit now");
-                tokio::select! {
-                    stream = flush => stream,
-                    _ = tail_interrupts.wait() => std::process::exit(first),
-                }
-            }
-        };
-        if let Ok(Err(error)) = stream {
-            eprintln!(
-                "error: cannot write the events file: {}",
-                privacy::mask_text(&error.to_string())
-            );
-            code = 2;
-            probe.stage = Some(telemetry::payload::Stage::Events);
-        }
-    }
-    Ok(code)
+    let code = report::print_summary(&results, generator.run_id());
+    let code = suite::write_reports(&cli, &results, code, probe);
+    Ok(suite::finish_events(&ctx, code, &mut tail_interrupts, probe).await)
 }
 
 #[cfg(test)]
