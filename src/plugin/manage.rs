@@ -11,6 +11,8 @@ use anyhow::{Context as _, Result, bail};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
+mod update;
+
 /// Every plugin ABI this host loads.
 const HOST_ABIS: RangeInclusive<u32> = ABI_MIN..=ABI_VERSION;
 
@@ -556,7 +558,6 @@ impl Context {
         Ok(out)
     }
 
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub async fn update(
         &self,
         names: &[String],
@@ -577,69 +578,7 @@ impl Context {
                     continue;
                 }
                 matched.insert(entry.name.clone());
-                let row = format!("{} ({})", entry.name, target.label);
-                let Some(source) = &entry.source else {
-                    println!("{row}: skipped: not installed by bddkit");
-                    continue;
-                };
-                let Some(current) = &entry.version else {
-                    println!(
-                        "{row}: skipped: no version recorded, reinstall it with `plugin install`"
-                    );
-                    continue;
-                };
-                let mut acted = Acted {
-                    repo: Some(source.clone()),
-                    name: Some(entry.name.clone()),
-                    version: Some(current.clone()),
-                    from: None,
-                    layer: Some(target.label.clone()),
-                };
-                let outcome = async {
-                    let indexed = index.iter().find(|e| &e.repo == source);
-                    acted.from = Some(if indexed.is_some() {
-                        PluginFrom::Registry
-                    } else {
-                        PluginFrom::Repository
-                    });
-                    let latest = match install::host_release(
-                        &self.client,
-                        &self.sources.github,
-                        source,
-                        indexed,
-                        HOST_ABIS,
-                    )
-                    .await?
-                    {
-                        Ok(latest) => latest,
-                        Err(why) => {
-                            return Ok(format!(
-                                "up to date for ABI {} ({current}): {why}",
-                                install::abi_label(&HOST_ABIS)
-                            ));
-                        }
-                    };
-                    if &latest == current {
-                        return Ok(format!("up to date ({current})"));
-                    }
-                    if dry_run {
-                        return Ok(format!("{current} → {latest}"));
-                    }
-                    acted.version = Some(latest.clone());
-                    self.install_into(&target, source, &latest).await?;
-                    Ok::<_, anyhow::Error>(format!("updated {current} → {latest}"))
-                }
-                .await;
-                if !dry_run {
-                    self.note(&acted, &outcome);
-                }
-                match outcome {
-                    Ok(message) => println!("{row}: {message}"),
-                    Err(error) => {
-                        failed = true;
-                        println!("{row}: failed: {error:#}");
-                    }
-                }
+                failed |= self.update_entry(&target, &entry, &index, dry_run).await;
             }
         }
         for name in names {
@@ -744,7 +683,6 @@ impl Context {
     /// Only the shape `install` makes qualifies: a real directory holding
     /// exactly one regular file, a dynamic library. A symlink, a dev build
     /// with more files, anything else is not bddkit's to delete.
-    #[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
     pub(crate) fn unreferenced(&self) -> Result<Vec<PathBuf>> {
         let used = self.referenced_paths()?;
         let mut seen = std::collections::HashSet::new();
@@ -754,11 +692,8 @@ impl Context {
                 continue;
             }
             for repo in subdirs(&target.data.join("plugins")) {
-                for dir in subdirs(&repo) {
-                    if is_install_shape(&dir) && !is_referenced(&used, &dir) {
-                        out.push(dir);
-                    }
-                }
+                let stale = |d: &PathBuf| is_install_shape(d) && !is_referenced(&used, d);
+                out.extend(subdirs(&repo).into_iter().filter(stale));
             }
         }
         out.sort();
