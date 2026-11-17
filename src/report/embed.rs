@@ -398,11 +398,29 @@ fn embed_one(
     })
 }
 
+/// One worker: claims indices from `next` until `chosen` runs out.
+fn encode_worker(
+    next: &std::sync::atomic::AtomicUsize,
+    chosen: &[(String, Option<String>)],
+    root: &Path,
+    opts: &Options,
+    tick: &(dyn Fn() + Sync),
+) -> Vec<(usize, Option<Embedded>)> {
+    let mut done = Vec::new();
+    loop {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some((path, media_type)) = chosen.get(i) else {
+            return done;
+        };
+        done.push((i, embed_one(root, path, media_type.as_deref(), opts)));
+        tick();
+    }
+}
+
 /// Reads and encodes the chosen files on `threads` threads. Workers claim
 /// indices from one counter and the result is assembled in plan order, so the
 /// page is the same bytes however many threads there were. `tick` is called
 /// once per finished file.
-#[expect(clippy::excessive_nesting, reason = "refactoring tracked in #259")]
 pub fn encode(
     plan: Plan,
     root: Option<&Path>,
@@ -424,19 +442,7 @@ pub fn encode(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut slots: Vec<(usize, Option<Embedded>)> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads.clamp(1, chosen.len().max(1)))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((path, media_type)) = chosen.get(i) else {
-                            break done;
-                        };
-                        done.push((i, embed_one(root, path, media_type.as_deref(), opts)));
-                        tick();
-                    }
-                })
-            })
+            .map(|_| scope.spawn(|| encode_worker(&next, &chosen, root, opts, tick)))
             .collect();
         workers
             .into_iter()
