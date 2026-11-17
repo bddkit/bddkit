@@ -8,6 +8,7 @@ paths:
   - "src/settings.rs"
   - "src/options.rs"
   - "src/main.rs"
+  - "src/suite.rs"
   - "tests/resource.rs"
 ---
 

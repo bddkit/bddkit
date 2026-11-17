@@ -1,7 +1,7 @@
 src/config.rs 1422
 src/events.rs 1212
 src/feature.rs 1666
-src/main.rs 1678
+src/main.rs 1516
 src/plugin/library.rs 1110
 src/plugin/manage.rs 1003
 src/plugin/mod.rs 1774
