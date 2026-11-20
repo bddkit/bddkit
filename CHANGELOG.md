@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/bddkit/bddkit/compare/v0.5.2...v0.5.3) - 2026-11-20
+
+### Fixed
+
+- build the Linux releases against glibc 2.34 ([#285](https://github.com/bddkit/bddkit/pull/285))
+
+### Other
+
+- state the glibc 2.34 floor for the Linux binaries and plugins ([#285](https://github.com/bddkit/bddkit/pull/285))
+- point the test references at the split test directories ([#261](https://github.com/bddkit/bddkit/pull/261))
+- move the stages of run_suite to suite.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split doctor::check and check_features into doctor/stages.rs and doctor/features.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split upgrade::run_inner, staging steps go to upgrade/stage.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- move Plugins::load_collecting steps to plugin/load.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split report::command::run into check_outputs and write_pages ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split the init questionnaire and plugin install step ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split plugin update entry and prune scan out of plugin/manage.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split the encode worker out of report::embed::encode ([#259](https://github.com/bddkit/bddkit/pull/259))
+- move macro catalog validation to steps/macro_check.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split LoadedFeature::resolve line selection ([#259](https://github.com/bddkit/bddkit/pull/259))
+- flatten VarStack::pop_frame glob export ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split Source::scan in annotate.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+- split the long and deeply nested functions in runner.rs ([#259](https://github.com/bddkit/bddkit/pull/259))
+
 ## [0.5.2](https://github.com/bddkit/bddkit/compare/v0.5.1...v0.5.2) - 2026-11-15
 
 ### Added
