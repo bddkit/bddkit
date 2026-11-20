@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/bddkit/bddkit/main/install.sh | sh
 irm https://raw.githubusercontent.com/bddkit/bddkit/main/install.ps1 | iex
 ```
 
-Installs a prebuilt binary from the [latest release](https://github.com/bddkit/bddkit/releases/latest) — Linux (x86_64/aarch64), macOS (x86_64/aarch64) or Windows (x86_64) — into `~/.local/bin` (`%LOCALAPPDATA%\bddkit\bin` on Windows). `install.sh` also works from Git Bash, MSYS2 and Cygwin: it hands off to `install.ps1`. No prebuilt binary for your platform: `cargo install --git https://github.com/bddkit/bddkit`.
+Installs a prebuilt binary from the [latest release](https://github.com/bddkit/bddkit/releases/latest) — Linux (x86_64/aarch64), macOS (x86_64/aarch64) or Windows (x86_64) — into `~/.local/bin` (`%LOCALAPPDATA%\bddkit\bin` on Windows). `install.sh` also works from Git Bash, MSYS2 and Cygwin: it hands off to `install.ps1`. The Linux binaries run on glibc 2.34 or newer (RHEL 9 and its clones, Ubuntu 22.04, Debian 12 and newer); Alpine (musl) is not supported, because a static musl binary cannot load plugins. No prebuilt binary for your platform: `cargo install --git https://github.com/bddkit/bddkit`.
 
 ### Upgrading
 
