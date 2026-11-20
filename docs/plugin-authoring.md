@@ -585,6 +585,8 @@ Tag every release `v<semver>` — `v0.1.0`, never `0.1.0` or `v1`. `plugin insta
 
 Attach one asset per target, named `<repo-basename>-v<version>-<target>.tar.gz` — `.zip` instead of `.tar.gz` for `x86_64-pc-windows-msvc` — where `<repo-basename>` is the repository's own name (`bddkit-exec` for `bddkit/bddkit-exec`), not the plugin's manifest name. The five targets, verbatim: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`. Missing a target simply means that host cannot install this release.
 
+The Linux `bddkit` binaries run on glibc 2.34 or newer, and a plugin is loaded into that same process, so a Linux plugin built against a newer glibc fails to load on an older system. Build the two Linux targets with `cargo-zigbuild` and the glibc version in the target, which links against 2.34 whatever runner builds it: `cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34` (and `aarch64-unknown-linux-gnu.2.34`; the library still lands in `target/<target>/release/`, and the asset name keeps the plain target). `scripts/glibc-floor.sh <library>` in `bddkit/bddkit` fails when a library needs more than 2.34. Alpine (musl) is not a target.
+
 Each archive holds exactly one dynamic library for its target (`lib*.so`, `lib*.dylib`, or `*.dll`) — anything else inside it (a `LICENSE`, a `README`) is ignored, but a second library, or none, is a malformed release `plugin install` refuses.
 
 Attach `<asset>.sha256` beside each archive, in plain `sha256sum` output (`<hex>  <file name>`). It is checked against the download before anything is written, and it comes from the same release as the archive — it guards the download's integrity, not who built it.
