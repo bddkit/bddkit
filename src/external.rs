@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+mod ui;
+
 /// `[a-z][a-z0-9-]*`: a name that cannot climb out of a directory.
 fn is_tool_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -44,7 +46,7 @@ fn find(name: &str, exe_dir: Option<&Path>, path: Option<&OsStr>) -> Option<Path
 
 /// Runs the tool and returns its exit code; on Unix it does not return on
 /// success (the process is replaced). `Err` is a refusal to start.
-pub fn run(args: &[OsString]) -> Result<i32> {
+pub async fn run(args: &[OsString]) -> Result<i32> {
     let name = args
         .first()
         .and_then(|a| a.to_str())
@@ -52,7 +54,14 @@ pub fn run(args: &[OsString]) -> Result<i32> {
     let exe = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .context("cannot locate the running bddkit")?;
-    let tool = name.and_then(|n| find(n, exe.parent(), std::env::var_os("PATH").as_deref()));
+    let mut tool = name.and_then(|n| find(n, exe.parent(), std::env::var_os("PATH").as_deref()));
+    // The one tool the core knows how to fetch: the local UI (issue #287).
+    if tool.is_none()
+        && name == Some("ui")
+        && let Some(dir) = exe.parent()
+    {
+        tool = Some(ui::offer(dir).await?);
+    }
     let Some(tool) = tool else {
         use clap::CommandFactory;
         use clap::error::{ContextKind, ContextValue};

@@ -562,7 +562,7 @@ Writing one: [`docs/plugin-authoring.md`](docs/plugin-authoring.md) is the compl
 
 ### Tools beside bddkit
 
-`bddkit <name>` runs `bddkit-<name>` when `<name>` is not a built-in command, the way `git` and `cargo` do: first from the directory of the running `bddkit`, then from `PATH`. The arguments pass through unchanged, the tool's exit code is the command's, and the tool gets `BDDKIT_BIN` (the path of the `bddkit` that launched it) and `BDDKIT_VERSION`. Built-in names are never looked up, and an external command is not counted by telemetry.
+`bddkit <name>` runs `bddkit-<name>` when `<name>` is not a built-in command, the way `git` and `cargo` do: first from the directory of the running `bddkit`, then from `PATH`. The arguments pass through unchanged, the tool's exit code is the command's, and the tool gets `BDDKIT_BIN` (the path of the `bddkit` that launched it) and `BDDKIT_VERSION`. Built-in names are never looked up, and an external command is not counted by telemetry. One name is special: `bddkit ui` without `bddkit-ui` installed says that the local UI is a closed-source product under a licence agreement (EULA) that it shows on its first start, and asks `Install it? [y/N]`. On yes it downloads the latest release of `bddkit/bddkit-ui-releases` for your platform, checks its `.sha256`, puts `bddkit-ui` next to `bddkit` and runs it with your arguments. It asks only in an interactive terminal (stdin and stderr are terminals and no CI variable is set); otherwise it says to run `bddkit ui` in one and exits with `2`. So does an answer of no, a checksum mismatch, or a platform without a build.
 
 ## Where to look next
 

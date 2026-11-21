@@ -964,7 +964,7 @@ async fn main() {
         Command::Plugin(args) => (plugin_command(args).await, "nothing changed"),
         Command::Upgrade(args) => (upgrade_command(args).await, "nothing changed"),
         Command::Telemetry(args) => (Ok(telemetry_command(args)), "nothing changed"),
-        Command::External(args) => (external::run(&args), "nothing started"),
+        Command::External(args) => (external::run(&args).await, "nothing started"),
         Command::Version { json: true } => {
             let target = plugin::install::host_target().unwrap_or("unknown");
             println!(
