@@ -289,13 +289,26 @@ pub fn verify_sha256(archive: &[u8], sha_file: &str) -> Result<String> {
 /// named `../../x.so` cannot land outside `dest`. Zero or several libraries is
 /// a malformed release, refused rather than guessed at.
 pub fn extract_library(archive: &[u8], asset: &str, dest: &Path) -> Result<PathBuf> {
-    extract_one(archive, asset, dest, "plugin library", library_name)
+    extract_one(archive, asset, dest, "plugin library", &library_name)
 }
 
 /// The same, for the `bddkit` executable inside a bddkit release, made
 /// executable: `fs::write` creates the file without the archive's mode.
 pub fn extract_binary(archive: &[u8], asset: &str, dest: &Path) -> Result<PathBuf> {
-    let path = extract_one(archive, asset, dest, "bddkit executable", binary_name)?;
+    extract_executable(archive, asset, dest, "bddkit")
+}
+
+/// The same for any executable `name` (without the platform suffix), as the
+/// local UI's release holds `bddkit-ui`.
+pub fn extract_executable(archive: &[u8], asset: &str, dest: &Path, name: &str) -> Result<PathBuf> {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let path = extract_one(
+        archive,
+        asset,
+        dest,
+        &format!("{name} executable"),
+        &|entry| binary_name(entry, &file),
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -310,7 +323,7 @@ fn extract_one(
     asset: &str,
     dest: &Path,
     what: &str,
-    accept: fn(&str) -> Option<String>,
+    accept: &dyn Fn(&str) -> Option<String>,
 ) -> Result<PathBuf> {
     #[expect(
         clippy::case_sensitive_file_extension_comparisons,
@@ -357,17 +370,17 @@ pub(crate) fn dll_name(stem: &str) -> String {
     )
 }
 
-/// The file-name part of an archive entry, if it is this host's `bddkit`.
-fn binary_name(entry: &str) -> Option<String> {
+/// The file-name part of an archive entry, if it is the executable `wanted`.
+fn binary_name(entry: &str, wanted: &str) -> Option<String> {
     let file = Path::new(entry).file_name()?.to_str()?;
-    (file == format!("bddkit{}", std::env::consts::EXE_SUFFIX)).then(|| file.to_string())
+    (file == wanted).then(|| file.to_string())
 }
 
 /// The accepted files with their bytes, and the names of the files left out —
 /// so a release with no library says what it did hold.
 type Entries = (Vec<(String, Vec<u8>)>, Vec<String>);
 
-fn tar_entries(archive: &[u8], accept: fn(&str) -> Option<String>) -> Result<Entries> {
+fn tar_entries(archive: &[u8], accept: &dyn Fn(&str) -> Option<String>) -> Result<Entries> {
     let mut out = Vec::new();
     let mut skipped = Vec::new();
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
@@ -388,7 +401,7 @@ fn tar_entries(archive: &[u8], accept: fn(&str) -> Option<String>) -> Result<Ent
     Ok((out, skipped))
 }
 
-fn zip_entries(archive: &[u8], accept: fn(&str) -> Option<String>) -> Result<Entries> {
+fn zip_entries(archive: &[u8], accept: &dyn Fn(&str) -> Option<String>) -> Result<Entries> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))?;
     let mut out = Vec::new();
     let mut skipped = Vec::new();
@@ -612,6 +625,17 @@ pub async fn download(
     target: &str,
 ) -> Result<Download> {
     let asset = asset_name(repo, version, target);
+    download_asset(client, github, repo, version, asset).await
+}
+
+/// `download` for a release whose asset is not named after its repository.
+pub async fn download_asset(
+    client: &reqwest::Client,
+    github: &str,
+    repo: &str,
+    version: &str,
+    asset: String,
+) -> Result<Download> {
     let url = format!("{github}/{repo}/releases/download/v{version}/{asset}");
     // A missing archive or checksum is no build of this version for this
     // platform, not a missing repository.

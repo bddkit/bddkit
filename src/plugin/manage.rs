@@ -85,7 +85,7 @@ pub struct Context {
 
 /// No total timeout: a large library on a slow link is not a hang. A silent
 /// server is, and so is an https base that redirects to plain http.
-fn http_client(sources: &Sources) -> Result<reqwest::Client> {
+pub(crate) fn http_client(sources: &Sources) -> Result<reqwest::Client> {
     let https = sources.registry.starts_with("https://") && sources.github.starts_with("https://");
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))

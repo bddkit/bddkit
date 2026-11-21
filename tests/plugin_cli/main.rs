@@ -18,6 +18,7 @@ mod install;
 mod layers;
 mod prune;
 mod telemetry;
+mod ui_install;
 mod update_remove;
 mod upgrade;
 mod upgrade_needs;
