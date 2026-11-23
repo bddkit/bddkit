@@ -562,12 +562,22 @@ pub fn load(path: &Path, cli_env: Option<&str>) -> Result<Config> {
     // through `load_str`, and telling whoever adds a resource that "the format
     // changed" would be answering a question they did not ask, about a file
     // that is very likely fine.
-    .with_context(|| {
-        format!(
-            "config {}. If this suite predates the format change, suites were replaced by \
-             paths + resources — see docs/writing-tests.md",
-            path.display()
-        )
+    .map_err(|error| {
+        // Only a config that lacks the current top-level keys is an old one:
+        // an unset variable, a bad `.env` or a typo must not send the tester
+        // to a migration guide.
+        let old_shape = error.chain().any(|cause| {
+            let text = cause.to_string();
+            text.contains("missing field `paths`") || text.contains("missing field `resources`")
+        });
+        let mut message = format!("config {}", path.display());
+        if old_shape {
+            message.push_str(
+                ". If this suite predates the format change, suites were replaced by \
+                 paths + resources — see docs/writing-tests.md",
+            );
+        }
+        error.context(message)
     })
 }
 
@@ -1151,89 +1161,7 @@ mod tests {
         assert_eq!(c.paths, vec![PathBuf::from("features")]);
     }
 
-    mod load_with_env_files {
-        use super::*;
-
-        fn write_config(dir: &Path, yaml: &str) -> PathBuf {
-            let path = dir.join("config.yaml");
-            std::fs::write(&path, yaml).expect("write config");
-            path
-        }
-
-        fn unique_dir(name: &str) -> PathBuf {
-            let dir = std::env::temp_dir().join(format!("bddkit_load_with_env_{name}"));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create temp directory");
-            dir
-        }
-
-        #[test]
-        fn substitutes_value_from_base_dotenv_file() {
-            let dir = unique_dir("base_dotenv");
-            std::fs::write(dir.join(".env"), "DB_PASS=secret\n").expect("write .env");
-            let path = write_config(
-                &dir,
-                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
-            );
-            let c = load(&path, None).expect("config loads with .env");
-            assert_eq!(
-                c.resources.groups["s3"]["main"]["dsn"],
-                "postgres://u:secret@db/x"
-            );
-        }
-
-        #[test]
-        fn cli_env_flag_selects_the_matching_env_specific_file() {
-            let dir = unique_dir("cli_env_flag");
-            std::fs::write(dir.join(".env"), "DB_PASS=base_secret\n").expect("write .env");
-            std::fs::write(dir.join(".env.prod"), "DB_PASS=prod_secret\n")
-                .expect("write .env.prod");
-            let path = write_config(
-                &dir,
-                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
-            );
-            let c = load(&path, Some("prod")).expect("config loads with --env=prod");
-            assert_eq!(
-                c.resources.groups["s3"]["main"]["dsn"],
-                "postgres://u:prod_secret@db/x"
-            );
-        }
-
-        #[test]
-        fn without_cli_env_flag_defaults_to_dev_file() {
-            let dir = unique_dir("default_dev");
-            std::fs::write(dir.join(".env"), "DB_PASS=base_secret\n").expect("write .env");
-            std::fs::write(dir.join(".env.dev"), "DB_PASS=dev_secret\n").expect("write .env.dev");
-            let path = write_config(
-                &dir,
-                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
-            );
-            if std::env::var("APP_ENV").is_err() {
-                let c = load(&path, None).expect("config loads without --env");
-                assert_eq!(
-                    c.resources.groups["s3"]["main"]["dsn"],
-                    "postgres://u:dev_secret@db/x"
-                );
-            }
-        }
-
-        #[test]
-        fn local_file_overrides_base_env_for_same_key() {
-            let dir = unique_dir("local_override");
-            std::fs::write(dir.join(".env"), "DB_PASS=base_secret\n").expect("write .env");
-            std::fs::write(dir.join(".env.local"), "DB_PASS=local_secret\n")
-                .expect("write .env.local");
-            let path = write_config(
-                &dir,
-                "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
-            );
-            let c = load(&path, None).expect("config loads");
-            assert_eq!(
-                c.resources.groups["s3"]["main"]["dsn"],
-                "postgres://u:local_secret@db/x"
-            );
-        }
-    }
+    mod load_with_env_files;
 
     const WITH_GROUP: &str = "\
 paths: [features]
