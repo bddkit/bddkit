@@ -34,6 +34,12 @@ plugin:
     description: Query PostgreSQL, MySQL and MariaDB databases as a resource group
     abi:
       "4": 0.1.0
+  - name: etcd
+    repo: bddkit/bddkit-etcd
+    groups: [etcd]
+    description: etcd v3 compatible key-value stores over gRPC as a resource group
+    abi:
+      "4": 0.1.0
   - name: exec
     repo: bddkit/bddkit-exec
     groups: [exec]
