@@ -59,6 +59,21 @@ pub fn record(privacy: &Privacy, values: impl IntoIterator<Item = String>) {
     process.candidates.extend(values);
 }
 
+/// Back to what the flags alone say: no recorded secret, the flags' own
+/// vocabulary and `reveal`. `list-all` calls it before each config, so a secret
+/// one config holds never masks another's entry. The sink is otherwise
+/// append-only: call this from a command that owns the whole process and loads
+/// its configs one after another, never from a test.
+pub fn forget() {
+    {
+        let mut process = process();
+        process.candidates.clear();
+        process.min_length = DEFAULT_MIN_LENGTH;
+        process.reveal = false;
+    }
+    set_flags(flags());
+}
+
 /// Records one value a message is about to quote.
 pub fn record_value(value: &str) {
     process().candidates.push(value.to_string());

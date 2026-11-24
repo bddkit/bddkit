@@ -596,7 +596,7 @@ pub fn secrets_in(doc: &serde_yaml_ng::Value, fields: &[String]) -> Vec<String> 
 }
 
 mod process;
-pub use process::{flags, mask_text, record, record_value, recorded, set_flags};
+pub use process::{flags, forget, mask_text, record, record_value, recorded, set_flags};
 
 /// A file's view of privacy: the vocabulary and the set of secrets, shared by
 /// everything that file owns (its variables, its HTTP state, its output). A
