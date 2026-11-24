@@ -1,4 +1,4 @@
-macro_paths: [tests/macros]
-paths: [tests/features]
+macro_paths: [macros]
+paths: [features]
 
 resources: {}

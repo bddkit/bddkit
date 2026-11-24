@@ -1,4 +1,4 @@
-paths: [selftest/fixtures/list/features]
+paths: [features]
 
 resources:
   exec:

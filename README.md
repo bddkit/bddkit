@@ -362,13 +362,13 @@ Writes one new resource into the config's YAML and reports whether it happened. 
 
 ## Config
 
-`--config` is optional: `run`, `doctor` and `resource add` fall back to `$BDDKIT_CONFIG`, then to `./bddkit.yaml` or `./bddkit.yml` in the working directory (both present is refused, naming both files). No walk-up into parent directories — `paths` and `macro_paths` below resolve against the working directory, not the config file, so a config found in a parent would point at the wrong feature files.
+`--config` is optional: `run`, `doctor` and `resource add` fall back to `$BDDKIT_CONFIG`, then to `./bddkit.yaml` or `./bddkit.yml` in the working directory (both present is refused, naming both files). No walk-up into parent directories. A relative `paths` or `macro_paths` entry written in the config resolves against the folder of the config file, so `bddkit run --config module/bddkit.yaml` runs `module/features` from wherever it is started; an absolute one stays as it is. A path given on the command line or in the environment (positional paths, `file:LINE`, `--macro-paths`, `BDDKIT_PATHS`, `BDDKIT_MACRO_PATHS`; a `${VAR}` inside the config is config text) resolves against the working directory. The paths bddkit prints are relative to the working directory (absolute outside it), so a printed `module/features/a.feature:12` can be passed back to `run` as it is. A config that names its paths from the project root while living in a subfolder (`paths: [module/features]` in `module/bddkit.yaml`) is refused with exit `2`, naming the missing folder: write them relative to the config.
 
 ```yaml
 concurrency: 8              # files in flight; a file is one tokio task
 fail_fast: false            # stop starting files after the first failure
 tags: []                   # run only these tags; --tag replaces them
-macro_paths: [macros/]
+macro_paths: [macros/]    # a relative path here is relative to this file's folder
 paths: [features/]
 
 resources:                  # every key is a group a plugin serves
@@ -429,7 +429,7 @@ The same rule covers the run's own options. `run` and `doctor` read them the sam
 | `concurrency` | `--concurrency` | `BDDKIT_CONCURRENCY` |
 | `fail_fast` | `--fail-fast` (`--fail-fast=false` overrides a config that says true) | `BDDKIT_FAIL_FAST` |
 | `tags` | `--tag` (repeatable) | `BDDKIT_TAG` (comma-separated) |
-| `paths` | positional paths | `BDDKIT_PATHS` (comma-separated) |
+| `paths` | positional paths (relative to the working directory) | `BDDKIT_PATHS` (comma-separated) |
 | `macro_paths` | `--macro-paths` (comma-separated) | `BDDKIT_MACRO_PATHS` |
 | `default_<group>` (`default_api`, `default_db`, `default_srp`, or a plugin group's) | `--default <group>=<name>` (repeatable; `--default-api` / `--default-db` / `--default-srp` are aliases) | `BDDKIT_DEFAULT_<GROUP>` (`BDDKIT_DEFAULT_API`, …) |
 | `options.polling.timeout_secs` / `interval_ms` | `--options-polling-timeout-secs` / `--options-polling-interval-ms` | `BDDKIT_OPTIONS_POLLING_TIMEOUT_SECS` / `BDDKIT_OPTIONS_POLLING_INTERVAL_MS` |
