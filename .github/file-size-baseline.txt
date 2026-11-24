@@ -5,7 +5,7 @@ src/main.rs 1516
 src/plugin/library.rs 1110
 src/plugin/manage.rs 1003
 src/plugin/mod.rs 1774
-src/privacy.rs 1419
+src/privacy.rs 1343
 src/report/markdown.rs 1320
 src/resource.rs 1306
 src/runner.rs 2315
