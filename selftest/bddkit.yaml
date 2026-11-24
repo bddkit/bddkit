@@ -5,8 +5,8 @@
 #   ./target/debug/bddkit run --config selftest/bddkit.yaml
 #
 # BDDKIT_BIN names the binary the scenarios run (default target/debug/bddkit).
-paths: [selftest/features]
-macro_paths: [selftest/macros.yaml]
+paths: [features]
+macro_paths: [macros.yaml]
 
 resources:
   exec:

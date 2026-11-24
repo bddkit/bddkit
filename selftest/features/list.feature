@@ -28,7 +28,7 @@ Feature: bddkit list shows what a run would run and keeps the masking
   # The broken file is written here, not kept under selftest/: the unit tests
   # parse every .feature in the repository and it must not parse.
   Scenario: a feature file that does not parse is listed with its error, and a run over it is exit 2
-    When I run the command "rm -rf selftest/out/list-broken && mkdir -p selftest/out/list-broken/features && printf 'Feature: fine\n  Scenario: still listed\n    When I sleep 0 seconds\n' > selftest/out/list-broken/features/ok.feature && printf 'Feature: bad\n  Scenario: s\n    When I sleep 0 seconds\n  this is not gherkin\n' > selftest/out/list-broken/features/bad.feature && printf 'paths: [selftest/out/list-broken/features]\nresources: {}\n' > selftest/out/list-broken/bddkit.yaml"
+    When I run the command "rm -rf selftest/out/list-broken && mkdir -p selftest/out/list-broken/features && printf 'Feature: fine\n  Scenario: still listed\n    When I sleep 0 seconds\n' > selftest/out/list-broken/features/ok.feature && printf 'Feature: bad\n  Scenario: s\n    When I sleep 0 seconds\n  this is not gherkin\n' > selftest/out/list-broken/features/bad.feature && printf 'paths: [features]\nresources: {}\n' > selftest/out/list-broken/bddkit.yaml"
     Then the command exit code is 0
     When I run the command "${BDDKIT_BIN:-target/debug/bddkit} list --json --config selftest/out/list-broken/bddkit.yaml"
     Then the command exit code is 0
@@ -41,7 +41,7 @@ Feature: bddkit list shows what a run would run and keeps the masking
 
   # Written here for the same reason: a typo'd keyword must not parse, a BOM must.
   Scenario: a typo'd keyword is listed with its error and a BOM file is listed clean
-    When I run the command "rm -rf selftest/out/list-typo && mkdir -p selftest/out/list-typo/features && printf '\357\273\277Feature: bom\n  Scenario: bom listed\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/bom.feature && printf 'Feature: typo\n  Scenaro: s\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/typo.feature && printf 'paths: [selftest/out/list-typo/features]\nresources: {}\n' > selftest/out/list-typo/bddkit.yaml"
+    When I run the command "rm -rf selftest/out/list-typo && mkdir -p selftest/out/list-typo/features && printf '\357\273\277Feature: bom\n  Scenario: bom listed\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/bom.feature && printf 'Feature: typo\n  Scenaro: s\n    When I sleep 0 seconds\n' > selftest/out/list-typo/features/typo.feature && printf 'paths: [features]\nresources: {}\n' > selftest/out/list-typo/bddkit.yaml"
     Then the command exit code is 0
     When I run the command "${BDDKIT_BIN:-target/debug/bddkit} list --json --config selftest/out/list-typo/bddkit.yaml"
     Then the command exit code is 0

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod paths;
+
 fn default_concurrency() -> usize {
     8
 }
@@ -598,6 +600,7 @@ pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<C
     }
     let mut cfg: Config = serde_yaml_ng::from_str(&expanded).context("failed to parse config")?;
     cfg.resolve_options()?;
+    cfg.resolve_paths(config_dir);
     Ok(cfg)
 }
 
@@ -1149,19 +1152,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn load_reads_a_config_file() {
-        let path = std::env::temp_dir().join("bddkit_cfg_load_reads_a_config_file.yaml");
-        std::fs::write(
-            &path,
-            "paths: [features]\nresources:\n  api:\n    review:\n      base_url: http://review.local\n",
-        )
-        .expect("write config");
-        let c = load(&path, None).expect("config loads");
-        assert_eq!(c.paths, vec![PathBuf::from("features")]);
-    }
-
     mod load_with_env_files;
+    mod resolve_paths;
 
     const WITH_GROUP: &str = "\
 paths: [features]

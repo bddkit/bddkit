@@ -845,7 +845,7 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         return Ok(());
     }
     if !p.is_dir() {
-        anyhow::bail!("path {} does not exist", p.display());
+        anyhow::bail!("path {} does not exist", display_path(p));
     }
     for entry in std::fs::read_dir(p).with_context(|| format!("failed to read {}", p.display()))? {
         let entry = entry?;
