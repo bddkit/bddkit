@@ -304,3 +304,13 @@ pub(super) fn registry_or_refusal(
         }
     }
 }
+
+/// The refusal a command ends in. `run` and `report` print it themselves,
+/// before telemetry's request, so the person is not left waiting on the
+/// network for an error that is already known.
+pub(crate) fn print_refusal(error: &anyhow::Error, nothing_happened: &str) {
+    eprintln!(
+        "error: {}\n\n{nothing_happened}",
+        privacy::mask_text(&format!("{error:#}"))
+    );
+}

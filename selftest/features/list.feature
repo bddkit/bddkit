@@ -47,3 +47,12 @@ Feature: bddkit list shows what a run would run and keeps the masking
     Then the command exit code is 0
     And the command output contains "bom listed"
     And the command output contains "`Scenaro:` is not a keyword"
+
+  Scenario: list-all marks a foreign YAML file and keeps the secret of one config out of the others
+    When I run the command "mkdir -p selftest/out/list-all && printf 'services: {}\n' > selftest/out/list-all/compose.yml"
+    Then the command exit code is 0
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} list-all --json selftest/fixtures/list/bddkit.yaml selftest/out/list-all/compose.yml"
+    Then the command exit code is 0
+    And the command output contains "names.feature"
+    And the command output contains "not_a_suite"
+    And the command output does not contain "list-secret-value-8"

@@ -44,6 +44,7 @@ use clap::{Args, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
+use suite::print_refusal;
 
 /// What `--version` and `bddkit version` answer. `-V` keeps the bare
 /// `version` — the one line a script greps — so the two signposts below are
@@ -77,6 +78,8 @@ enum Command {
     Init(init::InitArgs),
     /// Show the scenarios a run would run, without running them
     List(list::ListArgs),
+    /// Show the scenarios of many configs in one process, a foreign YAML file marked as such
+    ListAll(list::ListAllArgs),
     /// Check a suite without running it and list every problem found; --live also probes what it talks to
     Doctor(DoctorArgs),
     /// Render an event stream (`run --events`) as a report
@@ -958,6 +961,7 @@ async fn main() {
         Command::Steps(args) => (steps_command(args), "nothing listed"),
         Command::Init(args) => (init::command(args).await, "nothing written"),
         Command::List(args) => (Ok(list::command(&args)), "nothing listed"),
+        Command::ListAll(args) => (Ok(list::command_all(&args)), "nothing listed"),
         Command::Doctor(args) => (doctor_command(args).await, "nothing checked"),
         Command::Report(args) => (report_command(args).await, "nothing written"),
         Command::Resource(args) => (resource_command(args), "nothing listed"),
@@ -994,16 +998,6 @@ async fn main() {
             std::process::exit(2);
         }
     }
-}
-
-/// The refusal a command ends in. `run` and `report` print it themselves,
-/// before telemetry's request, so the person is not left waiting on the
-/// network for an error that is already known.
-fn print_refusal(error: &anyhow::Error, nothing_happened: &str) {
-    eprintln!(
-        "error: {}\n\n{nothing_happened}",
-        privacy::mask_text(&format!("{error:#}"))
-    );
 }
 
 /// Reads the lock file, loads what it names, and resolves each group's
