@@ -147,6 +147,10 @@ async fn plugin_attempt(
     let Target {
         lib, step_index, ..
     } = call.target;
+    let attempt = retry.attempts + 1;
+    world
+        .trace
+        .dispatching(retry.polling.is_some().then_some(attempt));
     let dispatch_dir = world.artifacts.next_dir();
     let request = serde_json::to_string(&DispatchRequest {
         instance: &call.instance,
@@ -163,7 +167,7 @@ async fn plugin_attempt(
         } else {
             BTreeMap::default()
         },
-        attempt: retry.attempts + 1,
+        attempt,
         source_dir: call.source_dir.clone(),
     })
     .map_err(|error| StepError::plugin(format!("failed to encode the plugin request: {error}")))?;

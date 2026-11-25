@@ -427,7 +427,7 @@ A deferred step's `evidence` and `attempt` events are held per scenario and carr
 
 **Decided.** There is one event type for all evidence, whatever produced it. The core has no `http_exchange` and no `db_query` type: the HTTP API and the databases speak the form a plugin's diagnostic has, as plugins now.
 
-Fields beyond the envelope: `file`, `scenario`, `step` (the innermost step in flight), `group` (`api`, `db`, or a plugin group), `resource` (the instance name), `kind`, an optional `title`, and either `content` or a file reference (`path`, `size`, `media_type`).
+Fields beyond the envelope: `file`, `scenario`, `step` (the innermost step in flight), `group` (`api`, `db`, or a plugin group), `resource` (the instance name), `kind`, `attempt` (a polled step only, 9.4), an optional `title`, and either `content` or a file reference (`path`, `size`, `media_type`).
 
 `kind` is free-form text, as it is for plugin diagnostics; a consumer shows a kind it does not know as text. For two kinds `content` is an object by convention:
 
@@ -453,6 +453,14 @@ Illustrative values again:
 ### 9.4 `attempt`
 
 One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence` (live or deferred, like any evidence of its step), because the message quotes the values that did not match.
+
+**`evidence.attempt` (bddkit/bddkit#303).** An `evidence` event written while a polled step is being dispatched carries `attempt`: the number of the dispatch it came from, counted from 1. A step is polled when it is an assertion that consumed an eventual-assertion modifier, even if it passes at once. The numbering is that of `n`: evidence with `attempt: 3` belongs to the dispatch whose `not_yet` is the `attempt` event with `n: 3`. A last dispatch that passed or failed fatally takes the next number and has no `attempt` event; one that ran out of time answered `not_yet`, so it has one. A step that is not polled has no `attempt` field: it is never 0. Deferred evidence keeps it. The field is new, so `schema` stays 1.
+
+```
+{"type":"evidence", …, "step":4, "attempt":3, "group":"api", "kind":"http", "content":{…}}
+{"type":"attempt",  …, "step":4, "n":3, "message":"$.status is \"pending\", expected \"done\""}
+{"type":"evidence", …, "step":4, "attempt":4, "group":"api", "kind":"http", "content":{…}}
+```
 
 ## 10. Plugins (package 6)
 
