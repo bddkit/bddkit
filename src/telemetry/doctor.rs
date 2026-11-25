@@ -100,6 +100,7 @@ mod tests {
             config: "suite.yaml".into(),
             config_source: None,
             app_env: "dev".into(),
+            env_layers: Vec::new(),
             live: false,
             checks: vec![check("acme-private-group", true), check("steps", false)],
             telemetry: None,

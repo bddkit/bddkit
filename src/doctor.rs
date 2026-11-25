@@ -48,6 +48,8 @@ pub struct Report {
     /// working directory)` suffix `config` carries for humans.
     pub config_source: Option<config::ConfigSource>,
     pub app_env: String,
+    /// The `.env` files read next to the config, in load order.
+    pub env_layers: Vec<String>,
     pub live: bool,
     pub checks: Vec<Check>,
     /// What the telemetry payload of this command needs. Not part of the
@@ -199,6 +201,7 @@ pub fn check(
         config: "(none)".to_string(),
         config_source: None,
         app_env: "unknown".to_string(),
+        env_layers: Vec::new(),
         live,
         checks: Vec::new(),
         telemetry: None,
@@ -210,6 +213,7 @@ pub fn check(
         // config stage below names the same failure properly.
         report.app_env =
             config::app_env_for(&resolved.path, env).unwrap_or_else(|_| "unknown".to_string());
+        report.env_layers = config::env_layers_for(&resolved.path, env).unwrap_or_default();
     }
 
     stages::touch_reports(&mut report, report_paths, events_path);
@@ -793,6 +797,7 @@ mod tests {
             config: "suite.yaml".into(),
             config_source: Some(config::ConfigSource::Flag),
             app_env: "dev".into(),
+            env_layers: Vec::new(),
             live: false,
             checks,
             telemetry: None,

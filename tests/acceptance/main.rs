@@ -12,6 +12,7 @@ mod config_discovery;
 mod doctor;
 mod events;
 mod events_doctor;
+mod events_env;
 mod events_interrupts;
 mod events_load;
 mod events_run;

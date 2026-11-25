@@ -45,7 +45,7 @@ An `evidence` part names its step by `step`: the step's position among its sibli
 ## What each part holds
 
 - **`howto`**: instructions for reading the file, with commands that use this file's own name, a real id and a real line range. A tool does not need to parse it.
-- **`run`**: the config, the selection, the masking state and the evidence sources (`off` when none), and a warning for each banner of the HTML report (masking off, no evidence, incomplete stream, artifacts under the temporary directory), plus a note naming the sources and `--evidence` when they are not `all`.
+- **`run`**: the config, the `APP_ENV` the run resolved (when the stream names it), the selection, the masking state and the evidence sources (`off` when none), and a warning for each banner of the HTML report (masking off, no evidence, incomplete stream, artifacts under the temporary directory), plus a note naming the sources and `--evidence` when they are not `all`.
 - **`index`**: a table of `id`, `status`, `lines` (`from-to`, 1-based and inclusive, the begin marker line through the end marker line of that scenario in this file) and `name`, failed scenarios first and the rest in file order. Under `--detail failed` a second table counts the scenarios and the passed ones per file.
 - **`file`**, holding its **`scenario`** parts: a heading, a location line (ending in `· evidence: full|partial|none` when the run recorded evidence and the stream says how much of the scenario it covers), the rule, description and comment, the numbered steps (one per line, with a status word `[passed]`, `[failed]`, `[skipped]` or `[disabled]`, the duration and the `vars` it resolved), the `failure` part with the text in a fenced block, and one `evidence` part per item.
 
