@@ -109,6 +109,7 @@
   row('scenarios', String(totals.scenarios));
   row('failed', String(totals.failed));
   row('config', run.config);
+  row('APP_ENV', run.app_env);
   if (run.selection && run.selection.tags && run.selection.tags.length) row('tags', run.selection.tags.join(', '));
   if (run.selection && run.selection.paths && run.selection.paths.length) row('paths', run.selection.paths.join(', '));
   head.appendChild(meta);

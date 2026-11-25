@@ -17,6 +17,14 @@ Feature: bddkit report turns an event stream into a page that keeps the masking
     And the command output does not contain "literal-key-value-3"
     And the command output does not contain "config-secret-value-6"
 
+  Scenario: the run says which environment it used, in the stream and in the report
+    When I run the masking fixture "bddkit" with options "--env staging"
+    And I run the command "grep -c '\"app_env\":\"staging\".*\"env_layers\":\[\]' selftest/out/events.ndjson"
+    Then the command output contains "1"
+    When I run the command "${BDDKIT_BIN:-target/debug/bddkit} report selftest/out/events.ndjson -o selftest/out/events.md"
+    And I run the command "cat selftest/out/events.md"
+    Then the command output contains "- APP_ENV: `staging`"
+
   Scenario: a file that is not a stream is refused and nothing is written
     When I run the command "rm -rf selftest/out && mkdir -p selftest/out && echo nope > selftest/out/bad.ndjson; ${BDDKIT_BIN:-target/debug/bddkit} report selftest/out/bad.ndjson"
     Then the command exit code is 2

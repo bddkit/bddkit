@@ -21,6 +21,8 @@ pub struct Run {
     pub bddkit: String,
     pub started_at_unix_ms: u64,
     pub config: Option<String>,
+    /// The `APP_ENV` the run resolved; absent in a stream that predates it.
+    pub app_env: Option<String>,
     pub selection: Value,
     pub concurrency: Option<u64>,
     /// `--evidence` was given. A stream that predates the field reads as off.
@@ -202,6 +204,7 @@ impl Builder {
             bddkit: text(event, "bddkit").unwrap_or_default(),
             started_at_unix_ms: event["started_at_unix_ms"].as_u64().unwrap_or(0),
             config: text(event, "config"),
+            app_env: text(event, "app_env"),
             selection: object(event, "selection").unwrap_or(Value::Null),
             concurrency: event["concurrency"].as_u64(),
             evidence: event["evidence"].as_bool().unwrap_or(false),

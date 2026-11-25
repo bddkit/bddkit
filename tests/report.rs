@@ -64,6 +64,27 @@ fn an_unknown_extension_exits_2() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+#[test]
+fn the_reports_show_the_app_env() {
+    let dir = scratch("app-env");
+    let stream = dir.join("run.ndjson");
+    let line = r#"{"type":"run_started","run_id":"r1","bddkit":"0.5.0","config":"cfg.yaml","app_env":"staging"}"#;
+    std::fs::write(&stream, format!("{line}\n")).expect("stream");
+    let (html, md) = (dir.join("run.html"), dir.join("run.md"));
+    let dash_o = std::path::Path::new("-o");
+    let out = report(&[&stream, dash_o, &html, dash_o, &md]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let html = std::fs::read_to_string(html).expect("report");
+    assert_eq!(embedded_json(&html)["run"]["app_env"], "staging");
+    // No JS harness: this pins only that the inlined viewer has the row.
+    assert!(html.contains("row('APP_ENV', run.app_env)"));
+    let md = std::fs::read_to_string(md).expect("report");
+    assert!(
+        md.contains("- config: `cfg.yaml`\n- APP_ENV: `staging`\n"),
+        "{md}"
+    );
+}
+
 // ---- --embed-artifacts ------------------------------------------------------
 
 /// A run that names `names` as screenshot evidence under `<dir>/art`.

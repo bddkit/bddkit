@@ -9,24 +9,7 @@ impl Config {
     /// Paths from a flag or the environment replace these later and are not
     /// touched.
     pub(super) fn resolve_paths(&mut self, config_dir: &Path) {
-        // `--config cfg.yaml` has the parent `""`, which `absolute` refuses.
-        if config_dir.as_os_str().is_empty() {
-            return;
-        }
-        let absolute = std::path::absolute(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
-        // `absolute` keeps `..`, and `cwd/../x` would still start with `cwd`.
-        let absolute = absolute.components().fold(PathBuf::new(), |mut acc, part| {
-            if part == Component::ParentDir {
-                acc.pop();
-            } else {
-                acc.push(part);
-            }
-            acc
-        });
-        let dir: PathBuf = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| absolute.strip_prefix(cwd).ok().map(Path::to_path_buf))
-            .unwrap_or(absolute);
+        let dir = shown_dir(config_dir);
         if dir.as_os_str().is_empty() {
             return;
         }
@@ -36,4 +19,27 @@ impl Config {
             }
         }
     }
+}
+
+/// A config's folder as bddkit prints it: relative under the working directory,
+/// absolute outside it, empty for the working directory itself.
+pub(super) fn shown_dir(config_dir: &Path) -> PathBuf {
+    // `--config cfg.yaml` has the parent `""`, which `absolute` refuses.
+    if config_dir.as_os_str().is_empty() {
+        return PathBuf::new();
+    }
+    let absolute = std::path::absolute(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
+    // `absolute` keeps `..`, and `cwd/../x` would still start with `cwd`.
+    let absolute = absolute.components().fold(PathBuf::new(), |mut acc, part| {
+        if part == Component::ParentDir {
+            acc.pop();
+        } else {
+            acc.push(part);
+        }
+        acc
+    });
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| absolute.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .unwrap_or(absolute)
 }

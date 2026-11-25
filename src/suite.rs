@@ -140,6 +140,8 @@ impl Started<'_> {
             "artifacts_dir": self.artifacts_dir,
             "config": feature::display_path(self.config_path),
             "config_source": self.source,
+            "app_env": self.cfg.app_env,
+            "env_layers": self.cfg.env_layers,
             "selection": {
                 "tags": self.cli.tags,
                 "paths": self.cli.paths.iter().map(|p| feature::display_path(p)).collect::<Vec<_>>(),
@@ -147,6 +149,7 @@ impl Started<'_> {
             "evidence": self.evidence.any(),
             "evidence_sources": self.evidence.names(),
             "concurrency": self.cfg.concurrency,
+            "fail_fast": self.cfg.fail_fast,
             "privacy": {
                 "masking": !self.privacy.reveal,
                 "words": self.privacy.words,
