@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/bddkit/bddkit/compare/v0.5.3...v0.6.0) - 2026-11-25
+
+### Added
+
+- *(events)* number the polling attempt that produced evidence ([#303](https://github.com/bddkit/bddkit/pull/303))
+- *(events)* report the app env, env layers and fail-fast in run_started ([#302](https://github.com/bddkit/bddkit/pull/302))
+- *(registry)* index etcd 0.5.0 for ABI 4 ([#307](https://github.com/bddkit/bddkit/pull/307))
+- *(registry)* index etcd 0.4.0 for ABI 4 ([#298](https://github.com/bddkit/bddkit/pull/298))
+- *(config)* [**breaking**] resolve paths and macro_paths against the config's folder ([#301](https://github.com/bddkit/bddkit/pull/301))
+- *(list)* add list-all, many configs in one process
+- *(registry)* point the etcd plugin at 0.3.0 ([#296](https://github.com/bddkit/bddkit/pull/296))
+- *(registry)* point the etcd plugin at 0.2.0 ([#294](https://github.com/bddkit/bddkit/pull/294))
+- *(registry)* list the etcd plugin ([#291](https://github.com/bddkit/bddkit/pull/291))
+
+### Fixed
+
+- *(config)* add the format-change hint only to an old-shape config ([#289](https://github.com/bddkit/bddkit/pull/289))
+
+### Other
+
+- *(events)* move the Trace tests into events/tests.rs ([#303](https://github.com/bddkit/bddkit/pull/303))
+- Merge pull request #305 from bddkit/feat/issue-301-config-paths
+- *(config)* state how paths and macro_paths resolve ([#301](https://github.com/bddkit/bddkit/pull/301))
+- *(privacy)* move the process-wide sink into privacy/process.rs
+- *(skill)* name the run handle and the project argument of the MCP tools ([#262](https://github.com/bddkit/bddkit/pull/262))
+- *(skill)* prefer the bddkit MCP tools when available ([#262](https://github.com/bddkit/bddkit/pull/262))
+
 ## [0.5.3](https://github.com/bddkit/bddkit/compare/v0.5.2...v0.5.3) - 2026-11-21
 
 ### Added
