@@ -337,6 +337,8 @@ pub struct Trace {
     marked: bool,
     tagged: bool,
     held: Mutex<Held>,
+    /// The number of the dispatch in flight, `None` for a step that is not polled.
+    dispatch: Option<u64>,
     /// Steps started in the scenario, and how many of them were live or deferred.
     started: usize,
     live: usize,
@@ -363,6 +365,7 @@ impl Trace {
             marked: false,
             tagged: false,
             held: Mutex::default(),
+            dispatch: None,
             started: 0,
             live: 0,
             deferred: 0,
@@ -393,6 +396,11 @@ impl Trace {
     /// the mode of the steps that start after it, until the scenario ends.
     pub fn mark(&mut self, on: bool) {
         self.marked = on;
+    }
+
+    /// Before every dispatch that writes evidence; `Some` for a polled step.
+    pub fn dispatching(&mut self, attempt: Option<u64>) {
+        self.dispatch = attempt;
     }
 
     fn decide(&self) -> Mode {
@@ -856,6 +864,9 @@ impl Trace {
             "file": self.file, "scenario": self.scenario, "step": step,
             "group": group, "resource": resource, "kind": kind,
         });
+        if let Some(attempt) = self.dispatch {
+            fields["attempt"] = attempt.into();
+        }
         if let Some(title) = title {
             fields["title"] = self.redactor.mask(title).into();
         }
