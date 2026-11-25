@@ -1,5 +1,4 @@
 src/config.rs 1135
-src/events.rs 1212
 src/feature.rs 1666
 src/main.rs 1510
 src/plugin/library.rs 1110

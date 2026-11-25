@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/events.rs"
+  - "src/events/*.rs"
   - "src/artifacts.rs"
   - "docs/events-design.md"
 ---
