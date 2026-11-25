@@ -7,6 +7,7 @@ paths:
   - "src/events.rs"
   - "src/doctor.rs"
   - "src/config.rs"
+  - "src/config/*.rs"
 ---
 
 # Privacy (secrets are masked, never rewritten)
