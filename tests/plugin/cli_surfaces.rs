@@ -49,6 +49,38 @@ fn steps_list_shows_a_plugins_group_only_once_a_config_names_it() {
 }
 
 #[test]
+fn steps_list_shows_a_plugins_negative_step() {
+    let dir = project("steps-list-negative", "Feature: f\n", ECHO_GROUP);
+    let list = |extra: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+            .args(["steps", "list", "echo", "--config", "cfg.yaml"])
+            .args(extra)
+            .current_dir(&dir)
+            .output()
+            .expect("run bddkit");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let text = list(&[]);
+    assert!(
+        text.contains("  the echo should not be heard  [assertion, negative]\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("[assertion, negative]").count(), 1, "{text}");
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&list(&["--json"])).expect("JSON");
+    for row in &rows {
+        let marked = row["template"] == "the echo should not be heard";
+        assert_eq!(row["negative"], marked, "{row}");
+    }
+}
+
+#[test]
 fn resource_fields_describes_a_plugins_group_only_with_a_config() {
     let dir = project("resource-fields", "Feature: f\n", ECHO_GROUP);
 

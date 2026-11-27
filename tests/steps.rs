@@ -91,6 +91,40 @@ fn json_is_machine_readable_and_carries_the_raw_pattern() {
 }
 
 #[test]
+fn steps_list_shows_negative() {
+    let (out, code) = steps(&["steps", "list", "vars"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains(
+            "  variable \"<name>\" should not contain \"<text>\"  [assertion, negative]\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("  variable \"<name>\" should contain \"<text>\"\n"),
+        "an unmarked step carries no marker:\n{out}"
+    );
+    assert_eq!(out.matches("[assertion, negative]").count(), 4, "{out}");
+
+    let (json, code) = steps(&["steps", "list", "vars", "--json"]);
+    assert_eq!(code, Some(0), "{json}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json).expect("valid JSON");
+    let negative = [
+        "variable \"<name>\" should not be equal to \"<value>\"",
+        "variable \"<name>\" should not contain \"<text>\"",
+        "variable \"<name>\" should not match \"<pattern>\"",
+        "variable \"<name>\" should not contain JSON:",
+    ];
+    for row in &rows {
+        let marked = negative.contains(&row["template"].as_str().expect("template"));
+        assert_eq!(row["negative"], marked, "{row}");
+        if marked {
+            assert_eq!(row["kind"], "assertion", "{row}");
+        }
+    }
+}
+
+#[test]
 fn the_family_help_names_the_list_subcommand() {
     let (out, code) = steps(&["steps"]);
     assert_eq!(code, Some(0), "{out}");

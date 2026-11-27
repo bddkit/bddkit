@@ -65,7 +65,7 @@ pub extern "C" fn bddkit_abi_version() -> u32 {
     std::env::var("BDDKIT_ECHO_FIXTURE_ABI")
         .ok()
         .and_then(|abi| abi.parse().ok())
-        .unwrap_or(4)
+        .unwrap_or(5)
 }
 
 #[unsafe(no_mangle)]
@@ -180,7 +180,9 @@ pub extern "C" fn bddkit_list_steps() -> *mut c_char {
             { "pattern": r#"^the echo answers by attempt:$"#, "group": "echo", "kind": "assertion",
               "description": "its doc string is a JSON list of replies, one per attempt, the last one repeating; every reply carries the request's attempt as its error, and a passing one as echo_attempt" },
             { "pattern": r#"^I echo the source directory as "(?P<mode>[^"]*)"$"#, "group": "echo", "kind": "action",
-              "description": "publishes the request's source_dir as echo_source_dir; its validate_step refuses it, quoting source_dir, for the mode refuse" }
+              "description": "publishes the request's source_dir as echo_source_dir; its validate_step refuses it, quoting source_dir, for the mode refuse" },
+            { "pattern": r#"^the echo should not be heard$"#, "group": "echo", "kind": "assertion", "negative": true,
+              "description": "passes; a negative assertion" }
         ])
         .to_string()
     })
@@ -480,7 +482,7 @@ pub extern "C" fn bddkit_dispatch(
                 "error": format!("the echo saw {}", args.first().cloned().unwrap_or_default()),
             })
             .to_string(),
-            21 | 23 => serde_json::json!({"status": "passed"}).to_string(),
+            21 | 23 | 29 => serde_json::json!({"status": "passed"}).to_string(),
             22 => {
                 let name = args.first().cloned().unwrap_or_default();
                 serde_json::json!({"status": "passed", "vars": {name: "kept"}}).to_string()

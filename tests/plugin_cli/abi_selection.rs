@@ -74,18 +74,18 @@ async fn a_pinned_release_declaring_abi_3_is_accepted() {
 async fn an_index_without_the_host_abi_names_the_abis_it_has() {
     let (stub, github) = spawn().await;
     stub.index(
-        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"5\": 0.2.0\n",
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"6\": 0.2.0\n",
     );
     let dir = temp("abi-none");
 
     let out = plugin(&dir, &github, &["install", "echo"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("only for newer ABI 5: a newer bddkit is needed, run `bddkit upgrade`"),
+        text(&out).contains("only for newer ABI 6: a newer bddkit is needed, run `bddkit upgrade`"),
         "{}",
         text(&out)
     );
-    assert!(text(&out).contains("ABI 5"), "{}", text(&out));
+    assert!(text(&out).contains("ABI 6"), "{}", text(&out));
     assert!(!dir.join("plugins.yaml").exists());
 }
 
@@ -111,14 +111,14 @@ async fn an_index_with_only_older_abis_says_the_plugin_is_not_updated_yet() {
 async fn a_mixed_abi_map_names_only_the_newer_abis_and_suggests_upgrade() {
     let (stub, github) = spawn().await;
     stub.index(
-        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n      \"10\": 0.4.0\n      \"5\": 0.2.0\n",
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"2\": 0.1.0\n      \"10\": 0.4.0\n      \"6\": 0.2.0\n",
     );
     let dir = temp("abi-mixed");
 
     let out = plugin(&dir, &github, &["install", "bddkit/echo-plugin"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("only for newer ABI 5, 10: a newer bddkit is needed"),
+        text(&out).contains("only for newer ABI 6, 10: a newer bddkit is needed"),
         "{}",
         text(&out)
     );
@@ -129,7 +129,7 @@ async fn a_pinned_repository_install_ignores_the_index() {
     let (stub, github) = spawn().await;
     // The index has no release for this host's ABI, a pin does not care.
     stub.index(
-        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"5\": 0.2.0\n",
+        "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"6\": 0.2.0\n",
     );
     stub.publish("bddkit/echo-plugin", "0.1.0");
     let dir = temp("repo-pinned");
@@ -184,14 +184,14 @@ async fn a_repository_outside_the_index_whose_latest_targets_another_abi_suggest
     stub.index(INDEX);
     stub.publish("someone/echo-plugin", "0.3.0");
     stub.latest("someone/echo-plugin", "0.3.0");
-    stub.declare_abi("someone/echo-plugin", "0.3.0", 5);
+    stub.declare_abi("someone/echo-plugin", "0.3.0", 6);
     let dir = temp("repo-outside-abi");
 
     let out = plugin(&dir, &github, &["install", "someone/echo-plugin"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
         text(&out)
-            .contains("pin a version built for ABI 3 to 4 with someone/echo-plugin@<version>"),
+            .contains("pin a version built for ABI 3 to 5 with someone/echo-plugin@<version>"),
         "{}",
         text(&out)
     );
@@ -200,15 +200,15 @@ async fn a_repository_outside_the_index_whose_latest_targets_another_abi_suggest
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_install_refuses_a_release_for_another_abi_before_downloading() {
     let (stub, github) = spawn().await;
-    // Declared ABI 5, and NOT published: a download would be a 404, so the
+    // Declared ABI 6, and NOT published: a download would be a 404, so the
     // ABI message proves the refusal came first.
-    stub.declare_abi("someone/echo-plugin", "0.3.0", 5);
+    stub.declare_abi("someone/echo-plugin", "0.3.0", 6);
     let dir = temp("abi-declared");
 
     let out = plugin(&dir, &github, &["install", "someone/echo-plugin@0.3.0"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("targets plugin ABI 5"),
+        text(&out).contains("targets plugin ABI 6"),
         "{}",
         text(&out)
     );
@@ -225,11 +225,11 @@ async fn an_unknown_abi_release_is_checked_after_download_and_removed_on_mismatc
         &dir,
         &github,
         &["install", "someone/echo-plugin@0.3.0"],
-        "5",
+        "6",
     );
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("built for ABI version 5"),
+        text(&out).contains("built for ABI version 6"),
         "{}",
         text(&out)
     );
@@ -242,9 +242,9 @@ async fn plugin_update_does_not_move_to_a_newer_abi() {
     let (stub, github) = spawn().await;
     let dir = temp("abi-update");
     installed(&dir, &github, &stub, "0.1.0");
-    // 0.2.0 exists but is built for ABI 5, in a repository the index
+    // 0.2.0 exists but is built for ABI 6, in a repository the index
     // describes by a map that stops at 0.1.0.
-    stub.index(&ABI_INDEX.replace("\"5\": 0.2.0\n", ""));
+    stub.index(&ABI_INDEX.replace("\"6\": 0.2.0\n", ""));
     stub.publish("bddkit/echo-plugin", "0.2.0");
     stub.latest("bddkit/echo-plugin", "0.2.0");
 
@@ -258,10 +258,10 @@ async fn plugin_update_does_not_move_to_a_newer_abi() {
 
     // Without a map the release itself is asked, with the same outcome.
     stub.index(INDEX);
-    stub.declare_abi("bddkit/echo-plugin", "0.2.0", 5);
+    stub.declare_abi("bddkit/echo-plugin", "0.2.0", 6);
     let out = plugin(&dir, &github, &["update"]);
     assert!(
-        text(&out).contains("targets plugin ABI 5"),
+        text(&out).contains("targets plugin ABI 6"),
         "{}",
         text(&out)
     );

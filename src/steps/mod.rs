@@ -1,16 +1,20 @@
 pub mod debug;
 pub mod expression;
 pub mod help;
+mod kind;
 mod macro_check;
 pub mod plugin;
 mod suggest;
 pub mod vars;
+
+pub use kind::{OptionsSource, StepDef, StepKind};
 
 use crate::failure::StepError;
 use crate::macros::{MacroCatalog, MacroDef};
 use crate::options::{OptionsLayer, PollingOptionsLayer};
 use crate::polling::{AttemptError, AttemptResult};
 use crate::world::World;
+use kind::{action, assertion, negative_assertion};
 use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,67 +55,6 @@ pub enum StepId {
     IncludeScenario,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptionsSource {
-    Global,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepKind {
-    Action,
-    Assertion(OptionsSource),
-}
-
-pub struct StepDef {
-    pub id: StepId,
-    /// The resource this step belongs to, and the heading `bddkit steps list`
-    /// prints it under: `vars`, `debug`, or `general` for
-    /// the few steps that belong to no resource at all.
-    pub group: &'static str,
-    /// A Cucumber Expression with bddkit's parameter extension: `{name}` is a
-    /// `text` parameter (`[^"]*`; a bare one is matched inside quotes the host
-    /// adds), `{name:type}` picks a type from `expression::TYPES`, which also
-    /// decides whether a bare parameter takes quotes. The name is what `bddkit steps
-    /// list` prints as `<name>`; captures still reach `dispatch` by position.
-    pub expression: &'static str,
-    /// One line, in English, stating the step's effect. English is the source
-    /// language and it lives here, beside the pattern it describes;
-    /// `locales/steps.<code>.yaml` carries translations of it.
-    pub description: &'static str,
-    pub kind: StepKind,
-}
-
-const fn action(
-    id: StepId,
-    group: &'static str,
-    expression: &'static str,
-    description: &'static str,
-) -> StepDef {
-    StepDef {
-        id,
-        group,
-        expression,
-        description,
-        kind: StepKind::Action,
-    }
-}
-
-const fn assertion(
-    id: StepId,
-    group: &'static str,
-    expression: &'static str,
-    description: &'static str,
-    source: OptionsSource,
-) -> StepDef {
-    StepDef {
-        id,
-        group,
-        expression,
-        description,
-        kind: StepKind::Assertion(source),
-    }
-}
-
 /// Every expression is compiled by `expression::compile` at startup; an
 /// optional part may not hold a parameter, which is why each `I include` step
 /// is declared twice, without and with `with prefix "{prefix}"`.
@@ -146,7 +89,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         r#"set variable "{name}" to "{value}""#,
         "sets a variable for the whole feature file",
     ),
-    assertion(
+    negative_assertion(
         StepId::VariableNotEquals,
         "vars",
         r#"variable "{name}" should not be equal to "{value}""#,
@@ -167,7 +110,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "asserts a variable's text contains this substring",
         OptionsSource::Global,
     ),
-    assertion(
+    negative_assertion(
         StepId::VariableNotContains,
         "vars",
         r#"variable "{name}" should not contain "{text}""#,
@@ -181,7 +124,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "asserts a variable's text matches this regular expression, unanchored",
         OptionsSource::Global,
     ),
-    assertion(
+    negative_assertion(
         StepId::VariableNotMatches,
         "vars",
         r#"variable "{name}" should not match "{pattern}""#,
@@ -209,7 +152,7 @@ pub const BUILTIN_STEPS: &[StepDef] = &[
         "asserts a variable's text is JSON exactly equal to this JSON",
         OptionsSource::Global,
     ),
-    assertion(
+    negative_assertion(
         StepId::VariableNotContainsJson,
         "vars",
         r#"variable "{name}" should not contain JSON:"#,
@@ -332,7 +275,7 @@ pub enum StepTarget {
     Plugin {
         lib: usize,
         step: usize,
-        assertion: bool,
+        kind: StepKind,
     },
 }
 
@@ -438,7 +381,7 @@ impl Registry {
     /// time, macro bodies included.
     pub fn with_macros_and_plugins(
         catalog: MacroCatalog,
-        plugin_steps: &[(usize, usize, crate::plugin::Declared, bool)],
+        plugin_steps: &[(usize, usize, crate::plugin::Declared, StepKind)],
         plugin_groups: &[String],
         plugins: Option<std::sync::Arc<crate::plugin::Plugins>>,
     ) -> Result<Self, String> {
@@ -462,17 +405,17 @@ impl Registry {
             plugins,
         };
         let mut expressions = Vec::new();
-        for (lib, step, declared, assertion) in plugin_steps {
+        for (lib, step, declared, kind) in plugin_steps {
             match declared {
                 crate::plugin::Declared::Pattern {
                     text,
                     secret_groups,
-                } => registry.add_plugin_step(*lib, *step, text, *assertion, secret_groups)?,
+                } => registry.add_plugin_step(*lib, *step, text, *kind, secret_groups)?,
                 crate::plugin::Declared::Expression(compiled) => {
                     let target = StepTarget::Plugin {
                         lib: *lib,
                         step: *step,
-                        assertion: *assertion,
+                        kind: *kind,
                     };
                     registry.entries.push(Entry::compiled(target, compiled));
                     expressions.push(compiled);
@@ -645,17 +588,13 @@ impl Registry {
         lib: usize,
         step: usize,
         pattern: &str,
-        assertion: bool,
+        kind: StepKind,
         secret_groups: &[usize],
     ) -> Result<(), String> {
         let re = Regex::new(pattern)
             .map_err(|e| format!("invalid plugin step pattern {pattern:?}: {e}"))?;
         self.entries.push(Entry {
-            target: StepTarget::Plugin {
-                lib,
-                step,
-                assertion,
-            },
+            target: StepTarget::Plugin { lib, step, kind },
             template: help::template(pattern),
             regex: re,
             params: expression::plugin_params(secret_groups),
@@ -893,6 +832,11 @@ fn show_variable(w: &World, name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    const ASSERTION: StepKind = StepKind::Assertion {
+        source: OptionsSource::Global,
+        negative: false,
+    };
+
     fn reg() -> Registry {
         Registry::new().unwrap()
     }
@@ -961,7 +905,7 @@ mod tests {
     #[test]
     fn a_plugin_step_carries_no_parameter_types() {
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, false, &[])
+        reg.add_plugin_step(0, 1, r#"^I upload file "([^"]*)"$"#, StepKind::Action, &[])
             .expect("valid pattern");
         let (_, _, params) = reg
             .find_with_params(r#"I upload file "a""#)
@@ -980,7 +924,7 @@ mod tests {
                     0,
                     index,
                     crate::plugin::Declared::Expression(compiled),
-                    false,
+                    StepKind::Action,
                 )
             })
             .collect();
@@ -1019,7 +963,7 @@ mod tests {
             0,
             1,
             r#"^I sign in as "([^"]*)" with "([^"]*)"$"#,
-            false,
+            StepKind::Action,
             &[2],
         )
         .expect("valid pattern");
@@ -1049,8 +993,14 @@ mod tests {
     #[test]
     fn nested_plugin_secret_groups_are_masked_once_and_do_not_panic() {
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 1, r#"^I use "((\w+):(\w+))"$"#, false, &[1, 2])
-            .expect("valid pattern");
+        reg.add_plugin_step(
+            0,
+            1,
+            r#"^I use "((\w+):(\w+))"$"#,
+            StepKind::Action,
+            &[1, 2],
+        )
+        .expect("valid pattern");
         let redactor = crate::privacy::Redactor::new(
             &crate::privacy::Privacy::default(),
             crate::privacy::Secrets::new(7),
@@ -1068,7 +1018,7 @@ mod tests {
             0,
             1,
             r#"^I upload file "([^"]*)" to "([^"]*)"$"#,
-            false,
+            StepKind::Action,
             &[],
         )
         .expect("valid pattern");
@@ -1081,7 +1031,7 @@ mod tests {
             StepTarget::Plugin {
                 lib: 0,
                 step: 1,
-                assertion: false
+                kind: StepKind::Action
             }
         );
         assert_eq!(caps, vec!["report.pdf".to_string(), "backups".to_string()]);
@@ -1091,7 +1041,7 @@ mod tests {
     fn an_invalid_plugin_pattern_is_rejected_at_registration() {
         let mut reg = Registry::new().expect("registry");
         let error = reg
-            .add_plugin_step(0, 0, "^I upload file \"([^\"]*$", false, &[])
+            .add_plugin_step(0, 0, "^I upload file \"([^\"]*$", StepKind::Action, &[])
             .expect_err("unbalanced group");
         assert!(error.contains("plugin"), "{error}");
     }
@@ -1102,7 +1052,7 @@ mod tests {
         // every match, and validate::check runs `find` over every selected step
         // before the first request.
         let mut reg = Registry::new().expect("registry");
-        reg.add_plugin_step(0, 0, r"^I sleep (\d+) seconds$", true, &[])
+        reg.add_plugin_step(0, 0, r"^I sleep (\d+) seconds$", ASSERTION, &[])
             .expect("valid pattern");
         let error = reg
             .find("I sleep 2 seconds")
@@ -1235,7 +1185,7 @@ mod tests {
                     text: r#"^I upload file "([^"]*)" to "([^"]*)"$"#.to_string(),
                     secret_groups: Vec::new(),
                 },
-                false,
+                StepKind::Action,
             )],
             &[],
             None,
@@ -1294,9 +1244,9 @@ mod tests {
     #[test]
     fn tied_plugin_templates_are_all_suggested() {
         let mut reg = Registry::new().unwrap();
-        reg.add_plugin_step(0, 0, r"^the echo counter is (\d+)$", true, &[])
+        reg.add_plugin_step(0, 0, r"^the echo counter is (\d+)$", ASSERTION, &[])
             .unwrap();
-        reg.add_plugin_step(0, 1, r"^the echo counter was (\d+)$", true, &[])
+        reg.add_plugin_step(0, 1, r"^the echo counter was (\d+)$", ASSERTION, &[])
             .unwrap();
         assert_eq!(
             reg.unknown_step_detail("the echo counter be 3"),
@@ -1388,7 +1338,8 @@ mod tests {
             let StepTarget::Builtin { kind, .. } = target else {
                 panic!("assertion resolved to a macro");
             };
-            assert_eq!(kind, StepKind::Assertion(source));
+            let negative = false;
+            assert_eq!(kind, StepKind::Assertion { source, negative });
         }
     }
 

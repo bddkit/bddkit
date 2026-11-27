@@ -105,7 +105,7 @@ async fn an_index_install_is_registered_and_runs() {
     assert!(run.status.success(), "{}", text(&run));
 }
 
-const GROUP_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n  - name: mail\n    repo: bddkit/bddkit-mail\n    groups: [mail]\n    abi:\n      \"5\": 0.2.0\n";
+const GROUP_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n  - name: mail\n    repo: bddkit/bddkit-mail\n    groups: [mail]\n    abi:\n      \"6\": 0.2.0\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn install_with_no_name_installs_what_the_config_needs_once() {

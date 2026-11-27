@@ -10,7 +10,7 @@ async fn upgrade_installs_a_plugin_the_suite_needs_and_rollback_takes_it_back() 
     sandbox_suite(&sandbox);
     stub.index(GROUPED_ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit_needing("99.0.0", 5, 0, NEEDS_ECHO);
+    stub.publish_bddkit_needing("99.0.0", 6, 0, NEEDS_ECHO);
 
     let checked = sandbox.upgrade(&github, &["--check"]);
     assert!(checked.status.success(), "{}", text(&checked));
@@ -50,7 +50,7 @@ async fn a_needed_plugin_already_moving_is_planned_once() {
     sandbox.install_echo(&github, &stub);
     stub.index(GROUPED_ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit_needing("99.0.0", 5, 0, NEEDS_ECHO);
+    stub.publish_bddkit_needing("99.0.0", 6, 0, NEEDS_ECHO);
 
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(out.status.success(), "{}", text(&out));
@@ -73,7 +73,7 @@ async fn a_needed_plugin_with_no_release_for_the_new_abi_blocks_the_upgrade() {
     let sandbox = Sandbox::new("upgrade-needs-blocked");
     sandbox_suite(&sandbox);
     stub.index("plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n    abi:\n      \"4\": 0.1.0\n");
-    stub.publish_bddkit_needing("99.0.0", 5, 0, NEEDS_ECHO);
+    stub.publish_bddkit_needing("99.0.0", 6, 0, NEEDS_ECHO);
 
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(!out.status.success(), "{}", text(&out));
@@ -89,7 +89,7 @@ async fn a_staged_bddkit_that_cannot_say_what_is_needed_means_nothing_with_a_war
     sandbox_suite(&sandbox);
     stub.index(GROUPED_ABI_INDEX);
     // An older release: `plugin needs` is an unrecognized subcommand.
-    stub.publish_bddkit("99.0.0", 5, 0);
+    stub.publish_bddkit("99.0.0", 6, 0);
 
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(out.status.success(), "{}", text(&out));
@@ -107,8 +107,8 @@ async fn an_abi_upgrade_with_a_plugin_lacking_a_release_changes_nothing() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-blocked");
     abi_upgrade_ready(&sandbox, &github, &stub, 0);
-    // The index knows no release of echo for ABI 5.
-    stub.index(&ABI_INDEX.replace("      \"5\": 0.2.0\n", ""));
+    // The index knows no release of echo for ABI 6.
+    stub.index(&ABI_INDEX.replace("      \"6\": 0.2.0\n", ""));
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -143,7 +143,7 @@ async fn a_plugin_with_a_release_inside_the_staged_range_keeps_the_upgrade_going
     let sandbox = Sandbox::new("upgrade-range-keeps");
     let index =
         "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"4\": 0.1.0\n";
-    ranged_upgrade_ready(&sandbox, &github, &stub, index, (4, 5));
+    ranged_upgrade_ready(&sandbox, &github, &stub, index, (4, 6));
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -157,7 +157,7 @@ async fn a_plugin_with_a_release_inside_the_staged_range_keeps_the_upgrade_going
 async fn a_plugin_with_a_newer_release_inside_the_staged_range_moves_to_the_highest() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-range-moves");
-    ranged_upgrade_ready(&sandbox, &github, &stub, ABI_INDEX, (4, 5));
+    ranged_upgrade_ready(&sandbox, &github, &stub, ABI_INDEX, (4, 6));
 
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(out.status.success(), "{}", text(&out));
@@ -176,7 +176,7 @@ async fn a_release_outside_the_index_that_declares_an_abi_in_the_range_keeps_the
     sandbox.install_echo(&github, &stub);
     stub.latest("bddkit/echo-plugin", "0.1.0");
     stub.declare_abi("bddkit/echo-plugin", "0.1.0", 4);
-    stub.publish_bddkit_ranged("99.0.0", 5, 4, "");
+    stub.publish_bddkit_ranged("99.0.0", 6, 4, "");
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);
@@ -210,7 +210,7 @@ async fn a_needed_plugin_installs_the_highest_release_in_the_staged_range() {
     stub.index(GROUPED_ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.1.0");
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit_ranged("99.0.0", 5, 4, NEEDS_ECHO);
+    stub.publish_bddkit_ranged("99.0.0", 6, 4, NEEDS_ECHO);
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(out.status.success(), "{}", text(&out));
     assert!(
@@ -222,7 +222,7 @@ async fn a_needed_plugin_installs_the_highest_release_in_the_staged_range() {
     // Only the ABI 4 release exists: it is within the range, so it is installed.
     let sandbox = Sandbox::new("upgrade-range-needs-low");
     sandbox_suite(&sandbox);
-    stub.index(&GROUPED_ABI_INDEX.replace("      \"5\": 0.2.0\n", ""));
+    stub.index(&GROUPED_ABI_INDEX.replace("      \"6\": 0.2.0\n", ""));
     let out = sandbox.upgrade(&github, &["--yes"]);
     assert!(out.status.success(), "{}", text(&out));
     assert!(
@@ -237,7 +237,7 @@ async fn force_upgrades_and_leaves_the_blocking_plugin() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-force");
     abi_upgrade_ready(&sandbox, &github, &stub, 0);
-    stub.index(&ABI_INDEX.replace("      \"5\": 0.2.0\n", ""));
+    stub.index(&ABI_INDEX.replace("      \"6\": 0.2.0\n", ""));
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes", "--force"]);
@@ -281,10 +281,10 @@ async fn a_plugin_that_publishes_nothing_newer_blocks_an_abi_upgrade() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-no-newer");
     // No index map, no bddkit-plugin.json, and the latest release is the one
-    // installed: nothing says it can be loaded under ABI 5.
+    // installed: nothing says it can be loaded under ABI 6.
     sandbox.install_echo(&github, &stub);
     stub.latest("bddkit/echo-plugin", "0.1.0");
-    stub.publish_bddkit("99.0.0", 5, 0);
+    stub.publish_bddkit("99.0.0", 6, 0);
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);

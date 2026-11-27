@@ -1,4 +1,6 @@
 use super::*;
+use crate::plugin::tests::{entry, instance};
+use crate::steps::{OptionsSource, StepKind};
 
 /// Same build as tests/common::build_fixture_plugin; a unit test cannot
 /// reach the integration test helpers, and six lines beat a shared crate.
@@ -85,6 +87,95 @@ fn an_effect_may_name_only_an_argument_the_step_has_and_shows() {
 }
 
 #[test]
+fn a_plugin_step_without_negative_is_not_negative() {
+    let kind = |declared: &str| {
+        let spec: StepSpec =
+            serde_json::from_str(&format!(r#"{{"pattern":"^a$","group":"w",{declared}}}"#))
+                .expect("a step parses");
+        StepKind::from(&spec)
+    };
+    assert_eq!(
+        kind(r#""kind":"assertion""#),
+        StepKind::Assertion {
+            source: OptionsSource::Global,
+            negative: false
+        }
+    );
+    assert_eq!(kind(r#""kind":"action""#), StepKind::Action);
+}
+
+#[test]
+fn a_plugin_step_declares_negative() {
+    // A loaded library, then `Plugins::steps`, then the registry: the
+    // production path.
+    let plugins = crate::plugin::Plugins::load(
+        vec![entry()],
+        &[instance("a", Some("p-"))],
+        &["echo".into()],
+        1,
+        &crate::options::Options::default(),
+    )
+    .expect("the fixture plugin loads");
+    let mut steps = plugins.steps();
+    // The fixture has no negative `expression` step.
+    let spec = prepared_assertion(r#""expression":"b {n}","negative":true"#);
+    let compiled = spec.compiled.clone().expect("compiled");
+    let declared = crate::plugin::Declared::Expression(compiled);
+    steps.push((1, 0, declared, StepKind::from(&spec)));
+    let registry = crate::steps::Registry::with_macros_and_plugins(
+        crate::macros::MacroCatalog::default(),
+        &steps,
+        &["echo".to_string()],
+        None,
+    )
+    .expect("builds");
+    // The resolved step carries the flag, however the step was declared.
+    for (text, expected) in [
+        ("the echo should not be heard", true),
+        (r#"b "x""#, true),
+        ("the echo should fail", false),
+    ] {
+        let (target, _) = registry.find(text).expect("one match").expect("found");
+        let crate::steps::StepTarget::Plugin {
+            kind: StepKind::Assertion { negative, .. },
+            ..
+        } = target
+        else {
+            panic!("{text}: {target:?}");
+        };
+        assert_eq!(negative, expected, "{text}");
+    }
+}
+
+/// `prepared` for an assertion: it declares actions only.
+fn prepared_assertion(declared: &str) -> StepSpec {
+    let mut steps: Vec<StepSpec> = serde_json::from_str(&format!(
+        r#"[{{"group":"w","kind":"assertion",{declared}}}]"#
+    ))
+    .expect("steps parse");
+    prepare_steps("widget", &mut steps).expect("a negative assertion is fine");
+    steps.remove(0)
+}
+
+#[test]
+fn negative_on_an_action_step_is_a_load_error() {
+    // Whatever the declaration, a pattern that does not compile included.
+    for declared in [
+        r#""pattern":"^zz$""#,
+        r#""expression":"zz""#,
+        r#""pattern":"^(zz$""#,
+    ] {
+        let error = prepared(&format!(r#"{declared},"negative":true"#))
+            .expect_err("refused")
+            .to_string();
+        for needle in ["widget", "negative", "zz"] {
+            assert!(error.contains(needle), "{declared}: {error}");
+        }
+    }
+    prepared(r#""pattern":"^a$","negative":false"#).expect("an explicit false is fine");
+}
+
+#[test]
 fn a_secret_group_no_pattern_group_has_is_refused() {
     let step = |groups: &str| -> Vec<StepSpec> {
         serde_json::from_str(&format!(
@@ -120,7 +211,7 @@ fn loads_under_any_label_and_keeps_the_manifest_name() {
 #[test]
 fn lists_the_steps() {
     let lib = Library::load("echo", &fixture()).expect("loads");
-    assert_eq!(lib.steps.len(), 29);
+    assert_eq!(lib.steps.len(), 30);
     assert!(!lib.steps[0].is_assertion());
     assert!(lib.steps[1].is_assertion());
     assert_eq!(lib.steps[0].group, "echo");

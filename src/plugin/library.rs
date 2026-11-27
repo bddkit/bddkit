@@ -416,14 +416,22 @@ fn check_abi_version(name: &str, reported: u32) -> Result<()> {
 }
 
 /// What a step spec declares is checked and compiled once, here: exactly one of
-/// `pattern` and `expression`, `secret_groups` only on a `pattern`, and every
-/// effect placeholder naming an argument. A placeholder cannot name a secret
-/// one, because `doctor` prints what an effect holds. A pattern that does not
-/// compile is left to the registry, which names it.
+/// `pattern` and `expression`, `secret_groups` only on a `pattern`, `negative`
+/// only on an assertion, and every effect placeholder naming an argument. A
+/// placeholder cannot name a secret one, because `doctor` prints what an effect
+/// holds. A pattern that does not compile is left to the registry, which names
+/// it.
 ///
 /// Reached from a unit test without building a cdylib per rejection case.
 fn prepare_steps(name: &str, steps: &mut [StepSpec]) -> Result<()> {
     for step in steps {
+        // Before the match, which leaves early on a pattern that does not compile.
+        if step.negative && !step.is_assertion() {
+            bail!(
+                "plugin {name:?} marks the action step {:?} as negative: only an assertion can be",
+                step.declaration()
+            );
+        }
         match (&step.pattern, &step.expression) {
             (Some(_), Some(_)) => bail!(
                 "plugin {name:?} declares a step with both pattern and expression: {:?}",

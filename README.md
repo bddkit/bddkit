@@ -198,7 +198,7 @@ $ bddkit steps list --no-config vars
 vars:
   set variable "<name>" to "<value>" global
   set variable "<name>" to "<value>"
-  variable "<name>" should not be equal to "<value>"
+  variable "<name>" should not be equal to "<value>"  [assertion, negative]
   variable "<name>" should be equal to "<value>"
   ...
 ```
@@ -212,7 +212,9 @@ general:
     pauses the scenario — a last resort, an eventual assertion is usually what you want
 ```
 
-`--json` emits the same listing machine-readably, with the raw pattern included. `[--config <path>]` also loads that suite's plugins, so their steps appear under their own groups — resolved the same way as `run`'s, including the `bddkit.yaml`/`bddkit.yml` default, so inside a suite directory this shows that suite's steps with no flag at all; `--no-config` skips that and always answers with builtins only, which also sidesteps a broken default config. Descriptions follow `--lang`, else `$BDDKIT_LANG`, else English; `ru` and `lv` ship with the binary, and an untranslated step falls back to English rather than to a blank line.
+A negative assertion, one that passes when something is absent or does not match, is followed by `[assertion, negative]`; `status should be 404` is not one, since it checks a value.
+
+`--json` emits the same listing machine-readably, with the raw pattern included and `negative` on every step. `[--config <path>]` also loads that suite's plugins, so their steps appear under their own groups — resolved the same way as `run`'s, including the `bddkit.yaml`/`bddkit.yml` default, so inside a suite directory this shows that suite's steps with no flag at all; `--no-config` skips that and always answers with builtins only, which also sidesteps a broken default config. Descriptions follow `--lang`, else `$BDDKIT_LANG`, else English; `ru` and `lv` ship with the binary, and an untranslated step falls back to English rather than to a blank line.
 
 ### Asserting over a variable
 
