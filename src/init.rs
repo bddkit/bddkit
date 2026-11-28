@@ -515,7 +515,7 @@ fn update_gitignore(path: &Path) -> Result<Vec<&'static str>> {
 /// The `resource add` command that would declare a plugin group, for a group
 /// with required fields and no instance of its own.
 fn hints(config_path: &Path, env: &dirs::Env) -> Result<Vec<String>> {
-    let cfg = config::load(config_path, None)?;
+    let cfg = config::load(config_path, &config::EnvArgs::default())?;
     let Some(plugins) = crate::load_plugins(config_path, &cfg, env)? else {
         return Ok(Vec::new());
     };
@@ -613,7 +613,7 @@ pub async fn apply(
 
     let checked = doctor::check(
         explicit,
-        None,
+        &config::EnvArgs::default(),
         false,
         &env,
         &[],

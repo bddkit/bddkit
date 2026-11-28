@@ -558,7 +558,7 @@ pub struct AddInput<'a> {
     pub group: &'a str,
     pub name: &'a str,
     pub config: &'a std::path::Path,
-    pub env: Option<&'a str>,
+    pub env: &'a config::EnvArgs,
     pub json: Option<&'a str>,
     pub no_check: bool,
     pub flags: &'a [String],

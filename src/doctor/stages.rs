@@ -50,7 +50,7 @@ pub(super) fn touch_reports(
 pub(super) fn load_config(
     report: &mut Report,
     config_path: &Path,
-    env: Option<&str>,
+    env: &config::EnvArgs,
     settings: &crate::settings::SettingsArgs,
     telemetry_flag: Option<bool>,
     dir_env: &dirs::Env,

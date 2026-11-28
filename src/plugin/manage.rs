@@ -331,7 +331,7 @@ impl Context {
         &self,
         config: &Path,
     ) -> Result<(Vec<install::IndexEntry>, Vec<String>)> {
-        let cfg = crate::config::load(config, None)?;
+        let cfg = crate::config::load(config, &crate::config::EnvArgs::default())?;
         self.needs_groups(&cfg.groups_in_use()).await
     }
 

@@ -10,6 +10,7 @@ mod annotations;
 mod common;
 mod config_discovery;
 mod doctor;
+mod env_local_from;
 mod events;
 mod events_doctor;
 mod events_env;

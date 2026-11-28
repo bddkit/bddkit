@@ -25,9 +25,8 @@ pub struct ListArgs {
     /// config's `tags` [default: $BDDKIT_TAG, comma-separated]
     #[arg(long = "tag")]
     tags: Vec<String>,
-    /// Override APP_ENV: selects .env.<name> / .env.<name>.local
-    #[arg(long = "env")]
-    env: Option<String>,
+    #[command(flatten)]
+    env: config::EnvArgs,
     /// Machine-readable output, with the field names of the event stream
     #[arg(long)]
     json: bool,
@@ -66,7 +65,7 @@ fn build(args: &ListArgs) -> Result<Value> {
     let files = list_files(
         &resolved.path,
         &args.tags,
-        args.env.as_deref(),
+        &args.env,
         &args.paths,
         &args.privacy,
         &mut Vec::new(),
@@ -88,7 +87,7 @@ fn build(args: &ListArgs) -> Result<Value> {
 fn list_files(
     config_path: &Path,
     tags: &[String],
-    env: Option<&str>,
+    env: &config::EnvArgs,
     paths: &[PathBuf],
     privacy_args: &crate::PrivacyArgs,
     notices: &mut Vec<String>,
@@ -158,9 +157,8 @@ pub struct ListAllArgs {
     /// List only scenarios with one of these tags (repeatable); applies to every config
     #[arg(long = "tag")]
     tags: Vec<String>,
-    /// Override APP_ENV for every config: selects .env.<name> / .env.<name>.local
-    #[arg(long = "env")]
-    env: Option<String>,
+    #[command(flatten)]
+    env: config::EnvArgs,
     /// Machine-readable output: `{"bddkit": …, "configs": […]}`, always an array
     #[arg(long)]
     json: bool,
@@ -202,14 +200,7 @@ fn list_one(path: &Path, args: &ListAllArgs, notices: &mut Vec<String>) -> Value
     if let Some(message) = not_a_suite(path) {
         return json!({"config": name, "error": {"kind": "not_a_suite", "message": message}});
     }
-    match list_files(
-        path,
-        &args.tags,
-        args.env.as_deref(),
-        &[],
-        &args.privacy,
-        notices,
-    ) {
+    match list_files(path, &args.tags, &args.env, &[], &args.privacy, notices) {
         Ok(files) => json!({"config": name, "selection": selection, "files": files}),
         Err(error) => {
             let message = privacy::mask_text(&format!("{error:#}"));

@@ -1,9 +1,65 @@
 //! The `.env` layers next to a config: which name selects them, which of them
 //! are there, and what they hold.
 
-use anyhow::{Context, Result};
+use super::paths::shown_dir;
+use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// What a command line says about the `.env` layers.
+#[derive(clap::Args, Debug, Default)]
+pub struct EnvArgs {
+    /// Override APP_ENV: selects .env.<name> / .env.<name>.local
+    #[arg(long = "env", value_name = "ENV")]
+    pub app_env: Option<String>,
+    /// Read the *.local .env layers from another checkout, rooted at <DIR>: from
+    /// the config's folder taken relative to the working directory
+    /// [default: $BDDKIT_ENV_LOCAL_FROM]
+    #[arg(long = "env-local-from", value_name = "DIR")]
+    pub local_from: Option<PathBuf>,
+}
+
+/// The variable behind `--env-local-from`. Read from the process only: it says
+/// where layers are, so no layer can say it.
+const LOCAL_FROM_VARIABLE: &str = "BDDKIT_ENV_LOCAL_FROM";
+
+/// The folder the `*.local` layers of a config in `config_dir` are read from:
+/// that folder itself, or the same one under the other checkout that the flag,
+/// else the variable (empty is unset), names.
+fn local_dir(config_dir: &Path, flag: Option<&Path>) -> Result<PathBuf> {
+    let variable = std::env::var_os(LOCAL_FROM_VARIABLE)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let (source, root) = match (flag, &variable) {
+        (Some(root), _) => ("--env-local-from", root),
+        (None, Some(root)) => (LOCAL_FROM_VARIABLE, root.as_path()),
+        (None, None) => return Ok(config_dir.to_path_buf()),
+    };
+    if !root.is_dir() {
+        bail!("{source} {} is not a directory", root.display());
+    }
+    let Some(folder) = folder_under_cwd(config_dir) else {
+        bail!(
+            "{source} needs a config under the working directory, and {} is outside it",
+            shown_dir(config_dir).display()
+        );
+    };
+    Ok(root.join(folder))
+}
+
+/// `config_dir` relative to the working directory, `None` when it is outside.
+/// As it is named first, so that a linked folder inside the tree keeps its name;
+/// then with the links resolved, which is how the system names the working
+/// directory.
+fn folder_under_cwd(config_dir: &Path) -> Option<PathBuf> {
+    let named = shown_dir(config_dir);
+    if !named.is_absolute() {
+        return Some(named);
+    }
+    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
+    let real = config_dir.canonicalize().ok()?;
+    real.strip_prefix(cwd).ok().map(Path::to_path_buf)
+}
 
 /// Reads one `.env` file into `map`; later keys (from later layers)
 /// overwrite earlier ones. A missing file is not an error: in the
@@ -62,9 +118,13 @@ pub(super) struct Layers {
 
 /// The full `.env` layer stack, in increasing priority order: a value from a
 /// later layer overwrites an earlier one. A skipped file simply contributes
-/// nothing — see `load_env_file`.
-pub(super) fn load_env_layers(config_dir: &Path, app_env: &str) -> Result<Layers> {
-    let shown = super::paths::shown_dir(config_dir);
+/// nothing — see `load_env_file`. The `*.local` layers come from `local_dir`.
+pub(super) fn load_env_layers(
+    config_dir: &Path,
+    app_env: &str,
+    local_from: Option<&Path>,
+) -> Result<Layers> {
+    let local_dir = local_dir(config_dir, local_from)?;
     let mut values = BTreeMap::new();
     let mut read = Vec::new();
     for name in [
@@ -73,8 +133,14 @@ pub(super) fn load_env_layers(config_dir: &Path, app_env: &str) -> Result<Layers
         format!(".env.{app_env}"),
         format!(".env.{app_env}.local"),
     ] {
-        if load_env_file(&config_dir.join(&name), &mut values)? {
-            read.push(crate::feature::display_path(&shown.join(name)));
+        // By name, so that `APP_ENV=local` takes its `.env.local` from there too.
+        let dir = if name.rsplit('.').next() == Some("local") {
+            &local_dir
+        } else {
+            config_dir
+        };
+        if load_env_file(&dir.join(&name), &mut values)? {
+            read.push(crate::feature::display_path(&shown_dir(dir).join(name)));
         }
     }
     Ok(Layers { values, read })
@@ -95,10 +161,10 @@ pub fn app_env_for(path: &Path, cli_env: Option<&str>) -> Result<String> {
 
 /// The `.env` files a load from this path would read, for `doctor`, which
 /// states them even when the config itself does not load.
-pub fn env_layers_for(path: &Path, cli_env: Option<&str>) -> Result<Vec<String>> {
+pub fn env_layers_for(path: &Path, env: &EnvArgs) -> Result<Vec<String>> {
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let app_env = app_env_in(config_dir, cli_env)?;
-    Ok(load_env_layers(config_dir, &app_env)?.read)
+    let app_env = app_env_in(config_dir, env.app_env.as_deref())?;
+    Ok(load_env_layers(config_dir, &app_env, env.local_from.as_deref())?.read)
 }
 
 /// The same answer from the directory alone, for a caller holding text rather
@@ -112,7 +178,6 @@ pub(super) fn app_env_in(config_dir: &Path, cli_env: Option<&str>) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn unique_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("bddkit_env_layers_{name}"));
@@ -185,7 +250,9 @@ mod tests {
         std::fs::write(dir.join(".env.dev"), "C=dev\nD=dev\n").expect("write .env.dev");
         std::fs::write(dir.join(".env.dev.local"), "D=dev_local\n").expect("write .env.dev.local");
 
-        let map = load_env_layers(&dir, "dev").expect("layers read").values;
+        let map = load_env_layers(&dir, "dev", None)
+            .expect("layers read")
+            .values;
         assert_eq!(map.get("A"), Some(&"base".to_string()), "only in .env");
         assert_eq!(
             map.get("B"),
@@ -208,7 +275,7 @@ mod tests {
     fn load_env_layers_ignores_missing_optional_files() {
         let dir = unique_dir("only_base");
         std::fs::write(dir.join(".env"), "A=base\n").expect("write .env");
-        let map = load_env_layers(&dir, "prod")
+        let map = load_env_layers(&dir, "prod", None)
             .expect("missing .env.local/.env.prod* is not an error")
             .values;
         assert_eq!(map.get("A"), Some(&"base".to_string()));

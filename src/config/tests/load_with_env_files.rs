@@ -1,6 +1,13 @@
 //! `config::load`: the `.env` layers and the migration hint.
 use super::*;
 
+fn app_env(name: &str) -> EnvArgs {
+    EnvArgs {
+        app_env: Some(name.to_string()),
+        ..EnvArgs::default()
+    }
+}
+
 fn write_config(dir: &Path, yaml: &str) -> PathBuf {
     let path = dir.join("config.yaml");
     std::fs::write(&path, yaml).expect("write config");
@@ -22,7 +29,7 @@ fn substitutes_value_from_base_dotenv_file() {
         &dir,
         "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
     );
-    let c = load(&path, None).expect("config loads with .env");
+    let c = load(&path, &EnvArgs::default()).expect("config loads with .env");
     assert_eq!(
         c.resources.groups["s3"]["main"]["dsn"],
         "postgres://u:secret@db/x"
@@ -38,7 +45,7 @@ fn cli_env_flag_selects_the_matching_env_specific_file() {
         &dir,
         "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
     );
-    let c = load(&path, Some("prod")).expect("config loads with --env=prod");
+    let c = load(&path, &app_env("prod")).expect("config loads with --env=prod");
     assert_eq!(
         c.resources.groups["s3"]["main"]["dsn"],
         "postgres://u:prod_secret@db/x"
@@ -55,7 +62,7 @@ fn without_cli_env_flag_defaults_to_dev_file() {
         "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
     );
     if std::env::var("APP_ENV").is_err() {
-        let c = load(&path, None).expect("config loads without --env");
+        let c = load(&path, &EnvArgs::default()).expect("config loads without --env");
         assert_eq!(
             c.resources.groups["s3"]["main"]["dsn"],
             "postgres://u:dev_secret@db/x"
@@ -72,7 +79,7 @@ fn local_file_overrides_base_env_for_same_key() {
         &dir,
         "paths: [f]\nresources:\n  s3:\n    main:\n      dsn: postgres://u:${DB_PASS}@db/x\n",
     );
-    let c = load(&path, None).expect("config loads");
+    let c = load(&path, &EnvArgs::default()).expect("config loads");
     assert_eq!(
         c.resources.groups["s3"]["main"]["dsn"],
         "postgres://u:local_secret@db/x"
@@ -87,7 +94,10 @@ fn load_error(name: &str, yaml: Option<&str>) -> String {
             let _ = std::fs::remove_file(&path);
         }
     }
-    format!("{:#}", load(&path, None).expect_err("config must not load"))
+    format!(
+        "{:#}",
+        load(&path, &EnvArgs::default()).expect_err("config must not load")
+    )
 }
 
 const FORMAT_HINT: &str = "predates the format change";

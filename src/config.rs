@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 mod env;
 mod paths;
 
-pub use env::{app_env_for, env_layers_for};
+pub use env::{EnvArgs, app_env_for, env_layers_for};
 use env::{app_env_in, load_env_layers};
 
 fn default_concurrency() -> usize {
@@ -481,45 +481,41 @@ fn resolve_config_path_in(
     }
 }
 
-pub fn load(path: &Path, cli_env: Option<&str>) -> Result<Config> {
+pub fn load(path: &Path, env: &EnvArgs) -> Result<Config> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config {}", path.display()))?;
-    load_str(
-        &raw,
-        path.parent().unwrap_or_else(|| Path::new(".")),
-        cli_env,
-    )
-    // The migration hint belongs to a file somebody wrote, not to text a
-    // command just assembled: `resource add` validates its prospective config
-    // through `load_str`, and telling whoever adds a resource that "the format
-    // changed" would be answering a question they did not ask, about a file
-    // that is very likely fine.
-    .map_err(|error| {
-        // Only a config that lacks the current top-level keys is an old one:
-        // an unset variable, a bad `.env` or a typo must not send the tester
-        // to a migration guide.
-        let old_shape = error.chain().any(|cause| {
-            let text = cause.to_string();
-            text.contains("missing field `paths`") || text.contains("missing field `resources`")
-        });
-        let mut message = format!("config {}", path.display());
-        if old_shape {
-            message.push_str(
-                ". If this suite predates the format change, suites were replaced by \
+    load_str(&raw, path.parent().unwrap_or_else(|| Path::new(".")), env)
+        // The migration hint belongs to a file somebody wrote, not to text a
+        // command just assembled: `resource add` validates its prospective config
+        // through `load_str`, and telling whoever adds a resource that "the format
+        // changed" would be answering a question they did not ask, about a file
+        // that is very likely fine.
+        .map_err(|error| {
+            // Only a config that lacks the current top-level keys is an old one:
+            // an unset variable, a bad `.env` or a typo must not send the tester
+            // to a migration guide.
+            let old_shape = error.chain().any(|cause| {
+                let text = cause.to_string();
+                text.contains("missing field `paths`") || text.contains("missing field `resources`")
+            });
+            let mut message = format!("config {}", path.display());
+            if old_shape {
+                message.push_str(
+                    ". If this suite predates the format change, suites were replaced by \
                  paths + resources — see docs/writing-tests.md",
-            );
-        }
-        error.context(message)
-    })
+                );
+            }
+            error.context(message)
+        })
 }
 
 /// Everything `load` does except reading the file. `config_dir` is what selects
 /// the `.env` layers and is the config's own directory, not the working
 /// directory — so `resource add` can validate the exact text it is about to
 /// write with the layers a real run would see.
-pub fn load_str(raw: &str, config_dir: &Path, cli_env: Option<&str>) -> Result<Config> {
-    let app_env = app_env_in(config_dir, cli_env)?;
-    let layers = load_env_layers(config_dir, &app_env)?;
+pub fn load_str(raw: &str, config_dir: &Path, env: &EnvArgs) -> Result<Config> {
+    let app_env = app_env_in(config_dir, env.app_env.as_deref())?;
+    let layers = load_env_layers(config_dir, &app_env, env.local_from.as_deref())?;
     let expanded = expand_env(raw, &layers.values)?;
     // Before the typed parse, whose errors can quote a value: a secret the
     // document holds is recorded the moment it is known.
@@ -563,7 +559,7 @@ mod tests {
     fn load_api_in(body: &str, dir: &Path) {
         let src =
             format!("paths: [f]\nresources:\n  api:\n    a:\n      base_url: http://x\n{body}");
-        load_str(&src, dir, None).expect("config loads");
+        load_str(&src, dir, &EnvArgs::default()).expect("config loads");
     }
 
     #[test]

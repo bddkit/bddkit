@@ -474,7 +474,7 @@ async fn upgrade_command(args: UpgradeArgs) -> Result<i32> {
   bddkit resource fields --json               the same listing, machine-readable
   bddkit resource add api staging --config suite.yaml --base_url http://staging.local
   bddkit resource add db reporting --config suite.yaml --no-check --dsn postgres://...
-  # --config/--env/--json/--no-check must come before any --<field> value")]
+  # --config/--env/--env-local-from/--json/--no-check go before any --<field>")]
 struct ResourceArgs {
     #[command(subcommand)]
     command: Option<ResourceCommand>,
@@ -497,9 +497,8 @@ struct AddArgs {
     /// Path to the YAML config to edit [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Override APP_ENV: selects .env.<name> / .env.<name>.local
-    #[arg(long = "env")]
-    env: Option<String>,
+    #[command(flatten)]
+    env: config::EnvArgs,
     /// The whole body as JSON; flags override it, key by key
     #[arg(long)]
     json: Option<String>,
@@ -561,7 +560,7 @@ fn resource_command(args: ResourceArgs) -> Result<i32> {
                 group: &args.group,
                 name: &args.name,
                 config: &config_path,
-                env: args.env.as_deref(),
+                env: &args.env,
                 json: args.json.as_deref(),
                 no_check: args.no_check,
                 flags: &args.fields,
@@ -584,7 +583,7 @@ fn list_fields(args: &FieldsArgs) -> Result<i32> {
         && let Some(resolved) = config::resolve_config_path(args.config.as_deref())?
     {
         let path = &resolved.path;
-        let cfg = config::load(path, None)?;
+        let cfg = config::load(path, &config::EnvArgs::default())?;
         if let Some(plugins) = load_plugins(path, &cfg, &dirs::Env::from_process(None))? {
             kinds.extend(resource::plugin_kinds(&plugins));
         }
@@ -618,9 +617,8 @@ struct DoctorArgs {
     /// Path to the YAML config [default: $BDDKIT_CONFIG, else ./bddkit.yaml or ./bddkit.yml]
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Override APP_ENV: selects .env.<name> / .env.<name>.local
-    #[arg(long = "env")]
-    env: Option<String>,
+    #[command(flatten)]
+    env: config::EnvArgs,
     /// Also open a socket to every API and database the config names
     #[arg(long)]
     live: bool,
@@ -652,7 +650,7 @@ async fn doctor_command(args: DoctorArgs) -> Result<i32> {
     let dir_env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
     let report = doctor::check(
         args.config.as_deref(),
-        args.env.as_deref(),
+        &args.env,
         args.live,
         &dir_env,
         &args.reports.paths(),
@@ -740,9 +738,8 @@ struct RunArgs {
     /// config's `tags` [default: $BDDKIT_TAG, comma-separated]
     #[arg(long = "tag")]
     tags: Vec<String>,
-    /// Override APP_ENV: selects .env.<name> / .env.<name>.local
-    #[arg(long = "env")]
-    env: Option<String>,
+    #[command(flatten)]
+    env: config::EnvArgs,
     /// Stop dispatching new files after the first failure; `--fail-fast=false`
     /// overrides a config that says true [default: $BDDKIT_FAIL_FAST, else the config's `fail_fast`]
     #[arg(long = "fail-fast", num_args = 0..=1, require_equals = true, default_missing_value = "true", action = clap::ArgAction::Set)]
@@ -901,7 +898,7 @@ fn list_steps(args: &ListArgs) -> Result<i32> {
         && let Some(resolved) = config::resolve_config_path(args.config.as_deref())?
     {
         let path = &resolved.path;
-        let cfg = config::load(path, None)?;
+        let cfg = config::load(path, &config::EnvArgs::default())?;
         let env = dirs::Env::from_process(args.dir.bddkit_dir.clone());
         if let Some(plugins) = load_plugins(path, &cfg, &env)? {
             rows.extend(steps::help::plugin_rows(
@@ -1337,7 +1334,7 @@ fn note_config(
         artifacts_dir: cli.artifacts_dir.is_some() || env_var("BDDKIT_ARTIFACTS_DIR").is_some(),
         tags: !cfg.tags.is_empty(),
         paths: !cli.paths.is_empty() || env_var("BDDKIT_PATHS").is_some(),
-        env: cli.env.is_some(),
+        env: cli.env.app_env.is_some(),
     };
     probe.read = true;
 }

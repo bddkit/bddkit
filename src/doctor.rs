@@ -187,7 +187,7 @@ impl Report {
 #[allow(clippy::too_many_arguments)]
 pub fn check(
     explicit_config: Option<&Path>,
-    env: Option<&str>,
+    env: &config::EnvArgs,
     live: bool,
     dir_env: &dirs::Env,
     report_paths: &[&Path],
@@ -211,8 +211,8 @@ pub fn check(
         report.config_source = Some(resolved.source);
         // A broken `.env` costs the header its answer, never the report: the
         // config stage below names the same failure properly.
-        report.app_env =
-            config::app_env_for(&resolved.path, env).unwrap_or_else(|_| "unknown".to_string());
+        report.app_env = config::app_env_for(&resolved.path, env.app_env.as_deref())
+            .unwrap_or_else(|_| "unknown".to_string());
         report.env_layers = config::env_layers_for(&resolved.path, env).unwrap_or_default();
     }
 

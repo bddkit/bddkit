@@ -43,7 +43,7 @@ pub(super) fn load_config(
     let resolved = config::resolve_config_path(cli.config.as_deref())?
         .ok_or_else(|| anyhow::anyhow!("{}", config::NO_CONFIG_FOUND))?;
     let config_path = resolved.path;
-    let mut cfg = config::load(&config_path, cli.env.as_deref())?;
+    let mut cfg = config::load(&config_path, &cli.env)?;
     let mut overrides =
         super::settings::resolve(&cli.settings, &cfg.all_group_names(), &privacy::process_env)?;
     // `run`'s own two flags sit on top of the environment.
