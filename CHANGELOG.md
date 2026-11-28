@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/bddkit/bddkit/compare/v0.6.0...v0.6.1) - 2026-11-28
+
+### Added
+
+- doctor warns about an untyped macro parameter written in quotes ([#313](https://github.com/bddkit/bddkit/pull/313))
+- the stream carries a step's role, negative assertions and polling attempts ([#314](https://github.com/bddkit/bddkit/pull/314))
+- --env-local-from reads the *.local .env layers from another checkout ([#312](https://github.com/bddkit/bddkit/pull/312))
+- mark negative assertions on plugin steps and built-ins ([#311](https://github.com/bddkit/bddkit/pull/311))
+
+### Other
+
+- tell the agent skill about --env-local-from
+- move the evidence sources of the event stream into events/sources.rs
+- *(plugin)* move the library tests into library/tests.rs ([#311](https://github.com/bddkit/bddkit/pull/311))
+
 ## [0.6.0](https://github.com/bddkit/bddkit/compare/v0.5.3...v0.6.0) - 2026-11-25
 
 ### Added
