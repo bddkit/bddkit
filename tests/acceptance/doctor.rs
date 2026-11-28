@@ -245,3 +245,133 @@ fn the_run_subcommand_is_how_a_suite_is_started() {
         "run keeps every flag the flat form had:\n{stdout}"
     );
 }
+
+/// Runs `doctor` over a project whose macro file declares `templates`, one per
+/// line of the file, with no plugin installed.
+fn doctor_over_macros(name: &str, templates: &[&str], args: &[&str]) -> (Option<i32>, String) {
+    let dir = std::env::temp_dir().join(format!("bddkit-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("no-plugins")).expect("mkdir");
+    let macros = dir.join("macros.yaml");
+    let source = templates
+        .iter()
+        .map(|template| format!("- {{step: '{template}', do: [Show all variables]}}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    std::fs::write(&macros, source).expect("write macros");
+    let cfg = write_doctor_project(
+        name,
+        "Feature: only\n  Scenario: one\n    When set variable \"x\" to \"1\"\n",
+        &format!(
+            "macro_paths: [{}]\n",
+            macros.display().to_string().replace('\\', "/")
+        ),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_bddkit"))
+        .arg("doctor")
+        .args(args)
+        .arg("--config")
+        .arg(cfg)
+        .env("BDDKIT_DIR", dir.join("no-plugins"))
+        .output()
+        .expect("failed to run bddkit");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+/// The `--json` rows with the `warning` status.
+fn warnings(json: &str) -> Vec<Value> {
+    let report: Value = serde_json::from_str(json).expect("--json emits JSON only");
+    report["checks"]
+        .as_array()
+        .expect("checks is an array")
+        .iter()
+        .filter(|check| check["status"] == "warning")
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn doctor_warns_about_an_untyped_parameter_in_quotes_in_a_macro() {
+    let (_, stdout) = doctor_over_macros(
+        "doctor-untyped",
+        &["I note it", r#"I open "{session}" as "{user}""#],
+        &[],
+    );
+    assert!(stdout.contains("! macros "), "{stdout}");
+    assert!(stdout.contains("macros.yaml:2"), "{stdout}");
+    assert!(
+        stdout.contains(r#"I open "{session}" as "{user}""#),
+        "{stdout}"
+    );
+    for fix in [
+        r#"declare it "{session:text}""#,
+        r#"declare it "{user:text}""#,
+    ] {
+        assert!(stdout.contains(fix), "{stdout}");
+    }
+}
+
+#[test]
+fn doctor_does_not_warn_about_a_typed_parameter_in_quotes() {
+    let (code, stdout) = doctor_over_macros(
+        "doctor-typed",
+        &[r#"I open "{session:text}" as "{user:any}""#],
+        &["--json"],
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert_eq!(warnings(&stdout), Vec::<Value>::new(), "{stdout}");
+}
+
+#[test]
+fn doctor_does_not_warn_about_an_untyped_parameter_outside_quotes() {
+    // Bare, inside a longer literal, and between the end of one literal and the
+    // start of the next.
+    let (code, stdout) = doctor_over_macros(
+        "doctor-unquoted",
+        &[
+            "I open {session}",
+            r#"I close "the {door} now""#,
+            r#"I join "a"{middle}"b""#,
+        ],
+        &["--json"],
+    );
+    assert_eq!(code, Some(0), "{stdout}");
+    assert_eq!(warnings(&stdout), Vec::<Value>::new(), "{stdout}");
+}
+
+#[test]
+fn a_warning_does_not_change_the_exit_code() {
+    let (code, stdout) = doctor_over_macros("doctor-warn-code", &[r#"I open "{session}""#], &[]);
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(stdout.contains("! macros "), "{stdout}");
+    assert!(
+        stdout.contains("no problems found, 1 warning(s)\n"),
+        "the last lines must not hide the warning:\n{stdout}"
+    );
+}
+
+#[test]
+fn doctor_json_reports_the_warning_status() {
+    let (_, stdout) =
+        doctor_over_macros("doctor-warn-json", &[r#"I open "{session}""#], &["--json"]);
+    let rows = warnings(&stdout);
+    assert_eq!(rows.len(), 1, "{stdout}");
+    assert_eq!(rows[0]["stage"], "macros", "{stdout}");
+    let target = rows[0]["target"].as_str().expect("a target");
+    assert!(target.ends_with("macros.yaml:1"), "{target}");
+}
+
+/// The conflict an untyped quoted parameter causes is the case the hint is for.
+#[test]
+fn doctor_warns_about_an_untyped_parameter_when_the_macros_conflict() {
+    let (code, stdout) = doctor_over_macros(
+        "doctor-warn-conflict",
+        &[r#"I send "{what}""#, r#"I send "{what}" for "{whom}""#],
+        &[],
+    );
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(stdout.contains("✗ macros"), "{stdout}");
+    assert!(stdout.contains(r#"declare it "{whom:text}""#), "{stdout}");
+}

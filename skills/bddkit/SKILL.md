@@ -28,7 +28,7 @@ resources:
 
 ## Check and run
 
-`bddkit doctor` after every edit: exit 0 clean, 1 findings, no network. `bddkit run [paths] [--tag t]`:
+`bddkit doctor` after every edit: exit 0 clean, 1 findings, no network; `!` rows are warnings, which leave exit 0. `bddkit run [paths] [--tag t]`:
 
 | Exit | Meaning | Do |
 |---|---|---|
