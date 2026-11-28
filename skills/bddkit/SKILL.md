@@ -17,6 +17,8 @@ resources:
     app: { dsn: "postgres://app:${DB_PASS}@localhost/app" }
 ```
 
+A git worktree lacks the git-ignored `*.local` `.env` layers. Pass `--env-local-from <root of the main checkout>` (the first line of `git worktree list`) to `run`, `doctor`, `list`, `list-all` or `resource add`, or set `BDDKIT_ENV_LOCAL_FROM`. Run from the worktree root: the config's folder is looked up under that checkout by its path relative to the working directory.
+
 ## Writing steps
 
 - Never guess a step: `bddkit steps list --json`, or `--filter <text> -v`. Macros are not listed: read the `step:` templates under `macro_paths`.

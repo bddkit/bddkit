@@ -1,19 +1,19 @@
 # Runs the binary on the masking fixture and writes its reports where a later
 # step can read them. `config` is a file of selftest/fixtures/masking/ without
 # its extension; `options` is appended to the command line.
-- step: 'I run the masking fixture "{config}" with options "{options}"'
+- step: 'I run the masking fixture "{config:text}" with options "{options:text}"'
   do:
     - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/masking/<<config>>.yaml --junit selftest/out/junit.xml --events selftest/out/events.ndjson <<options>>\""
 
 # Runs the binary on the annotations fixture, writes its event stream where a
 # later step can read it, then prints it through one of the fixture's jq
 # filters (`order`, `comments`, `numbers`, `description`) on one line, events joined by `|`.
-- step: 'I run the annotations fixture and read it through "{filter}"'
+- step: 'I run the annotations fixture and read it through "{filter:text}"'
   do:
     - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/annotations/bddkit.yaml --events selftest/out/events.ndjson; jq -r -f selftest/fixtures/annotations/<<filter>>.jq selftest/out/events.ndjson | tr '\\n' '|'\""
 
 # Runs the binary on the examples_tags fixture with extra options, then prints
 # each started scenario and its tags through the fixture's jq filter, on one line, entries joined by `|`.
-- step: 'I run the examples tags fixture with options "{options}"'
+- step: 'I run the examples tags fixture with options "{options:text}"'
   do:
     - "I run the command \"rm -rf selftest/out && mkdir -p selftest/out && ${BDDKIT_BIN:-target/debug/bddkit} run --config selftest/fixtures/examples_tags/bddkit.yaml --events selftest/out/events.ndjson <<options>>; jq -r -f selftest/fixtures/examples_tags/tags.jq selftest/out/events.ndjson | tr '\\n' '|'\""
