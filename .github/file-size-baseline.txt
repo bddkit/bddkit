@@ -1,6 +1,6 @@
-src/config.rs 1135
+src/config.rs 1131
 src/feature.rs 1666
-src/main.rs 1510
+src/main.rs 1507
 src/plugin/manage.rs 1003
 src/plugin/mod.rs 1770
 src/privacy.rs 1343

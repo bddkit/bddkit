@@ -2,7 +2,12 @@
 use super::*;
 
 fn resolved(config_dir: &Path, body: &str) -> Config {
-    load_str(&format!("{body}resources: {{}}\n"), config_dir, None).expect("loads")
+    load_str(
+        &format!("{body}resources: {{}}\n"),
+        config_dir,
+        &EnvArgs::default(),
+    )
+    .expect("loads")
 }
 
 #[test]
@@ -48,7 +53,7 @@ fn load_reads_a_config_file() {
         "paths: [features]\nresources:\n  api:\n    review:\n      base_url: http://review.local\n",
     )
     .expect("write config");
-    let c = load(&path, None).expect("config loads");
+    let c = load(&path, &EnvArgs::default()).expect("config loads");
     // Relative to the config's folder, however that folder is spelled.
     let folder = std::path::absolute(std::env::temp_dir()).expect("absolute");
     let cwd = std::env::current_dir().expect("cwd");

@@ -203,6 +203,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::EnvArgs;
 
     fn groups(names: &[&str]) -> Vec<String> {
         names.iter().map(std::string::ToString::to_string).collect()
@@ -283,13 +284,14 @@ mod tests {
     const BASE: &str = "paths: [f]\ndefault_api: a\nresources:\n  api:\n    a:\n      base_url: http://a.local\n      options: { polling: { timeout_secs: 9 } }\n    b:\n      base_url: http://b.local\n";
 
     fn config() -> Config {
-        crate::config::load_str(BASE, std::path::Path::new("."), None).unwrap()
+        crate::config::load_str(BASE, std::path::Path::new("."), &EnvArgs::default()).unwrap()
     }
 
     #[test]
     fn apply_replaces_lists_and_keeps_the_half_of_polling_nobody_set() {
         let raw = "paths: [f]\nresources:\n  s3:\n    a:\n      options: { polling: { timeout_secs: 9 } }\n";
-        let mut cfg = crate::config::load_str(raw, std::path::Path::new("."), None).unwrap();
+        let mut cfg =
+            crate::config::load_str(raw, std::path::Path::new("."), &EnvArgs::default()).unwrap();
         cfg.apply(&Overrides {
             tags: Some(vec!["smoke".into()]),
             polling_interval_ms: Some(50),
@@ -415,7 +417,10 @@ mod tests {
 
     #[test]
     fn apply_sets_a_plugin_groups_default_and_refuses_what_is_not_declared() {
-        let load = || crate::config::load_str(WIDGETS, std::path::Path::new("."), None).unwrap();
+        let load = || {
+            crate::config::load_str(WIDGETS, std::path::Path::new("."), &EnvArgs::default())
+                .unwrap()
+        };
         let set = |group: &str, name: &str| {
             load().apply(&Overrides {
                 defaults: [(group.to_string(), name.to_string())].into(),
