@@ -12,9 +12,9 @@ use crate::failure::FailureKind;
 use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
 use crate::plugin::reply::Plain;
 use crate::privacy::Redactor;
+use crate::steps::{StepKind, StepTarget};
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -23,6 +23,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+mod sources;
+pub use sources::{EVIDENCE_BUFFER, Sources, buffer_from_env, sources_from_env};
 
 /// Opened exactly once, for the whole run, and never through `report::prepare`:
 /// that one closes the file again, and a FIFO's reader would see end-of-file
@@ -204,86 +207,6 @@ pub(crate) fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// What `--evidence` records: the `marked` steps, every step of a scenario
-/// that failed (`failures`), or `all`. The flag, `$BDDKIT_EVIDENCE` and the config key are
-/// read by the one parser here, so all three refuse the same names.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Sources {
-    marked: bool,
-    failures: bool,
-    all: bool,
-}
-
-impl Sources {
-    /// A comma-separated list, as the flag and the variable carry it.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        text.split(',')
-            .try_fold(Self::default(), |sources, name| sources.with(name.trim()))
-    }
-
-    fn with(mut self, name: &str) -> Result<Self, String> {
-        match name {
-            "marked" => self.marked = true,
-            "failures" => self.failures = true,
-            "all" => self.all = true,
-            _ => {
-                return Err(format!(
-                    "unknown evidence source {name:?}: expected marked, failures or all"
-                ));
-            }
-        }
-        Ok(self)
-    }
-
-    /// True when anything is recorded at all.
-    pub fn any(self) -> bool {
-        self.marked || self.failures || self.all
-    }
-
-    /// For `run_started.evidence_sources`: canonical order, each once.
-    pub fn names(self) -> Vec<&'static str> {
-        [
-            (self.marked, "marked"),
-            (self.failures, "failures"),
-            (self.all, "all"),
-        ]
-        .into_iter()
-        .filter_map(|(on, name)| on.then_some(name))
-        .collect()
-    }
-}
-
-/// `$BDDKIT_EVIDENCE`, as `run` reads it and `doctor` checks it.
-pub fn sources_from_env() -> Result<Option<Sources>> {
-    crate::privacy::process_env("BDDKIT_EVIDENCE")
-        .map(|value| Sources::parse(&value))
-        .transpose()
-        .map_err(|error| anyhow::anyhow!("$BDDKIT_EVIDENCE: {error}"))
-}
-
-/// The default of `$BDDKIT_EVIDENCE_BUFFER`: 64 MiB.
-pub const EVIDENCE_BUFFER: usize = 64 * 1024 * 1024;
-
-/// `$BDDKIT_EVIDENCE_BUFFER`, in bytes: what a scenario may hold of long
-/// deferred text before it goes to disk. Read by `run`, checked by `doctor`.
-pub fn buffer_from_env() -> Result<usize> {
-    crate::privacy::process_env("BDDKIT_EVIDENCE_BUFFER").map_or(Ok(EVIDENCE_BUFFER), |value| {
-        value.parse().map_err(|_| {
-            anyhow::anyhow!("$BDDKIT_EVIDENCE_BUFFER: expected a number of bytes, got {value:?}")
-        })
-    })
-}
-
-/// The config key is a YAML list, `evidence: [marked, failures]`.
-impl<'de> Deserialize<'de> for Sources {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<String>::deserialize(deserializer)?
-            .iter()
-            .try_fold(Self::default(), |sources, name| sources.with(name))
-            .map_err(serde::de::Error::custom)
-    }
-}
-
 /// What happens to the evidence of the step in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -337,7 +260,8 @@ pub struct Trace {
     marked: bool,
     tagged: bool,
     held: Mutex<Held>,
-    /// The number of the dispatch in flight, `None` for a step that is not polled.
+    /// The number of the dispatch in flight, `None` for a step that is not
+    /// polled. At `step_finished` it is how many attempts the step took.
     dispatch: Option<u64>,
     /// Steps started in the scenario, and how many of them were live or deferred.
     started: usize,
@@ -398,7 +322,8 @@ impl Trace {
         self.marked = on;
     }
 
-    /// Before every dispatch that writes evidence; `Some` for a polled step.
+    /// Before every dispatch of a plugin step or of a polled built-in; `Some`
+    /// for a polled step. It numbers the evidence written meanwhile.
     pub fn dispatching(&mut self, attempt: Option<u64>) {
         self.dispatch = attempt;
     }
@@ -668,6 +593,7 @@ impl Trace {
     /// step started before it finishes.
     /// `vars` are the resolved slots as `[expression, value]` pairs, already
     /// masked; they are written only with `--evidence`, and only if any.
+    /// `target` is what the text resolved to, `None` if it did not resolve.
     pub fn step_started(
         &mut self,
         keyword: &str,
@@ -675,6 +601,7 @@ impl Trace {
         origin: Origin<'_>,
         source: &Path,
         vars: Vec<Value>,
+        target: Option<StepTarget>,
     ) {
         let Some(events) = &self.events else { return };
         let step = self.steps;
@@ -693,6 +620,17 @@ impl Trace {
         if let Some(parent) = self.open.last() {
             fields["parent"] = (*parent).into();
             fields["source"] = display_path(source).into();
+        }
+        if let Some(target) = target {
+            let (role, negative) = match target.own_kind() {
+                None => ("call", false),
+                Some(StepKind::Action) => ("action", false),
+                Some(StepKind::Assertion { negative, .. }) => ("assertion", negative),
+            };
+            fields["role"] = role.into();
+            if negative {
+                fields["negative"] = true.into();
+            }
         }
         if let Some(index) = origin.index {
             fields["index"] = index.into();
@@ -737,6 +675,12 @@ impl Trace {
         });
         if let Some(kind) = failed {
             fields["kind"] = kind.as_str().into();
+        }
+        // Taken, not read: a built-in that is not polled sets nothing, and
+        // neither does the caller of this step.
+        if let Some(attempts) = self.dispatch.take() {
+            fields["attempts"] = attempts.into();
+            fields["poll"] = "within".into();
         }
         events.emit("step_finished", fields);
     }

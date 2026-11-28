@@ -209,24 +209,22 @@ fn execute_step<'a>(
             .map(|r| std::mem::take(&mut r.vars))
             .unwrap_or_default();
         // A macro call and an include are not counted: the steps they run are.
-        let leaf_group: Option<std::borrow::Cow<'static, str>> =
-            resolved.as_ref().ok().and_then(|r| match r.target {
-                StepTarget::Macro(_)
-                | StepTarget::Builtin {
-                    id: StepId::Include | StepId::IncludeScenario,
-                    ..
-                } => None,
-                StepTarget::Builtin { id, .. } => Some(crate::steps::group_of(id).into()),
-                StepTarget::Plugin { lib, step, .. } => {
-                    Some(world.plugins.usage_group(lib, step).to_string().into())
-                }
-            });
+        let target = resolved.as_ref().ok().map(|r| r.target);
+        let leaf = target.filter(|target| target.own_kind().is_some());
+        let leaf_group: Option<std::borrow::Cow<'static, str>> = leaf.and_then(|t| match t {
+            StepTarget::Builtin { id, .. } => Some(crate::steps::group_of(id).into()),
+            StepTarget::Plugin { lib, step, .. } => {
+                Some(world.plugins.usage_group(lib, step).to_string().into())
+            }
+            StepTarget::Macro(_) => None,
+        });
         world.trace.step_started(
             &step.keyword,
             &reg.display_text(&step.text, &world.redactor),
             origin,
             source,
             vars,
+            target,
         );
         let result = match resolved {
             Ok(resolved) => run_step(world, reg, step, source, generator, depth, resolved).await,
@@ -326,6 +324,7 @@ async fn run_builtin(
             let mut polling = Polling::new(&shown, &effective.polling);
             let mut attempt = 0;
             loop {
+                world.trace.dispatching(Some(attempt + 1));
                 match dispatch(world, id, args).await {
                     Ok(()) => return Ok(()),
                     Err(AttemptError::Fatal(error)) => return Err(error),
