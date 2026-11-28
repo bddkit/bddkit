@@ -10,7 +10,7 @@ async fn version_json_reports_the_plugin_abi() {
     assert!(out.status.success(), "{}", text(&out));
     let info: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(info["version"], CURRENT);
-    assert_eq!(info["plugin_abi"], 4);
+    assert_eq!(info["plugin_abi"], 5);
     assert_eq!(info["plugin_abi_min"], 3);
     assert_eq!(info["target"], host_target());
 }
@@ -69,7 +69,7 @@ async fn upgrade_check_changes_nothing() {
 async fn without_a_terminal_upgrade_requires_yes() {
     let (stub, github) = spawn().await;
     let sandbox = Sandbox::new("upgrade-yes");
-    stub.publish_bddkit("99.0.0", 4, 0);
+    stub.publish_bddkit("99.0.0", 5, 0);
 
     let out = sandbox.upgrade(&github, &[]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
@@ -84,7 +84,7 @@ async fn a_same_abi_upgrade_replaces_only_the_binary() {
     sandbox.install_echo(&github, &stub);
     stub.publish("bddkit/echo-plugin", "0.2.0");
     stub.latest("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 4, 0);
+    stub.publish_bddkit("99.0.0", 5, 0);
     let lock = sandbox.lock();
 
     let out = sandbox.upgrade(&github, &["--yes"]);

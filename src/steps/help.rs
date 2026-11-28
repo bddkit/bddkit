@@ -1,5 +1,6 @@
 //! The step vocabulary as a human reads it: `bddkit steps`.
 
+use super::StepKind;
 use std::collections::BTreeMap;
 
 /// Only non-English locales are files. English is the `description` in the step
@@ -49,7 +50,32 @@ pub struct StepRow {
     pub template: String,
     pub pattern: String,
     pub kind: &'static str,
+    /// An assertion that passes when something is absent or does not match.
+    pub negative: bool,
     pub description: Option<String>,
+}
+
+impl StepRow {
+    pub fn new(
+        group: String,
+        template: String,
+        pattern: String,
+        kind: StepKind,
+        description: Option<String>,
+    ) -> Self {
+        let (kind, negative) = match kind {
+            StepKind::Action => ("action", false),
+            StepKind::Assertion { negative, .. } => ("assertion", negative),
+        };
+        Self {
+            group,
+            template,
+            pattern,
+            kind,
+            negative,
+            description,
+        }
+    }
 }
 
 /// Every builtin. Plugin rows are appended by the caller — they are the only
@@ -59,19 +85,14 @@ pub fn builtin_rows(overlay: &BTreeMap<String, String>) -> Vec<StepRow> {
         .iter()
         .zip(crate::steps::COMPILED_BUILTINS.iter())
         .map(|(def, compiled)| {
-            StepRow {
-                group: def.group.to_string(),
-                template: compiled.template.clone(),
+            StepRow::new(
+                def.group.to_string(),
+                compiled.template.clone(),
                 // The regex that actually runs, as the field's doc says.
-                pattern: compiled.regex.as_str().to_string(),
-                kind: match def.kind {
-                    crate::steps::StepKind::Action => "action",
-                    crate::steps::StepKind::Assertion(_) => "assertion",
-                },
-                description: Some(
-                    describe(&format!("{:?}", def.id), def.description, overlay).to_string(),
-                ),
-            }
+                compiled.regex.as_str().to_string(),
+                def.kind,
+                Some(describe(&format!("{:?}", def.id), def.description, overlay).to_string()),
+            )
         })
         .collect()
 }
@@ -109,6 +130,7 @@ pub fn plugin_rows(
             template: format!(r#"I use "<name>" {group}"#),
             pattern,
             kind: "action",
+            negative: false,
         });
     }
     rows
@@ -141,6 +163,11 @@ pub fn render(rows: &[StepRow], verbose: bool) -> String {
         for row in rows {
             out.push_str("  ");
             out.push_str(&row.template);
+            // Only a negative row is marked: the text form is read by agents,
+            // where every character costs.
+            if row.negative {
+                out.push_str("  [assertion, negative]");
+            }
             out.push('\n');
             if verbose && let Some(description) = &row.description {
                 out.push_str("    ");

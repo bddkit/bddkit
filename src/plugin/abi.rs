@@ -43,7 +43,9 @@ use std::sync::LazyLock;
 /// (#208), `handle_scope`, `eager_init`, `deprecated` and
 /// `bddkit_select_instance` (#209), `bddkit_failure_context` (#210), and
 /// `secrets` and `detail` in the config replies (#211).
-pub const ABI_VERSION: u32 = 4;
+///
+/// 5: a step spec's `negative` (#311).
+pub const ABI_VERSION: u32 = 5;
 
 /// The oldest ABI generation this host still loads.
 pub const ABI_MIN: u32 = 3;
@@ -184,6 +186,10 @@ pub struct StepSpec {
     pub expression: Option<String>,
     pub group: String,
     pub kind: StepKind,
+    /// An assertion that passes when something is absent or does not match.
+    /// On an action it is a load error (`library::prepare_steps`).
+    #[serde(default)]
+    pub negative: bool,
     /// The author's own one-line help, shown by `bddkit steps list`. Optional
     /// and defaulted, so a plugin published before the field existed still
     /// loads. The host never translates it: localizing a plugin is the

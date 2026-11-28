@@ -277,7 +277,7 @@ async fn run_step(
         StepTarget::Plugin {
             lib,
             step: step_index,
-            assertion,
+            kind,
         } => {
             // Arguments cross the boundary already interpolated: a plugin
             // never sees raw step text and never sees `<<variable>>`
@@ -288,7 +288,7 @@ async fn run_step(
             let target = plugin_step::Target {
                 lib,
                 step_index,
-                assertion,
+                assertion: matches!(kind, StepKind::Assertion { .. }),
             };
             plugin_step::run(world, reg, step, source, target, &args).await
         }
@@ -309,7 +309,10 @@ async fn run_builtin(
         StepKind::Action => dispatch(world, id, args)
             .await
             .map_err(AttemptError::into_error),
-        StepKind::Assertion(source_kind) => {
+        StepKind::Assertion {
+            source: source_kind,
+            ..
+        } => {
             let Some(layer) = world.take_options() else {
                 return dispatch(world, id, args)
                     .await
@@ -1319,13 +1322,9 @@ mod tests {
         let steps: Vec<_> = plugins
             .steps()
             .into_iter()
-            .map(|(lib, index, declared, assertion)| {
-                (
-                    lib,
-                    index,
-                    declared,
-                    assertion && force_action != Some(index),
-                )
+            .map(|(lib, index, declared, kind)| {
+                let forced = (force_action == Some(index)).then_some(StepKind::Action);
+                (lib, index, declared, forced.unwrap_or(kind))
             })
             .collect();
         Registry::with_macros_and_plugins(

@@ -299,7 +299,7 @@ fn installed(dir: &Path, github: &str, stub: &Stub, version: &str) {
     assert!(out.status.success(), "{}", text(&out));
 }
 
-const ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"4\": 0.1.0\n      \"5\": 0.2.0\n";
+const ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    abi:\n      \"4\": 0.1.0\n      \"6\": 0.2.0\n";
 
 // ---- bddkit upgrade ----
 
@@ -428,18 +428,18 @@ fn output_retrying(command: &mut Command) -> Output {
     panic!("the sandboxed binary stayed busy");
 }
 
-/// Echo 0.1.0 installed for ABI 4 and a 0.2.0 for ABI 5 published, with a
-/// bddkit 99.0.0 for ABI 5 as the latest release.
+/// Echo 0.1.0 installed for ABI 4 and a 0.2.0 for ABI 6 published, with a
+/// bddkit 99.0.0 for ABI 6 as the latest release.
 fn abi_upgrade_ready(sandbox: &Sandbox, github: &str, stub: &Stub, check_exit: i32) {
     sandbox.install_echo(github, stub);
     stub.index(ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 5, check_exit);
+    stub.publish_bddkit("99.0.0", 6, check_exit);
 }
 
 const NEEDS_ECHO: &str = "echo '{\"plugins\":[{\"name\":\"echo\",\"repo\":\"bddkit/echo-plugin\",\"later\":1}],\"x\":2}'";
 
-const GROUPED_ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n    abi:\n      \"4\": 0.1.0\n      \"5\": 0.2.0\n";
+const GROUPED_ABI_INDEX: &str = "plugin:\n  - name: echo\n    repo: bddkit/echo-plugin\n    groups: [echo]\n    abi:\n      \"4\": 0.1.0\n      \"6\": 0.2.0\n";
 
 /// A suite in the sandbox's working directory that uses `echo`, found the way `run` finds it.
 fn sandbox_suite(sandbox: &Sandbox) {

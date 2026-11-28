@@ -8,6 +8,7 @@ pub mod reply;
 
 use crate::config::InstanceSpec;
 use crate::options::Options;
+use crate::steps::StepKind;
 use abi::{DispatchResult, GroupInitRequest, GroupInstance, HandleScope, InitRequest, OptionsJson};
 use anyhow::{Context, Result, bail};
 use library::Library;
@@ -275,9 +276,8 @@ impl Plugins {
         self.libs.get(lib)?.steps.get(step)
     }
 
-    /// `(lib index, step index, declaration, is assertion)` for registry
-    /// loading.
-    pub fn steps(&self) -> Vec<(usize, usize, Declared, bool)> {
+    /// `(lib index, step index, declaration, kind)` for registry loading.
+    pub fn steps(&self) -> Vec<(usize, usize, Declared, StepKind)> {
         let mut out = Vec::new();
         for (lib_index, lib) in self.libs.iter().enumerate() {
             for (step_index, step) in lib.steps.iter().enumerate() {
@@ -288,7 +288,7 @@ impl Plugins {
                         secret_groups: step.secret_groups.clone(),
                     },
                 };
-                out.push((lib_index, step_index, declared, step.is_assertion()));
+                out.push((lib_index, step_index, declared, step.into()));
             }
         }
         out
@@ -308,17 +308,13 @@ impl Plugins {
                             step.declaration().to_string(),
                         ),
                     };
-                    crate::steps::help::StepRow {
-                        group: step.group.clone(),
+                    crate::steps::help::StepRow::new(
+                        step.group.clone(),
                         template,
                         pattern,
-                        kind: if step.is_assertion() {
-                            "assertion"
-                        } else {
-                            "action"
-                        },
-                        description: step.description.clone(),
-                    }
+                        step.into(),
+                        step.description.clone(),
+                    )
                 })
             })
             .collect()
@@ -1124,7 +1120,7 @@ pub(crate) mod tests {
             &Options::default(),
         )
         .expect("loads");
-        assert_eq!(plugins.step_count(), 29);
+        assert_eq!(plugins.step_count(), 30);
         assert_eq!(plugins.group_of_step(0, 0), "echo");
     }
 

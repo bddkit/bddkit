@@ -20,10 +20,10 @@ async fn plugin_check_prints_the_manifest_name_and_refuses_another_abi() {
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "echo");
 
-    let out = run(Some("5"));
+    let out = run(Some("6"));
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(
-        text(&out).contains("built for ABI version 5"),
+        text(&out).contains("built for ABI version 6"),
         "{}",
         text(&out)
     );
@@ -56,7 +56,7 @@ async fn hand_written_and_project_entries_are_listed_not_changed() {
     let sandbox = Sandbox::new("upgrade-listed");
     stub.index(ABI_INDEX);
     stub.publish("bddkit/echo-plugin", "0.2.0");
-    stub.publish_bddkit("99.0.0", 5, 0);
+    stub.publish_bddkit("99.0.0", 6, 0);
 
     // The user layer: one entry bddkit installed, one a person wrote.
     let user = sandbox.root.join("cfg/bddkit");

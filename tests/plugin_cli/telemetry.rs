@@ -109,7 +109,7 @@ async fn a_failed_plugin_install_reports_its_failure_class() {
         class(
             &["install", "echo@0.3.0"],
             &github,
-            &[("BDDKIT_ECHO_FIXTURE_ABI", "5")]
+            &[("BDDKIT_ECHO_FIXTURE_ABI", "6")]
         ),
         "refused"
     );
