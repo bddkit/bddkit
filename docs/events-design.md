@@ -353,7 +353,7 @@ privacy:
 
 **Decided.** `doctor` points at names that look sensitive and carry no privacy word: `password`, `token` or `key` as a word of the name. A slot in a macro body whose name is a `secret`-typed parameter of that macro is not listed, since the type already marks it. Each name is listed with the `file:line` of every step that holds it (a macro body at the macro's definition line). This list only hints; it never changes what is masked.
 
-**Detail.** The check reads the `<<…>>` slots in feature files and macro bodies. It is one `privacy` row with status `ok` and the names in its detail — `doctor` has no warning status, and a heuristic must not fail a suite over `primary_key`.
+**Detail.** The check reads the `<<…>>` slots in feature files and macro bodies. It is one `privacy` row with status `ok` and the names in its detail — `doctor` had no warning status when this was decided, and a heuristic must not fail a suite over `primary_key`.
 
 ### 7.11 Known limits
 
@@ -560,7 +560,7 @@ Each is a fact this specification depends on. If one is wrong, the section named
 21. The failure dump prints every request header in full and both bodies cut to 600 characters, and nothing in `src/` masks anything. → `impl Display for Exchange` in `http.rs`; the absence was checked by grep only. (4, 7)
 22. The failure text is built inside `run_file`, where the file's `World` is still alive. → `runner::run_file`. (7.8)
 23. The host's debug output is `eprintln!` at a handful of sites. → `steps/debug.rs`, `runner.rs`. (7.8)
-24. `doctor` has the statuses `ok`, `failed`, `skipped` and exits 0 or 1. → `doctor.rs`. (7.10)
+24. `doctor` has the statuses `ok`, `failed`, `skipped` (and, since #313, `warning`) and exits 0 or 1. → `doctor.rs`. (7.10)
 25. The artifact allocator lives on `Plugins` and does not exist when no plugin is loaded; the workspace is created by the host and never deleted. → `plugin/mod.rs`, `main::load_plugins`, `world.rs`. (8)
 26. Outside tests `HttpState::last` is assigned only in `send` and `replay_last`, and a polling replay of an HTTP assertion goes through `replay_last`. → `http.rs`, `steps/assert.rs::replay_response`. (9.3)
 27. The host holds a response body as a `String`. → `http::Exchange`. (9.3)

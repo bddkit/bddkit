@@ -18,6 +18,9 @@ pub enum Status {
     Ok,
     Failed,
     Skipped,
+    /// A hint: worth fixing, but `run` accepts the suite, so it never changes
+    /// the exit code.
+    Warning,
 }
 
 /// One line of the report. `target` names the resource a stage was checking, so
@@ -117,15 +120,17 @@ impl Report {
     }
 
     pub fn failed(&self) -> usize {
-        self.checks
-            .iter()
-            .filter(|c| c.status == Status::Failed)
-            .count()
+        self.count(Status::Failed)
     }
 
-    /// 0 when clean, 1 when anything was reported. Unlike `run`, `doctor` never
-    /// exits 2: a config it cannot even parse is the most ordinary thing it has
-    /// to report, not a reason to answer in a different currency.
+    fn count(&self, status: Status) -> usize {
+        self.checks.iter().filter(|c| c.status == status).count()
+    }
+
+    /// 0 when clean, 1 when any check failed; a warning is not a failure.
+    /// Unlike `run`, `doctor` never exits 2: a config it cannot even parse is
+    /// the most ordinary thing it has to report, not a reason to answer in a
+    /// different currency.
     pub fn exit_code(&self) -> i32 {
         i32::from(self.failed() != 0)
     }
@@ -140,6 +145,7 @@ impl Report {
                 Status::Ok => "✓",
                 Status::Failed => "✗",
                 Status::Skipped => "-",
+                Status::Warning => "!",
             };
             let label = match &c.target {
                 Some(target) => format!("{} {target}", c.stage),
@@ -162,10 +168,15 @@ impl Report {
         }
         let failed = self.failed();
         out.push_str(&if failed == 0 {
-            "\nno problems found\n".to_string()
+            "\nno problems found".to_string()
         } else {
-            format!("\n{failed} problem(s)\n")
+            format!("\n{failed} problem(s)")
         });
+        let warnings = self.count(Status::Warning);
+        if warnings > 0 {
+            out.push_str(&format!(", {warnings} warning(s)"));
+        }
+        out.push('\n');
         if !self.live {
             out.push_str("static checks only — pass --live to also probe the resources\n");
         }
@@ -276,6 +287,7 @@ pub fn check(
             None
         }
     };
+    stages::warn_quoted_untyped(&mut report, &cfg.macro_paths);
 
     // A registry built without the plugins that failed to load knows none of
     // their steps, so every plugin step in the suite would come back "unknown

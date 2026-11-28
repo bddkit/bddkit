@@ -1,9 +1,9 @@
-//! The first stages of `doctor::check`: the report files, the config, the
-//! layer listing and the plugin load.
+//! The stages of `doctor::check` kept out of its own file: the report files,
+//! the config, the layer listing, the plugin load and the macro warnings.
 
 use super::{Report, Status, with_empty_group_hints};
 use crate::{config, dirs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// First, as in `run`: the same `--junit`/`--cucumber-json` a run takes,
@@ -177,6 +177,40 @@ pub(super) fn load_plugins(
         Err(error) => {
             report.push("plugins", None, Status::Failed, &format!("{error:#}"));
             (None, true)
+        }
+    }
+}
+
+/// A warning row per untyped macro parameter written directly between quotes:
+/// it is `any`, so it matches across the quotes that look like its limits.
+///
+/// Reads the catalog itself rather than the registry's, because there is no
+/// registry when two macros conflict, the case the warning is for. A catalog
+/// that does not load is already the failed `macros` row.
+pub(super) fn warn_quoted_untyped(report: &mut Report, macro_paths: &[PathBuf]) {
+    let Ok(catalog) = crate::macros::MacroCatalog::load(macro_paths) else {
+        return;
+    };
+    for definition in &catalog.definitions {
+        let template = &definition.step;
+        let target = format!(
+            "{}:{}",
+            crate::feature::display_path(&definition.source),
+            definition.line
+        );
+        for param in &definition.compiled.params {
+            let name = &param.name;
+            // Only the untyped spelling is `{name}`. An even number of quotes
+            // before it means the first quote opens a literal, not closes one.
+            let quoted = template
+                .match_indices(&format!("\"{{{name}}}\""))
+                .any(|(at, _)| template[..at].matches('"').count().is_multiple_of(2));
+            if quoted {
+                let detail = format!(
+                    "{template}\nparameter {{{name}}} has no type and can match across quotes: declare it \"{{{name}:text}}\""
+                );
+                report.push("macros", Some(&target), Status::Warning, &detail);
+            }
         }
     }
 }

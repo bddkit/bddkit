@@ -3,7 +3,7 @@
 A file under `macro_paths` is a YAML list, one domain step per entry:
 
 ```yaml
-- step: 'I log in as "{user}" with password "{password:secret}"'
+- step: 'I log in as "{user:text}" with password "{password:secret}"'
   exports: [login_secret]
   do:
     - the request body is: |
@@ -13,8 +13,8 @@ A file under `macro_paths` is a YAML list, one domain step per entry:
     - extract "token" from JSON as "login_secret"
 ```
 
-- `step:` is a Cucumber Expression. `{name}` matches any text; `{n:uint}`, `int`, `float`, `word`, `method` restrict it; `{name:secret}` also masks the value. Escape a literal `(`, `)`, `/`, `{` with `\`.
+- `step:` is a Cucumber Expression. `{name}` matches any text, quotes included, so in quotes write `"{name:text}"`; `{n:uint}`, `int`, `float`, `word`, `method` restrict it; `{name:secret}` also masks the value. Escape a literal `(`, `)`, `/`, `{` with `\`.
 - The body reads a parameter as `<<name>>`.
 - A step that takes a doc string is a one-key map: its text is the key.
 - `exports` lists the variables the caller can read afterwards; nothing else survives.
-- Macros may call macros (depth 16). `bddkit doctor` reports conflicts and cycles.
+- Macros may call macros (depth 16). `bddkit doctor` reports conflicts and cycles, and warns about an untyped `"{name}"`.
