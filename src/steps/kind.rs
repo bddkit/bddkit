@@ -1,6 +1,6 @@
 //! What a built-in step is: its declaration, and whether it acts or asserts.
 
-use super::StepId;
+use super::{StepId, StepTarget};
 use crate::plugin::abi::StepSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,21 @@ impl From<&StepSpec> for StepKind {
             }
         } else {
             Self::Action
+        }
+    }
+}
+
+impl StepTarget {
+    /// The nature of the step itself. `None` for a call, a macro or an
+    /// `I include`: it has none, the steps it runs do.
+    pub fn own_kind(self) -> Option<StepKind> {
+        match self {
+            Self::Macro(_)
+            | Self::Builtin {
+                id: StepId::Include | StepId::IncludeScenario,
+                ..
+            } => None,
+            Self::Builtin { kind, .. } | Self::Plugin { kind, .. } => Some(kind),
         }
     }
 }

@@ -142,7 +142,14 @@ fn deferred_scenario(interrupted: bool) -> Vec<Value> {
         index: None,
         comment: None,
     };
-    trace.step_started("Given ", "s", origin, Path::new("a.feature"), Vec::new());
+    trace.step_started(
+        "Given ",
+        "s",
+        origin,
+        Path::new("a.feature"),
+        Vec::new(),
+        None,
+    );
     assert!(trace.evidence_on(), "a plugin is told evidence is wanted");
     let statement = json!({"sql": "select 1", "binds": [], "duration_us": 0});
     let statement = SqlDiagnostic::from_plugin(&statement, "main").expect("its shape");

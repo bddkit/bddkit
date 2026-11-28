@@ -119,8 +119,8 @@ Steps after a failure are reported as skipped at the top level and in an include
 | `run_started` | where `run` prints `run <id>` today | `schema`, `bddkit`, `run_id`, `started_at_unix_ms`, `config`, `config_source`, `app_env`, `env_layers`, `selection`, `concurrency`, `fail_fast`, `files`, plus `privacy`, `evidence`, `artifacts_dir` from sections 7–9 |
 | `file_started` | top of `run_file` | `file`, `name`, `tags`, `description`, `comment`, `background` |
 | `scenario_started` | after the scenario reset, before the first step | `file`, `scenario`, `name`, `line`, `example`, `row_line`, `tags`, `description`, `comment`, `rule`, `examples` |
-| `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source`, `index` |
-| `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `kind` (only when failed: the failure class), `duration_us`, `warnings` |
+| `step_started` | once the step's arguments are interpolated, or at once if that fails | `file`, `scenario`, `step`, `keyword`, `text`, `line`, `role` (not for a step that could not be resolved), `negative` (only `true`, on a negative assertion), optional `comment`; nested steps add `parent`, `source`, `index` |
+| `step_finished` | when the step returns | `file`, `scenario`, `step`, `status` (`passed` or `failed`), `kind` (only when failed: the failure class), `duration_us`, `warnings`, `attempts` and `poll` (only for a polled step) |
 | `step_skipped` | for each step after a failure, including the remainder of an included scenario | `file`, `scenario`, `step`, `keyword`, `text`, `line`, optional `comment`; nested steps add `parent`, `source` |
 | `step_disabled` | where a commented step matches the loaded registry | `file`, `scenario`, `keyword`, `text`, `line`, optional `comment`; inside includes add `parent`, `source`; no `step` number |
 | `section` | before the items it groups, or after the last item for a closing note | `file`, `scenario`, `title`, `line`, optional `note`; inside includes add `parent`, `source` |
@@ -136,17 +136,21 @@ A commented step is `step_disabled` only when its language-specific keyword is f
 
 `text` is the raw step text, with one exception defined in 7.2. `keyword` is as the feature file has it, trailing space included; a macro body step has an empty keyword. The totals in `file_finished` and `run_finished` are the ones `report::print_summary` counts, so a panicked file is one scenario, one failed. A panicked file can leave a scenario or a step open; `file_finished` with `panicked: true` closes them, and a consumer must accept that.
 
+**`role`, `negative`, `attempts` and `poll` (bddkit/bddkit#314).** They say what a step was and how it was polled, whatever the evidence setting. `role` is `action` or `assertion`, as the step is declared (a built-in's kind, a plugin step's `StepSpec.kind`), or `call` for a macro call and an `I include`. The steps a call runs have events and roles of their own, so a consumer that counts steps skips `call`. A step that could not be resolved (a variable that is not set, a value of the wrong type) has no `role`. `negative` is `true` on an assertion declared negative, one that passes when something is absent or does not match, and absent otherwise; a call never has it, also when a step it runs does. `step_finished.attempts` is the number of attempts of a polled step (9.4), from 1, and `poll` is `within`, for `pass eventually` and `pass within …` alike; a consumer must accept another value. Both are absent for a step that was not polled, and for one that failed before its first attempt. A `step_skipped` event has none of these fields. They are new, so `schema` stays 1.
+
 Values below are illustrative.
 
 ```
 {"type":"run_started","seq":0,"t":0,"schema":1,"bddkit":"0.3.0","run_id":"3n2k9a0f1x7q","started_at_unix_ms":1791244800000,"config":"./bddkit.yaml","config_source":"discovered","app_env":"staging","env_layers":[".env"],"selection":{"tags":[],"paths":[]},"concurrency":8,"fail_fast":false,"files":2}
 {"type":"file_started","seq":1,"t":1,"file":"features/company.feature","name":"Companies","tags":["@billing"]}
 {"type":"scenario_started","seq":2,"t":1,"file":"features/company.feature","scenario":0,"name":"registering a company charges the account","line":12,"tags":["@billing"],"description":"Charging happens when the company is registered."}
-{"type":"step_started","seq":3,"t":2,"file":"features/company.feature","scenario":0,"step":0,"keyword":"Given ","text":"I register a buyer","line":13}
-{"type":"step_started","seq":4,"t":2,"file":"features/company.feature","scenario":0,"step":1,"parent":0,"source":"macros/buyer.yaml","line":4,"index":0,"keyword":"","text":"I request \"/api/v1/buyers\" using HTTP POST"}
+{"type":"step_started","seq":3,"t":2,"file":"features/company.feature","scenario":0,"step":0,"keyword":"Given ","text":"I register a buyer","line":13,"role":"call"}
+{"type":"step_started","seq":4,"t":2,"file":"features/company.feature","scenario":0,"step":1,"parent":0,"source":"macros/buyer.yaml","line":4,"index":0,"keyword":"","text":"I request \"/api/v1/buyers\" using HTTP POST","role":"action"}
 {"type":"file_started","seq":5,"t":3,"file":"features/login.feature","name":"Login","tags":[]}
 {"type":"step_finished","seq":6,"t":40,"file":"features/company.feature","scenario":0,"step":1,"status":"passed","duration_us":37900,"warnings":[]}
 {"type":"step_finished","seq":7,"t":40,"file":"features/company.feature","scenario":0,"step":0,"status":"passed","duration_us":38100,"warnings":[]}
+{"type":"step_started","seq":40,"t":900,"file":"features/company.feature","scenario":0,"step":3,"keyword":"Then ","text":"I should not have \"accounts\" with \"company_id: 42\"","line":16,"role":"assertion","negative":true}
+{"type":"step_finished","seq":47,"t":1280,"file":"features/company.feature","scenario":0,"step":3,"status":"passed","duration_us":379000,"warnings":[],"attempts":7,"poll":"within"}
 {"type":"run_finished","seq":58,"t":1310,"exit":1,"files":2,"scenarios":5,"failed":1,"duration_ms":1310}
 ```
 
@@ -413,8 +417,8 @@ A deferred step's `evidence` and `attempt` events are held per scenario and carr
 **Decided.** `step_started` keeps the raw text and carries the resolved slots beside it, the way a SQL log shows a statement and its parameters:
 
 ```
-{"type":"step_started","seq":12,"t":51,"file":"features/company.feature","scenario":0,"step":2,"keyword":"Given ","line":14,"text":"I have \"accounts\" with \"email: user-<<unique()>>@example.com, balance: 100\"","vars":[["unique()","u3n2k9a0f1x7q7"]]}
-{"type":"step_started","seq":15,"t":60,"file":"features/company.feature","scenario":0,"step":3,"keyword":"And ","line":15,"text":"I sign the next request with Hawk id \"session-1\" and key \"<<hawk_key>>\"","vars":[["hawk_key","***"]]}
+{"type":"step_started","seq":12,"t":51,"file":"features/company.feature","scenario":0,"step":2,"keyword":"Given ","line":14,"text":"I have \"accounts\" with \"email: user-<<unique()>>@example.com, balance: 100\"","role":"action","vars":[["unique()","u3n2k9a0f1x7q7"]]}
+{"type":"step_started","seq":15,"t":60,"file":"features/company.feature","scenario":0,"step":3,"keyword":"And ","line":15,"text":"I sign the next request with Hawk id \"session-1\" and key \"<<hawk_key>>\"","role":"action","vars":[["hawk_key","***"]]}
 ```
 
 - `vars` is a list of `[expression, value]` pairs, not a map: `<<unique()>>` yields a new value each time and can occur twice in one step. The order is the order of appearance — captures, then the docstring, then table cells row by row.
@@ -452,7 +456,7 @@ Illustrative values again:
 
 ### 9.4 `attempt`
 
-One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence` (live or deferred, like any evidence of its step), because the message quotes the values that did not match.
+One event per `not_yet` of an eventual assertion, host and plugin paths alike: `file`, `scenario`, `step`, `n` (from 1), `message`. Written only with `--evidence` (live or deferred, like any evidence of its step), because the message quotes the values that did not match. The count of attempts does not depend on that: `step_finished.attempts` (5.4) is the number of the last dispatch of a polled step, and for one that ran out of time it is the count its failure text names.
 
 **`evidence.attempt` (bddkit/bddkit#303).** An `evidence` event written while a polled step is being dispatched carries `attempt`: the number of the dispatch it came from, counted from 1. A step is polled when it is an assertion that consumed an eventual-assertion modifier, even if it passes at once. The numbering is that of `n`: evidence with `attempt: 3` belongs to the dispatch whose `not_yet` is the `attempt` event with `n: 3`. A last dispatch that passed or failed fatally takes the next number and has no `attempt` event; one that ran out of time answered `not_yet`, so it has one. A step that is not polled has no `attempt` field: it is never 0. Deferred evidence keeps it. The field is new, so `schema` stays 1.
 

@@ -25,6 +25,7 @@ mod reports;
 mod rules;
 mod scheduling;
 mod settings;
+mod step_roles;
 mod steps_and_macros;
 
 use serde_json::Value;

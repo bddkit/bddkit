@@ -12,6 +12,7 @@ use crate::failure::FailureKind;
 use crate::feature::{ExpandedScenario, LoadedFeature, ScenarioRef, display_path};
 use crate::plugin::reply::Plain;
 use crate::privacy::Redactor;
+use crate::steps::{StepKind, StepTarget};
 use crate::vars::NULL_SENTINEL;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -259,7 +260,8 @@ pub struct Trace {
     marked: bool,
     tagged: bool,
     held: Mutex<Held>,
-    /// The number of the dispatch in flight, `None` for a step that is not polled.
+    /// The number of the dispatch in flight, `None` for a step that is not
+    /// polled. At `step_finished` it is how many attempts the step took.
     dispatch: Option<u64>,
     /// Steps started in the scenario, and how many of them were live or deferred.
     started: usize,
@@ -320,7 +322,8 @@ impl Trace {
         self.marked = on;
     }
 
-    /// Before every dispatch that writes evidence; `Some` for a polled step.
+    /// Before every dispatch of a plugin step or of a polled built-in; `Some`
+    /// for a polled step. It numbers the evidence written meanwhile.
     pub fn dispatching(&mut self, attempt: Option<u64>) {
         self.dispatch = attempt;
     }
@@ -590,6 +593,7 @@ impl Trace {
     /// step started before it finishes.
     /// `vars` are the resolved slots as `[expression, value]` pairs, already
     /// masked; they are written only with `--evidence`, and only if any.
+    /// `target` is what the text resolved to, `None` if it did not resolve.
     pub fn step_started(
         &mut self,
         keyword: &str,
@@ -597,6 +601,7 @@ impl Trace {
         origin: Origin<'_>,
         source: &Path,
         vars: Vec<Value>,
+        target: Option<StepTarget>,
     ) {
         let Some(events) = &self.events else { return };
         let step = self.steps;
@@ -615,6 +620,17 @@ impl Trace {
         if let Some(parent) = self.open.last() {
             fields["parent"] = (*parent).into();
             fields["source"] = display_path(source).into();
+        }
+        if let Some(target) = target {
+            let (role, negative) = match target.own_kind() {
+                None => ("call", false),
+                Some(StepKind::Action) => ("action", false),
+                Some(StepKind::Assertion { negative, .. }) => ("assertion", negative),
+            };
+            fields["role"] = role.into();
+            if negative {
+                fields["negative"] = true.into();
+            }
         }
         if let Some(index) = origin.index {
             fields["index"] = index.into();
@@ -659,6 +675,12 @@ impl Trace {
         });
         if let Some(kind) = failed {
             fields["kind"] = kind.as_str().into();
+        }
+        // Taken, not read: a built-in that is not polled sets nothing, and
+        // neither does the caller of this step.
+        if let Some(attempts) = self.dispatch.take() {
+            fields["attempts"] = attempts.into();
+            fields["poll"] = "within".into();
         }
         events.emit("step_finished", fields);
     }
